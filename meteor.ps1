@@ -1297,7 +1297,7 @@ function Initialize-PatchedExtensions {
             $config = $PatchConfig.$extName
 
             # Copy additional files
-            if ($config.copy_files) {
+            if ($config.PSObject.Properties['copy_files']) {
                 foreach ($destFile in $config.copy_files.PSObject.Properties) {
                     $destPath = Join-Path $extOutputDir $destFile.Name
                     $srcPath = Resolve-MeteorPath -BasePath $PatchesDir -RelativePath $destFile.Value
@@ -1319,20 +1319,20 @@ function Initialize-PatchedExtensions {
             }
 
             # Apply manifest additions
-            if ($config.manifest_additions) {
+            if ($config.PSObject.Properties['manifest_additions']) {
                 $manifestPath = Join-Path $extOutputDir "manifest.json"
                 if (Test-Path $manifestPath) {
                     $manifest = Get-Content -Path $manifestPath -Raw | ConvertFrom-Json
 
                     # Add declarative_net_request
-                    if ($config.manifest_additions.declarative_net_request) {
-                        if (-not $manifest.declarative_net_request) {
+                    if ($config.manifest_additions.PSObject.Properties['declarative_net_request']) {
+                        if (-not $manifest.PSObject.Properties['declarative_net_request']) {
                             $manifest | Add-Member -NotePropertyName "declarative_net_request" -NotePropertyValue ([PSCustomObject]@{})
                         }
 
                         $dnr = $config.manifest_additions.declarative_net_request
-                        if ($dnr.rule_resources) {
-                            if (-not $manifest.declarative_net_request.rule_resources) {
+                        if ($dnr.PSObject.Properties['rule_resources']) {
+                            if (-not $manifest.declarative_net_request.PSObject.Properties['rule_resources']) {
                                 $manifest.declarative_net_request | Add-Member -NotePropertyName "rule_resources" -NotePropertyValue @()
                             }
 
@@ -1343,8 +1343,8 @@ function Initialize-PatchedExtensions {
                     }
 
                     # Add content_scripts
-                    if ($config.manifest_additions.content_scripts) {
-                        if (-not $manifest.content_scripts) {
+                    if ($config.manifest_additions.PSObject.Properties['content_scripts']) {
+                        if (-not $manifest.PSObject.Properties['content_scripts']) {
                             $manifest | Add-Member -NotePropertyName "content_scripts" -NotePropertyValue @()
                         }
 
@@ -1359,7 +1359,7 @@ function Initialize-PatchedExtensions {
             }
 
             # Modify service-worker-loader.js
-            if ($config.service_worker_import) {
+            if ($config.PSObject.Properties['service_worker_import']) {
                 $loaderPath = Join-Path $extOutputDir "service-worker-loader.js"
                 if (Test-Path $loaderPath) {
                     $content = Get-Content -Path $loaderPath -Raw -Encoding UTF8

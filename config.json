@@ -175,9 +175,9 @@
         },
         "service_worker_import": "meteor-prefs.js",
         "copy_files": {
-          "meteor-prefs.js": "patches/perplexity/meteor-prefs.js",
-          "rules/telemetry.json": "patches/perplexity/telemetry.json",
-          "content/content-script.js": "patches/perplexity/content-script.js"
+          "meteor-prefs.js": "perplexity/meteor-prefs.js",
+          "rules/telemetry.json": "perplexity/telemetry.json",
+          "content/content-script.js": "perplexity/content-script.js"
         }
       }
     }
