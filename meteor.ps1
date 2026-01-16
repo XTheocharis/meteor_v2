@@ -1,0 +1,1946 @@
+<#
+.SYNOPSIS
+    Meteor v2 - Privacy-focused Comet browser enhancement system for Windows.
+
+.DESCRIPTION
+    A complete automated workflow that:
+    - Downloads and installs Comet browser if not present
+    - Checks for and applies Comet updates
+    - Checks for extension updates from their update URLs
+    - Extracts and patches extensions and resources.pak as needed
+    - Applies Windows registry policies
+    - Launches Comet with privacy enhancements
+
+.PARAMETER Config
+    Path to config.json file. Defaults to config.json in script directory.
+
+.PARAMETER DryRun
+    Show what would be done without making changes or launching browser.
+
+.PARAMETER Force
+    Force re-extraction and re-patching even if files haven't changed.
+
+.PARAMETER NoLaunch
+    Perform all setup steps but don't launch the browser.
+
+.PARAMETER Verbose
+    Enable verbose output for debugging.
+
+.EXAMPLE
+    .\Meteor.ps1
+    Run full workflow and launch browser.
+
+.EXAMPLE
+    .\Meteor.ps1 -DryRun
+    Show what would be done without making changes.
+
+.EXAMPLE
+    .\Meteor.ps1 -Force
+    Force re-setup even if files haven't changed.
+#>
+
+[CmdletBinding()]
+param(
+    [Parameter()]
+    [string]$Config,
+
+    [Parameter()]
+    [switch]$DryRun,
+
+    [Parameter()]
+    [switch]$Force,
+
+    [Parameter()]
+    [switch]$NoLaunch
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+
+#region Constants
+
+$script:MeteorVersion = "2.0.0"
+$script:UserAgent = "Meteor/$script:MeteorVersion"
+
+#endregion
+
+#region Helper Functions
+
+function Write-Status {
+    param(
+        [string]$Message,
+        [ValidateSet("Info", "Success", "Warning", "Error", "Detail", "Step")]
+        [string]$Type = "Info"
+    )
+
+    switch ($Type) {
+        "Info"    { Write-Host "[*] $Message" -ForegroundColor Cyan }
+        "Success" { Write-Host "[+] $Message" -ForegroundColor Green }
+        "Warning" { Write-Host "[!] $Message" -ForegroundColor Yellow }
+        "Error"   { Write-Host "[!] $Message" -ForegroundColor Red }
+        "Detail"  { Write-Host "    -> $Message" -ForegroundColor Gray }
+        "Step"    { Write-Host "`n=== $Message ===" -ForegroundColor Magenta }
+    }
+}
+
+function Get-FileHash256 {
+    param([string]$Path)
+
+    if (-not (Test-Path $Path)) {
+        return $null
+    }
+
+    $hash = Get-FileHash -Path $Path -Algorithm SHA256
+    return $hash.Hash
+}
+
+function ConvertTo-LittleEndianUInt32 {
+    param([byte[]]$Bytes, [int]$Offset = 0)
+    return [BitConverter]::ToUInt32($Bytes, $Offset)
+}
+
+function ConvertTo-LittleEndianUInt16 {
+    param([byte[]]$Bytes, [int]$Offset = 0)
+    return [BitConverter]::ToUInt16($Bytes, $Offset)
+}
+
+function ConvertFrom-UInt32ToBytes {
+    param([uint32]$Value)
+    return [BitConverter]::GetBytes($Value)
+}
+
+function ConvertFrom-UInt16ToBytes {
+    param([uint16]$Value)
+    return [BitConverter]::GetBytes($Value)
+}
+
+#endregion
+
+#region Configuration
+
+function Get-MeteorConfig {
+    param([string]$ConfigPath)
+
+    if (-not (Test-Path $ConfigPath)) {
+        throw "Config not found: $ConfigPath"
+    }
+
+    $content = Get-Content -Path $ConfigPath -Raw -Encoding UTF8
+    return $content | ConvertFrom-Json
+}
+
+function Resolve-MeteorPath {
+    param(
+        [string]$BasePath,
+        [string]$RelativePath
+    )
+
+    if ([System.IO.Path]::IsPathRooted($RelativePath)) {
+        return $RelativePath
+    }
+
+    return (Join-Path $BasePath $RelativePath)
+}
+
+#endregion
+
+#region State Management
+
+function Get-MeteorState {
+    param([string]$StatePath)
+
+    if (-not (Test-Path $StatePath)) {
+        return @{
+            version = $script:MeteorVersion
+            comet_version = ""
+            file_hashes = @{}
+            extension_versions = @{}
+            last_update_check = ""
+        }
+    }
+
+    $content = Get-Content -Path $StatePath -Raw -Encoding UTF8
+    return $content | ConvertFrom-Json -AsHashtable
+}
+
+function Save-MeteorState {
+    param(
+        [string]$StatePath,
+        [hashtable]$State
+    )
+
+    $stateDir = Split-Path -Parent $StatePath
+    if (-not (Test-Path $stateDir)) {
+        New-Item -Path $stateDir -ItemType Directory -Force | Out-Null
+    }
+
+    $State.version = $script:MeteorVersion
+    $State | ConvertTo-Json -Depth 10 | Set-Content -Path $StatePath -Encoding UTF8
+}
+
+function Test-FileChanged {
+    param(
+        [string]$FilePath,
+        [hashtable]$State
+    )
+
+    $currentHash = Get-FileHash256 -Path $FilePath
+    if (-not $currentHash) {
+        return $true
+    }
+
+    $storedHash = $State.file_hashes[$FilePath]
+    return ($currentHash -ne $storedHash)
+}
+
+function Update-FileHash {
+    param(
+        [string]$FilePath,
+        [hashtable]$State
+    )
+
+    $hash = Get-FileHash256 -Path $FilePath
+    if ($hash) {
+        $State.file_hashes[$FilePath] = $hash
+    }
+}
+
+#endregion
+
+#region PAK File Operations
+
+function Read-PakFile {
+    <#
+    .SYNOPSIS
+        Parse a Chromium PAK file and return its structure.
+    .DESCRIPTION
+        Supports PAK format versions 4 and 5 (little-endian).
+        Returns hashtable with version, encoding, resources, aliases, and raw data.
+    #>
+    param([string]$Path)
+
+    $bytes = [System.IO.File]::ReadAllBytes($Path)
+
+    # Read version (4 bytes)
+    $version = ConvertTo-LittleEndianUInt32 -Bytes $bytes -Offset 0
+
+    if ($version -ne 4 -and $version -ne 5) {
+        throw "Unsupported PAK version: $version (expected 4 or 5)"
+    }
+
+    $pak = @{
+        Version = $version
+        Encoding = $bytes[4]
+        Resources = [System.Collections.ArrayList]@()
+        Aliases = [System.Collections.ArrayList]@()
+        RawBytes = $bytes
+    }
+
+    $offset = 5
+
+    if ($version -eq 4) {
+        # Version 4: encoding(1) + num_resources(4)
+        $numResources = ConvertTo-LittleEndianUInt32 -Bytes $bytes -Offset $offset
+        $offset += 4
+        $numAliases = 0
+    }
+    else {
+        # Version 5: encoding(1) + padding(3) + num_resources(2) + num_aliases(2)
+        $offset += 3  # Skip padding
+        $numResources = ConvertTo-LittleEndianUInt16 -Bytes $bytes -Offset $offset
+        $offset += 2
+        $numAliases = ConvertTo-LittleEndianUInt16 -Bytes $bytes -Offset $offset
+        $offset += 2
+    }
+
+    # Read resource entries (id:2 + offset:4 = 6 bytes each)
+    # Include sentinel entry (+1)
+    for ($i = 0; $i -le $numResources; $i++) {
+        $resId = ConvertTo-LittleEndianUInt16 -Bytes $bytes -Offset $offset
+        $resOffset = ConvertTo-LittleEndianUInt32 -Bytes $bytes -Offset ($offset + 2)
+
+        [void]$pak.Resources.Add(@{
+            Id = $resId
+            Offset = $resOffset
+        })
+
+        $offset += 6
+    }
+
+    # Read alias entries if version 5 (id:2 + index:2 = 4 bytes each)
+    if ($version -eq 5 -and $numAliases -gt 0) {
+        for ($i = 0; $i -lt $numAliases; $i++) {
+            $aliasId = ConvertTo-LittleEndianUInt16 -Bytes $bytes -Offset $offset
+            $aliasIndex = ConvertTo-LittleEndianUInt16 -Bytes $bytes -Offset ($offset + 2)
+
+            [void]$pak.Aliases.Add(@{
+                Id = $aliasId
+                ResourceIndex = $aliasIndex
+            })
+
+            $offset += 4
+        }
+    }
+
+    $pak.DataStartOffset = $offset
+    return $pak
+}
+
+function Get-PakResource {
+    <#
+    .SYNOPSIS
+        Get the content of a specific resource from a PAK file.
+    #>
+    param(
+        [hashtable]$Pak,
+        [int]$ResourceId
+    )
+
+    for ($i = 0; $i -lt $Pak.Resources.Count - 1; $i++) {
+        if ($Pak.Resources[$i].Id -eq $ResourceId) {
+            $startOffset = $Pak.Resources[$i].Offset
+            $endOffset = $Pak.Resources[$i + 1].Offset
+            $length = $endOffset - $startOffset
+
+            $data = New-Object byte[] $length
+            [Array]::Copy($Pak.RawBytes, $startOffset, $data, 0, $length)
+
+            return $data
+        }
+    }
+
+    return $null
+}
+
+function Set-PakResource {
+    <#
+    .SYNOPSIS
+        Replace the content of a specific resource in a PAK structure.
+    .DESCRIPTION
+        Updates the PAK structure in-memory. Use Write-PakFile to save.
+    #>
+    param(
+        [hashtable]$Pak,
+        [int]$ResourceId,
+        [byte[]]$NewData
+    )
+
+    for ($i = 0; $i -lt $Pak.Resources.Count - 1; $i++) {
+        if ($Pak.Resources[$i].Id -eq $ResourceId) {
+            $startOffset = $Pak.Resources[$i].Offset
+            $endOffset = $Pak.Resources[$i + 1].Offset
+            $oldLength = $endOffset - $startOffset
+            $newLength = $NewData.Length
+            $sizeDiff = $newLength - $oldLength
+
+            # Create new byte array
+            $newBytes = New-Object byte[] ($Pak.RawBytes.Length + $sizeDiff)
+
+            # Copy everything before this resource
+            [Array]::Copy($Pak.RawBytes, 0, $newBytes, 0, $startOffset)
+
+            # Copy new data
+            [Array]::Copy($NewData, 0, $newBytes, $startOffset, $newLength)
+
+            # Copy everything after this resource
+            $afterLength = $Pak.RawBytes.Length - $endOffset
+            if ($afterLength -gt 0) {
+                [Array]::Copy($Pak.RawBytes, $endOffset, $newBytes, $startOffset + $newLength, $afterLength)
+            }
+
+            # Update offsets for all subsequent resources
+            for ($j = $i + 1; $j -lt $Pak.Resources.Count; $j++) {
+                $Pak.Resources[$j].Offset += $sizeDiff
+            }
+
+            $Pak.RawBytes = $newBytes
+            return $true
+        }
+    }
+
+    return $false
+}
+
+function Write-PakFile {
+    <#
+    .SYNOPSIS
+        Write a PAK structure back to a file.
+    #>
+    param(
+        [hashtable]$Pak,
+        [string]$Path
+    )
+
+    # Rebuild the header and resource table
+    $output = [System.Collections.ArrayList]@()
+
+    # Version (4 bytes)
+    [void]$output.AddRange((ConvertFrom-UInt32ToBytes -Value $Pak.Version))
+
+    # Encoding (1 byte)
+    [void]$output.Add($Pak.Encoding)
+
+    $numResources = $Pak.Resources.Count - 1  # Exclude sentinel
+
+    if ($Pak.Version -eq 4) {
+        # num_resources (4 bytes)
+        [void]$output.AddRange((ConvertFrom-UInt32ToBytes -Value $numResources))
+    }
+    else {
+        # Version 5: padding(3) + num_resources(2) + num_aliases(2)
+        [void]$output.Add([byte]0)
+        [void]$output.Add([byte]0)
+        [void]$output.Add([byte]0)
+        [void]$output.AddRange((ConvertFrom-UInt16ToBytes -Value ([uint16]$numResources)))
+        [void]$output.AddRange((ConvertFrom-UInt16ToBytes -Value ([uint16]$Pak.Aliases.Count)))
+    }
+
+    # Calculate header size
+    $headerSize = $output.Count
+    $resourceTableSize = $Pak.Resources.Count * 6  # 6 bytes per entry including sentinel
+    $aliasTableSize = $Pak.Aliases.Count * 4
+
+    $dataStartOffset = $headerSize + $resourceTableSize + $aliasTableSize
+
+    # Recalculate resource offsets
+    $currentDataOffset = $dataStartOffset
+    $resourceData = [System.Collections.ArrayList]@()
+
+    for ($i = 0; $i -lt $Pak.Resources.Count - 1; $i++) {
+        $startOffset = $Pak.Resources[$i].Offset
+        $endOffset = $Pak.Resources[$i + 1].Offset
+        $length = $endOffset - $startOffset
+
+        $data = New-Object byte[] $length
+        [Array]::Copy($Pak.RawBytes, $startOffset, $data, 0, $length)
+
+        $Pak.Resources[$i].Offset = $currentDataOffset
+        [void]$resourceData.Add($data)
+
+        $currentDataOffset += $length
+    }
+
+    # Update sentinel offset
+    $Pak.Resources[$Pak.Resources.Count - 1].Offset = $currentDataOffset
+
+    # Write resource entries
+    foreach ($res in $Pak.Resources) {
+        [void]$output.AddRange((ConvertFrom-UInt16ToBytes -Value ([uint16]$res.Id)))
+        [void]$output.AddRange((ConvertFrom-UInt32ToBytes -Value ([uint32]$res.Offset)))
+    }
+
+    # Write alias entries
+    foreach ($alias in $Pak.Aliases) {
+        [void]$output.AddRange((ConvertFrom-UInt16ToBytes -Value ([uint16]$alias.Id)))
+        [void]$output.AddRange((ConvertFrom-UInt16ToBytes -Value ([uint16]$alias.ResourceIndex)))
+    }
+
+    # Write resource data
+    foreach ($data in $resourceData) {
+        [void]$output.AddRange($data)
+    }
+
+    # Write to file
+    [System.IO.File]::WriteAllBytes($Path, [byte[]]$output.ToArray())
+}
+
+function Invoke-PakModifications {
+    <#
+    .SYNOPSIS
+        Apply text modifications to resources in a PAK file.
+    #>
+    param(
+        [string]$PakPath,
+        [string]$ExtractedDir,
+        [object]$Modifications,
+        [switch]$DryRunMode
+    )
+
+    $modified = $false
+    $results = @{
+        Modified = @()
+        NotFound = @()
+        Errors = @()
+    }
+
+    foreach ($relativePath in $Modifications.files.PSObject.Properties.Name) {
+        $fullPath = Join-Path $ExtractedDir $relativePath
+        $patterns = $Modifications.files.$relativePath
+
+        if (-not (Test-Path $fullPath)) {
+            Write-Status "PAK resource not found: $relativePath" -Type Warning
+            $results.NotFound += $relativePath
+            continue
+        }
+
+        try {
+            $content = Get-Content -Path $fullPath -Raw -Encoding UTF8
+            $originalContent = $content
+            $appliedMods = @()
+
+            foreach ($mod in $patterns) {
+                $pattern = $mod.pattern
+                $replacement = $mod.replacement
+
+                if ($content -match $pattern) {
+                    $content = [regex]::Replace($content, $pattern, $replacement, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+                    $appliedMods += $mod.description
+                }
+            }
+
+            if ($appliedMods.Count -gt 0 -and $content -ne $originalContent) {
+                Write-Status "Modified: $relativePath" -Type Success
+                foreach ($desc in $appliedMods) {
+                    Write-Status $desc -Type Detail
+                }
+
+                if (-not $DryRunMode) {
+                    Set-Content -Path $fullPath -Value $content -Encoding UTF8 -NoNewline
+                }
+
+                $modified = $true
+                $results.Modified += $relativePath
+            }
+        }
+        catch {
+            Write-Status "Error processing $relativePath : $_" -Type Error
+            $results.Errors += $relativePath
+        }
+    }
+
+    return @{
+        Modified = $modified
+        Results = $results
+    }
+}
+
+#endregion
+
+#region CRX Extraction
+
+function Read-ProtobufVarint {
+    <#
+    .SYNOPSIS
+        Read a varint from byte array at given position, return value and new position.
+    #>
+    param([byte[]]$Bytes, [int]$Pos)
+
+    $result = 0
+    $shift = 0
+    do {
+        $b = $Bytes[$Pos]
+        $result = $result -bor (($b -band 0x7F) -shl $shift)
+        $shift += 7
+        $Pos++
+    } while ($b -band 0x80)
+
+    return @{ Value = $result; Pos = $Pos }
+}
+
+function Get-CrxPublicKey {
+    <#
+    .SYNOPSIS
+        Extract the public key from a CRX file as base64.
+    .DESCRIPTION
+        Handles both CRX2 (direct key) and CRX3 (protobuf header) formats.
+        For CRX3, finds the key that matches the CRX ID in signed_header_data.
+        Returns the key as a base64 string suitable for manifest.json "key" field.
+    #>
+    param([string]$CrxPath)
+
+    $bytes = [System.IO.File]::ReadAllBytes($CrxPath)
+
+    # Check magic header "Cr24"
+    $magic = [System.Text.Encoding]::ASCII.GetString($bytes, 0, 4)
+    if ($magic -ne "Cr24") {
+        throw "Invalid CRX file: missing Cr24 magic header"
+    }
+
+    $version = ConvertTo-LittleEndianUInt32 -Bytes $bytes -Offset 4
+
+    if ($version -eq 2) {
+        # CRX2: public key is at offset 16 for pubkeyLen bytes
+        $pubkeyLen = ConvertTo-LittleEndianUInt32 -Bytes $bytes -Offset 8
+        $pubkey = New-Object byte[] $pubkeyLen
+        [Array]::Copy($bytes, 16, $pubkey, 0, $pubkeyLen)
+        return [Convert]::ToBase64String($pubkey)
+    }
+    elseif ($version -eq 3) {
+        # CRX3: Find the key whose SHA256 hash matches the CRX ID
+        $headerLen = ConvertTo-LittleEndianUInt32 -Bytes $bytes -Offset 8
+        $headerStart = 12
+        $headerEnd = $headerStart + $headerLen
+
+        # First pass: collect all keys and find the CRX ID
+        $keys = [System.Collections.ArrayList]@()
+        $crxId = $null
+
+        $pos = $headerStart
+        while ($pos -lt $headerEnd) {
+            $result = Read-ProtobufVarint -Bytes $bytes -Pos $pos
+            $tag = $result.Value
+            $pos = $result.Pos
+
+            $fieldNum = $tag -shr 3
+            $wireType = $tag -band 0x07
+
+            if ($wireType -eq 2) {
+                $result = Read-ProtobufVarint -Bytes $bytes -Pos $pos
+                $len = $result.Value
+                $pos = $result.Pos
+                $fieldEnd = $pos + $len
+
+                if ($fieldNum -in @(2, 3)) {
+                    # sha256_with_rsa (2) or sha256_with_ecdsa (3) - extract public_key
+                    $nestedPos = $pos
+                    while ($nestedPos -lt $fieldEnd) {
+                        $result = Read-ProtobufVarint -Bytes $bytes -Pos $nestedPos
+                        $nestedTag = $result.Value
+                        $nestedPos = $result.Pos
+
+                        $nestedFieldNum = $nestedTag -shr 3
+                        $nestedWireType = $nestedTag -band 0x07
+
+                        if ($nestedWireType -eq 2) {
+                            $result = Read-ProtobufVarint -Bytes $bytes -Pos $nestedPos
+                            $nestedLen = $result.Value
+                            $nestedPos = $result.Pos
+
+                            if ($nestedFieldNum -eq 1) {
+                                # public_key field
+                                $pubkey = New-Object byte[] $nestedLen
+                                [Array]::Copy($bytes, $nestedPos, $pubkey, 0, $nestedLen)
+                                [void]$keys.Add($pubkey)
+                            }
+                            $nestedPos += $nestedLen
+                        }
+                        else {
+                            break
+                        }
+                    }
+                }
+                elseif ($fieldNum -eq 10000) {
+                    # signed_header_data - contains crx_id
+                    $nestedPos = $pos
+                    while ($nestedPos -lt $fieldEnd) {
+                        $result = Read-ProtobufVarint -Bytes $bytes -Pos $nestedPos
+                        $nestedTag = $result.Value
+                        $nestedPos = $result.Pos
+
+                        $nestedFieldNum = $nestedTag -shr 3
+                        $nestedWireType = $nestedTag -band 0x07
+
+                        if ($nestedWireType -eq 2 -and $nestedFieldNum -eq 1) {
+                            # crx_id field
+                            $result = Read-ProtobufVarint -Bytes $bytes -Pos $nestedPos
+                            $crxIdLen = $result.Value
+                            $nestedPos = $result.Pos
+
+                            $crxId = New-Object byte[] $crxIdLen
+                            [Array]::Copy($bytes, $nestedPos, $crxId, 0, $crxIdLen)
+                            break
+                        }
+                        else {
+                            break
+                        }
+                    }
+                }
+
+                $pos = $fieldEnd
+            }
+            elseif ($wireType -eq 0) {
+                $result = Read-ProtobufVarint -Bytes $bytes -Pos $pos
+                $pos = $result.Pos
+            }
+            elseif ($wireType -eq 1) { $pos += 8 }
+            elseif ($wireType -eq 5) { $pos += 4 }
+        }
+
+        # Find the key that matches the CRX ID
+        if ($crxId -and $keys.Count -gt 0) {
+            $crxIdHex = [BitConverter]::ToString($crxId).Replace("-", "").ToLower()
+
+            foreach ($key in $keys) {
+                $sha = [System.Security.Cryptography.SHA256]::Create()
+                $hash = $sha.ComputeHash($key)
+                $hashHex = [BitConverter]::ToString($hash[0..15]).Replace("-", "").ToLower()
+
+                if ($hashHex -eq $crxIdHex) {
+                    return [Convert]::ToBase64String($key)
+                }
+            }
+        }
+
+        # Fallback: return first key if no CRX ID match (shouldn't happen for valid CRX)
+        if ($keys.Count -gt 0) {
+            return [Convert]::ToBase64String($keys[0])
+        }
+
+        throw "Could not find public key in CRX3 header"
+    }
+    else {
+        throw "Unsupported CRX version: $version"
+    }
+}
+
+function Export-CrxToDirectory {
+    <#
+    .SYNOPSIS
+        Extract a CRX file to a directory.
+    .DESCRIPTION
+        Handles both CRX2 and CRX3 formats by detecting the header and extracting the ZIP payload.
+        Optionally injects the public key into manifest.json for consistent extension ID.
+    #>
+    param(
+        [string]$CrxPath,
+        [string]$OutputDir,
+        [switch]$InjectKey
+    )
+
+    $bytes = [System.IO.File]::ReadAllBytes($CrxPath)
+
+    # Check magic header "Cr24"
+    $magic = [System.Text.Encoding]::ASCII.GetString($bytes, 0, 4)
+    if ($magic -ne "Cr24") {
+        throw "Invalid CRX file: missing Cr24 magic header"
+    }
+
+    # Get version (4 bytes at offset 4)
+    $version = ConvertTo-LittleEndianUInt32 -Bytes $bytes -Offset 4
+
+    $zipOffset = 0
+
+    if ($version -eq 2) {
+        # CRX2: magic(4) + version(4) + pubkey_len(4) + sig_len(4) + pubkey + sig + zip
+        $pubkeyLen = ConvertTo-LittleEndianUInt32 -Bytes $bytes -Offset 8
+        $sigLen = ConvertTo-LittleEndianUInt32 -Bytes $bytes -Offset 12
+        $zipOffset = 16 + $pubkeyLen + $sigLen
+    }
+    elseif ($version -eq 3) {
+        # CRX3: magic(4) + version(4) + header_len(4) + header + zip
+        $headerLen = ConvertTo-LittleEndianUInt32 -Bytes $bytes -Offset 8
+        $zipOffset = 12 + $headerLen
+    }
+    else {
+        throw "Unsupported CRX version: $version"
+    }
+
+    # Extract ZIP portion
+    $zipLength = $bytes.Length - $zipOffset
+    $zipBytes = New-Object byte[] $zipLength
+    [Array]::Copy($bytes, $zipOffset, $zipBytes, 0, $zipLength)
+
+    # Write to temp file and extract
+    $tempZip = Join-Path $env:TEMP "meteor_crx_$(Get-Random).zip"
+
+    try {
+        [System.IO.File]::WriteAllBytes($tempZip, $zipBytes)
+
+        if (Test-Path $OutputDir) {
+            Remove-Item -Path $OutputDir -Recurse -Force
+        }
+
+        New-Item -Path $OutputDir -ItemType Directory -Force | Out-Null
+        Expand-Archive -Path $tempZip -DestinationPath $OutputDir -Force
+
+        # Inject public key into manifest if requested
+        if ($InjectKey) {
+            $publicKey = Get-CrxPublicKey -CrxPath $CrxPath
+            $manifestPath = Join-Path $OutputDir "manifest.json"
+
+            if ((Test-Path $manifestPath) -and $publicKey) {
+                $manifest = Get-Content -Path $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+
+                # Add key as first property for readability
+                $manifest | Add-Member -NotePropertyName "key" -NotePropertyValue $publicKey -Force
+
+                $manifest | ConvertTo-Json -Depth 20 | Set-Content -Path $manifestPath -Encoding UTF8
+            }
+        }
+    }
+    finally {
+        if (Test-Path $tempZip) {
+            Remove-Item -Path $tempZip -Force
+        }
+    }
+}
+
+function Get-CrxManifest {
+    <#
+    .SYNOPSIS
+        Read manifest.json from a CRX file without full extraction.
+    #>
+    param([string]$CrxPath)
+
+    $tempDir = Join-Path $env:TEMP "meteor_manifest_$(Get-Random)"
+
+    try {
+        Export-CrxToDirectory -CrxPath $CrxPath -OutputDir $tempDir
+        $manifestPath = Join-Path $tempDir "manifest.json"
+
+        if (Test-Path $manifestPath) {
+            $content = Get-Content -Path $manifestPath -Raw -Encoding UTF8
+            return $content | ConvertFrom-Json
+        }
+    }
+    finally {
+        if (Test-Path $tempDir) {
+            Remove-Item -Path $tempDir -Recurse -Force
+        }
+    }
+
+    return $null
+}
+
+#endregion
+
+#region Extension Update Checking
+
+function Get-ExtensionUpdateInfo {
+    <#
+    .SYNOPSIS
+        Query an extension's update URL to check for newer versions.
+    #>
+    param(
+        [string]$UpdateUrl,
+        [string]$ExtensionId,
+        [string]$CurrentVersion
+    )
+
+    if (-not $UpdateUrl) {
+        return $null
+    }
+
+    # Build update check URL
+    $encodedId = [System.Web.HttpUtility]::UrlEncode("id=$ExtensionId")
+    $encodedVersion = [System.Web.HttpUtility]::UrlEncode("v=$CurrentVersion")
+    $checkUrl = "$UpdateUrl`?x=$encodedId%26$encodedVersion%26uc"
+
+    try {
+        $response = Invoke-WebRequest -Uri $checkUrl -UseBasicParsing -TimeoutSec 30 -Headers @{
+            "User-Agent" = $script:UserAgent
+        }
+
+        # Parse XML response
+        [xml]$xml = $response.Content
+
+        $ns = @{ g = "http://www.google.com/update2/response" }
+        $app = Select-Xml -Xml $xml -XPath "//g:app[@appid='$ExtensionId']" -Namespace $ns
+
+        if ($app) {
+            $updateCheck = $app.Node.SelectSingleNode("g:updatecheck", $xml.CreateNavigator().GetNamespacesInScope([System.Xml.XmlNamespaceScope]::All))
+            if ($updateCheck -or $app.Node.updatecheck) {
+                $node = if ($updateCheck) { $updateCheck } else { $app.Node.updatecheck }
+                return @{
+                    Version = $node.version
+                    Codebase = $node.codebase
+                }
+            }
+        }
+    }
+    catch {
+        Write-Status "Failed to check updates for $ExtensionId : $_" -Type Warning
+    }
+
+    return $null
+}
+
+function Compare-Versions {
+    <#
+    .SYNOPSIS
+        Compare two version strings (A.B.C.D format).
+    .RETURNS
+        -1 if v1 < v2, 0 if equal, 1 if v1 > v2
+    #>
+    param(
+        [string]$Version1,
+        [string]$Version2
+    )
+
+    $v1Parts = $Version1 -split '\.' | ForEach-Object { [int]$_ }
+    $v2Parts = $Version2 -split '\.' | ForEach-Object { [int]$_ }
+
+    $maxLen = [Math]::Max($v1Parts.Count, $v2Parts.Count)
+
+    for ($i = 0; $i -lt $maxLen; $i++) {
+        $p1 = if ($i -lt $v1Parts.Count) { $v1Parts[$i] } else { 0 }
+        $p2 = if ($i -lt $v2Parts.Count) { $v2Parts[$i] } else { 0 }
+
+        if ($p1 -lt $p2) { return -1 }
+        if ($p1 -gt $p2) { return 1 }
+    }
+
+    return 0
+}
+
+function Update-Extension {
+    <#
+    .SYNOPSIS
+        Download and extract an updated extension.
+    #>
+    param(
+        [string]$Codebase,
+        [string]$OutputPath
+    )
+
+    $tempCrx = Join-Path $env:TEMP "meteor_update_$(Get-Random).crx"
+
+    try {
+        Write-Status "Downloading update from: $Codebase" -Type Info
+
+        Invoke-WebRequest -Uri $Codebase -OutFile $tempCrx -UseBasicParsing -TimeoutSec 120 -Headers @{
+            "User-Agent" = $script:UserAgent
+        }
+
+        Export-CrxToDirectory -CrxPath $tempCrx -OutputDir $OutputPath -InjectKey
+        return $true
+    }
+    catch {
+        Write-Status "Failed to download extension update: $_" -Type Error
+        return $false
+    }
+    finally {
+        if (Test-Path $tempCrx) {
+            Remove-Item -Path $tempCrx -Force
+        }
+    }
+}
+
+#endregion
+
+#region Comet Management
+
+function Get-CometInstallation {
+    <#
+    .SYNOPSIS
+        Find existing Comet installation or return null.
+    #>
+
+    $searchPaths = @(
+        (Join-Path $env:LOCALAPPDATA "Perplexity\Comet\Application\comet.exe"),
+        (Join-Path $env:LOCALAPPDATA "Comet\Application\comet.exe"),
+        (Join-Path $env:ProgramFiles "Comet\Application\comet.exe"),
+        (Join-Path ${env:ProgramFiles(x86)} "Comet\Application\comet.exe")
+    )
+
+    foreach ($path in $searchPaths) {
+        if ($path -and (Test-Path $path)) {
+            return @{
+                Executable = $path
+                Directory = Split-Path -Parent $path
+            }
+        }
+    }
+
+    # Try where.exe
+    try {
+        $whereResult = & where.exe comet 2>$null
+        if ($whereResult) {
+            $exe = ($whereResult -split "`n")[0].Trim()
+            return @{
+                Executable = $exe
+                Directory = Split-Path -Parent $exe
+            }
+        }
+    }
+    catch {
+        # Ignore
+    }
+
+    return $null
+}
+
+function Get-CometVersion {
+    <#
+    .SYNOPSIS
+        Get version information from Comet executable.
+    #>
+    param([string]$ExePath)
+
+    try {
+        $versionInfo = (Get-Item $ExePath).VersionInfo
+        return $versionInfo.FileVersion
+    }
+    catch {
+        return $null
+    }
+}
+
+function Install-Comet {
+    <#
+    .SYNOPSIS
+        Download and install Comet browser.
+    #>
+    param(
+        [string]$DownloadUrl,
+        [switch]$DryRunMode
+    )
+
+    Write-Status "Comet browser not found. Downloading..." -Type Info
+
+    if ($DryRunMode) {
+        Write-Status "Would download from: $DownloadUrl" -Type Detail
+        return $null
+    }
+
+    $tempInstaller = Join-Path $env:TEMP "CometSetup_$(Get-Random).exe"
+
+    try {
+        Write-Status "Downloading from: $DownloadUrl" -Type Detail
+
+        $webClient = New-Object System.Net.WebClient
+        $webClient.Headers.Add("User-Agent", $script:UserAgent)
+        $webClient.DownloadFile($DownloadUrl, $tempInstaller)
+
+        Write-Status "Running installer..." -Type Info
+        $process = Start-Process -FilePath $tempInstaller -ArgumentList "/S" -Wait -PassThru
+
+        if ($process.ExitCode -ne 0) {
+            Write-Status "Installer exited with code: $($process.ExitCode)" -Type Warning
+        }
+
+        # Wait for installation to complete and find the executable
+        Start-Sleep -Seconds 5
+        return Get-CometInstallation
+    }
+    catch {
+        Write-Status "Failed to install Comet: $_" -Type Error
+        return $null
+    }
+    finally {
+        if (Test-Path $tempInstaller) {
+            Remove-Item -Path $tempInstaller -Force
+        }
+    }
+}
+
+function Test-CometUpdate {
+    <#
+    .SYNOPSIS
+        Check if a newer version of Comet is available by querying the download endpoint.
+    #>
+    param(
+        [string]$CurrentVersion,
+        [string]$DownloadUrl
+    )
+
+    if (-not $DownloadUrl -or -not $CurrentVersion) {
+        return $null
+    }
+
+    try {
+        # Make HEAD request to get final redirect URL or Content-Disposition
+        $response = Invoke-WebRequest -Uri $DownloadUrl -Method Head -UseBasicParsing -MaximumRedirection 5 -Headers @{
+            "User-Agent" = $script:UserAgent
+        }
+
+        # Try to extract version from Content-Disposition header
+        $disposition = $response.Headers["Content-Disposition"]
+        if ($disposition) {
+            # Look for version pattern in filename (e.g., comet-1.2.3.exe or CometSetup_1.2.3.exe)
+            if ($disposition -match '[\-_](\d+\.\d+\.\d+(?:\.\d+)?)') {
+                $latestVersion = $Matches[1]
+            }
+        }
+
+        # Also check the final URL for version info
+        if (-not $latestVersion -and $response.BaseResponse.ResponseUri) {
+            $finalUrl = $response.BaseResponse.ResponseUri.ToString()
+            if ($finalUrl -match '[\-_/](\d+\.\d+\.\d+(?:\.\d+)?)') {
+                $latestVersion = $Matches[1]
+            }
+        }
+
+        if ($latestVersion) {
+            $comparison = Compare-Versions -Version1 $latestVersion -Version2 $CurrentVersion
+            if ($comparison -gt 0) {
+                return @{
+                    Version = $latestVersion
+                    DownloadUrl = $DownloadUrl
+                }
+            }
+        }
+    }
+    catch {
+        Write-Status "Failed to check for Comet updates: $_" -Type Warning
+    }
+
+    return $null
+}
+
+#endregion
+
+#region uBlock Origin
+
+function Get-UBlockOrigin {
+    <#
+    .SYNOPSIS
+        Download uBlock Origin MV2 from Microsoft Edge Add-ons if not present or outdated.
+    .DESCRIPTION
+        Downloads the CRX directly from Microsoft Edge extension store update URL, extracts it using
+        the same method as other CRX files, and injects the public key for consistent ID.
+    #>
+    param(
+        [string]$OutputDir,
+        [object]$UBlockConfig,
+        [switch]$DryRunMode
+    )
+
+    $extensionId = $UBlockConfig.extension_id
+    $updateUrl = $UBlockConfig.update_url
+    $manifestPath = Join-Path $OutputDir "manifest.json"
+    $currentVersion = $null
+
+    # Check if already installed
+    if ((Test-Path $OutputDir) -and (Test-Path $manifestPath)) {
+        $manifest = Get-Content -Path $manifestPath -Raw | ConvertFrom-Json
+        $currentVersion = $manifest.version
+        Write-Status "uBlock Origin $currentVersion installed, checking for updates..." -Type Info
+    }
+    else {
+        Write-Status "uBlock Origin not found, downloading..." -Type Info
+    }
+
+    try {
+        # Query update URL for latest version info (same method as other extensions)
+        $updateInfo = Get-ExtensionUpdateInfo -UpdateUrl $updateUrl -ExtensionId $extensionId -CurrentVersion ($currentVersion ?? "0.0.0")
+
+        if (-not $updateInfo -or -not $updateInfo.Codebase) {
+            throw "Could not get update info from Microsoft Edge Add-ons"
+        }
+
+        $latestVersion = $updateInfo.Version
+        Write-Status "Latest version: $latestVersion" -Type Detail
+
+        # Compare versions if already installed
+        if ($currentVersion) {
+            $comparison = Compare-Versions -Version1 $latestVersion -Version2 $currentVersion
+            if ($comparison -le 0) {
+                Write-Status "uBlock Origin is up to date ($currentVersion)" -Type Success
+                return $OutputDir
+            }
+            Write-Status "Update available: $currentVersion -> $latestVersion" -Type Info
+        }
+
+        # Handle dry run mode
+        if ($DryRunMode) {
+            if ($currentVersion) {
+                Write-Status "Would update uBlock Origin from $currentVersion to $latestVersion" -Type Detail
+            }
+            else {
+                Write-Status "Would download uBlock Origin $latestVersion from Microsoft Edge Add-ons" -Type Detail
+            }
+            return $null
+        }
+
+        # Download CRX from Microsoft Edge Add-ons
+        $tempCrx = Join-Path $env:TEMP "ublock_$(Get-Random).crx"
+
+        Write-Status "Downloading from Microsoft Edge Add-ons..." -Type Detail
+        Invoke-WebRequest -Uri $updateInfo.Codebase -OutFile $tempCrx -UseBasicParsing -TimeoutSec 120 -Headers @{
+            "User-Agent" = $script:UserAgent
+        }
+
+        # Extract CRX and inject public key for consistent extension ID
+        Export-CrxToDirectory -CrxPath $tempCrx -OutputDir $OutputDir -InjectKey
+
+        # Remove update_url from manifest (we manage updates ourselves)
+        $manifestPath = Join-Path $OutputDir "manifest.json"
+        if (Test-Path $manifestPath) {
+            $manifest = Get-Content -Path $manifestPath -Raw | ConvertFrom-Json
+            $manifest.PSObject.Properties.Remove('update_url')
+            $manifest | ConvertTo-Json -Depth 20 | Set-Content -Path $manifestPath -Encoding UTF8
+        }
+
+        # Apply defaults if configured
+        if ($UBlockConfig.defaults) {
+            $assetsUser = Join-Path $OutputDir "assets\user"
+            if (-not (Test-Path $assetsUser)) {
+                New-Item -Path $assetsUser -ItemType Directory -Force | Out-Null
+            }
+
+            if ($UBlockConfig.defaults.userFilters) {
+                $userFilters = Join-Path $assetsUser "filters.txt"
+                Set-Content -Path $userFilters -Value $UBlockConfig.defaults.userFilters -Encoding UTF8
+            }
+
+            # Save full defaults
+            $defaultsPath = Join-Path $OutputDir "meteor-defaults.json"
+            $UBlockConfig.defaults | ConvertTo-Json -Depth 10 | Set-Content -Path $defaultsPath -Encoding UTF8
+        }
+
+        if ($currentVersion) {
+            Write-Status "uBlock Origin updated: $currentVersion -> $latestVersion" -Type Success
+        }
+        else {
+            Write-Status "uBlock Origin $latestVersion installed" -Type Success
+        }
+        return $OutputDir
+    }
+    catch {
+        Write-Status "Failed to download uBlock Origin: $_" -Type Error
+        if ($currentVersion) {
+            Write-Status "Continuing with existing installation ($currentVersion)" -Type Warning
+            return $OutputDir
+        }
+        return $null
+    }
+    finally {
+        if ((Test-Path variable:tempCrx) -and (Test-Path $tempCrx)) {
+            Remove-Item -Path $tempCrx -Force
+        }
+    }
+}
+
+#endregion
+
+#region Extension Patching
+
+function Initialize-PatchedExtensions {
+    <#
+    .SYNOPSIS
+        Extract and patch extensions from Comet's default_apps.
+    #>
+    param(
+        [string]$CometDir,
+        [string]$OutputDir,
+        [string]$PatchesDir,
+        [object]$PatchConfig,
+        [switch]$DryRunMode
+    )
+
+    $defaultAppsDir = Join-Path $CometDir "default_apps"
+
+    if (-not (Test-Path $defaultAppsDir)) {
+        # Try version subdirectory
+        $versionDirs = Get-ChildItem -Path $CometDir -Directory -ErrorAction SilentlyContinue
+        foreach ($vDir in $versionDirs) {
+            $subDefaultApps = Join-Path $vDir.FullName "default_apps"
+            if (Test-Path $subDefaultApps) {
+                $defaultAppsDir = $subDefaultApps
+                break
+            }
+        }
+    }
+
+    if (-not (Test-Path $defaultAppsDir)) {
+        Write-Status "default_apps directory not found in: $CometDir" -Type Error
+        return $false
+    }
+
+    Write-Status "Source: $defaultAppsDir" -Type Detail
+    Write-Status "Output: $OutputDir" -Type Detail
+
+    if (-not (Test-Path $OutputDir)) {
+        New-Item -Path $OutputDir -ItemType Directory -Force | Out-Null
+    }
+
+    # Find and process CRX files
+    $crxFiles = Get-ChildItem -Path $defaultAppsDir -Filter "*.crx" -ErrorAction SilentlyContinue
+
+    foreach ($crx in $crxFiles) {
+        $extName = [System.IO.Path]::GetFileNameWithoutExtension($crx.Name)
+        $extOutputDir = Join-Path $OutputDir $extName
+
+        Write-Status "Processing: $extName" -Type Info
+
+        if ($DryRunMode) {
+            Write-Status "Would extract to: $extOutputDir" -Type Detail
+            continue
+        }
+
+        # Extract CRX and inject public key for consistent extension ID
+        Export-CrxToDirectory -CrxPath $crx.FullName -OutputDir $extOutputDir -InjectKey
+        Write-Status "Extracted to: $extOutputDir" -Type Detail
+
+        # Apply patches if configured
+        if ($PatchConfig.$extName) {
+            $config = $PatchConfig.$extName
+
+            # Copy additional files
+            if ($config.copy_files) {
+                foreach ($destFile in $config.copy_files.PSObject.Properties) {
+                    $destPath = Join-Path $extOutputDir $destFile.Name
+                    $srcPath = Resolve-MeteorPath -BasePath $PatchesDir -RelativePath $destFile.Value
+
+                    # Ensure directory exists
+                    $destDir = Split-Path -Parent $destPath
+                    if (-not (Test-Path $destDir)) {
+                        New-Item -Path $destDir -ItemType Directory -Force | Out-Null
+                    }
+
+                    if (Test-Path $srcPath) {
+                        Copy-Item -Path $srcPath -Destination $destPath -Force
+                        Write-Status "Copied: $($destFile.Name)" -Type Detail
+                    }
+                    else {
+                        Write-Status "Source not found: $srcPath" -Type Warning
+                    }
+                }
+            }
+
+            # Apply manifest additions
+            if ($config.manifest_additions) {
+                $manifestPath = Join-Path $extOutputDir "manifest.json"
+                if (Test-Path $manifestPath) {
+                    $manifest = Get-Content -Path $manifestPath -Raw | ConvertFrom-Json
+
+                    # Add declarative_net_request
+                    if ($config.manifest_additions.declarative_net_request) {
+                        if (-not $manifest.declarative_net_request) {
+                            $manifest | Add-Member -NotePropertyName "declarative_net_request" -NotePropertyValue ([PSCustomObject]@{})
+                        }
+
+                        $dnr = $config.manifest_additions.declarative_net_request
+                        if ($dnr.rule_resources) {
+                            if (-not $manifest.declarative_net_request.rule_resources) {
+                                $manifest.declarative_net_request | Add-Member -NotePropertyName "rule_resources" -NotePropertyValue @()
+                            }
+
+                            $existingResources = @($manifest.declarative_net_request.rule_resources)
+                            $newResources = @($dnr.rule_resources)
+                            $manifest.declarative_net_request.rule_resources = $existingResources + $newResources
+                        }
+                    }
+
+                    # Add content_scripts
+                    if ($config.manifest_additions.content_scripts) {
+                        if (-not $manifest.content_scripts) {
+                            $manifest | Add-Member -NotePropertyName "content_scripts" -NotePropertyValue @()
+                        }
+
+                        $existingScripts = @($manifest.content_scripts)
+                        $newScripts = @($config.manifest_additions.content_scripts)
+                        $manifest.content_scripts = $existingScripts + $newScripts
+                    }
+
+                    $manifest | ConvertTo-Json -Depth 20 | Set-Content -Path $manifestPath -Encoding UTF8
+                    Write-Status "Applied manifest patches" -Type Detail
+                }
+            }
+
+            # Modify service-worker-loader.js
+            if ($config.service_worker_import) {
+                $loaderPath = Join-Path $extOutputDir "service-worker-loader.js"
+                if (Test-Path $loaderPath) {
+                    $content = Get-Content -Path $loaderPath -Raw -Encoding UTF8
+
+                    if ($content -notmatch [regex]::Escape($config.service_worker_import)) {
+                        $modified = "import './$($config.service_worker_import)';  // Meteor preference enforcement`n$content"
+                        Set-Content -Path $loaderPath -Value $modified -Encoding UTF8 -NoNewline
+                        Write-Status "Modified service-worker-loader.js" -Type Detail
+                    }
+                }
+            }
+        }
+    }
+
+    return $true
+}
+
+#endregion
+
+#region PAK Processing
+
+function Initialize-PakModifications {
+    <#
+    .SYNOPSIS
+        Apply content-based modifications to resources.pak.
+        Searches all text resources for matching patterns and applies replacements.
+    #>
+    param(
+        [string]$CometDir,
+        [object]$PakConfig,
+        [switch]$DryRunMode
+    )
+
+    if (-not $PakConfig.enabled) {
+        Write-Status "PAK modifications disabled in config" -Type Detail
+        return $true
+    }
+
+    # 1. Locate resources.pak
+    $pakPath = Join-Path $CometDir "resources.pak"
+    if (-not (Test-Path $pakPath)) {
+        $versionDirs = Get-ChildItem -Path $CometDir -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '^\d+\.\d+\.\d+' }
+        foreach ($dir in $versionDirs) {
+            $testPath = Join-Path $dir.FullName "resources.pak"
+            if (Test-Path $testPath) {
+                $pakPath = $testPath
+                break
+            }
+        }
+    }
+
+    if (-not (Test-Path $pakPath)) {
+        Write-Status "resources.pak not found - skipping PAK modifications" -Type Warning
+        return $true
+    }
+
+    Write-Status "Found resources.pak: $pakPath" -Type Detail
+
+    # 2. Read and parse PAK
+    try {
+        $pak = Read-PakFile -Path $pakPath
+        Write-Status "Parsed PAK v$($pak.Version) with $($pak.Resources.Count - 1) resources" -Type Detail
+    } catch {
+        Write-Status "Failed to parse PAK: $_" -Type Error
+        return $false
+    }
+
+    # 3. Search all resources and apply modifications
+    $modifiedResources = @{}
+    $appliedCount = 0
+
+    # Iterate through all resources (skip sentinel at end)
+    for ($i = 0; $i -lt $pak.Resources.Count - 1; $i++) {
+        $resource = $pak.Resources[$i]
+        $resourceId = $resource.Id
+
+        # Get resource bytes
+        $resourceBytes = Get-PakResource -Pak $pak -ResourceId $resourceId
+        if (-not $resourceBytes -or $resourceBytes.Length -eq 0) { continue }
+
+        # Try to decode as UTF-8 text (skip binary resources)
+        try {
+            $content = [System.Text.Encoding]::UTF8.GetString($resourceBytes)
+            # Skip if it looks like binary (has null bytes or non-printable chars)
+            if ($content -match '[\x00-\x08\x0E-\x1F]') { continue }
+        } catch {
+            continue
+        }
+
+        $originalContent = $content
+        $resourceModified = $false
+
+        # Try each modification pattern
+        foreach ($mod in $PakConfig.modifications) {
+            if ($content -match $mod.pattern) {
+                $content = $content -replace $mod.pattern, $mod.replacement
+                Write-Status "  Resource $resourceId - $($mod.description)" -Type Detail
+                $resourceModified = $true
+                $appliedCount++
+            }
+        }
+
+        # Track modified resources
+        if ($resourceModified) {
+            $modifiedResources[$resourceId] = $content
+        }
+    }
+
+    # 4. Apply all modifications to PAK structure
+    $modified = $false
+    foreach ($resourceId in $modifiedResources.Keys) {
+        $newContent = $modifiedResources[$resourceId]
+        $newBytes = [System.Text.Encoding]::UTF8.GetBytes($newContent)
+
+        if ($DryRunMode) {
+            Write-Status "Would modify resource $resourceId" -Type DryRun
+        } else {
+            $success = Set-PakResource -Pak $pak -ResourceId $resourceId -NewData $newBytes
+            if ($success) {
+                $modified = $true
+            } else {
+                Write-Status "Failed to set resource $resourceId" -Type Error
+            }
+        }
+    }
+
+    # 5. Write modified PAK (with backup)
+    if ($modified -and -not $DryRunMode) {
+        $backupPath = "$pakPath.meteor-backup"
+
+        if (-not (Test-Path $backupPath)) {
+            Copy-Item -Path $pakPath -Destination $backupPath -Force
+            Write-Status "Created backup: $backupPath" -Type Detail
+        }
+
+        try {
+            Write-PakFile -Pak $pak -Path $pakPath
+            Write-Status "Wrote modified PAK ($($modifiedResources.Count) resources, $appliedCount modifications)" -Type Success
+        } catch {
+            Write-Status "Failed to write PAK: $_" -Type Error
+            if (Test-Path $backupPath) {
+                Copy-Item -Path $backupPath -Destination $pakPath -Force
+                Write-Status "Restored from backup" -Type Warning
+            }
+            return $false
+        }
+    } elseif ($appliedCount -eq 0) {
+        Write-Status "PAK modifications: No matching patterns found" -Type Warning
+    }
+
+    return $true
+}
+
+#endregion
+
+#region Registry Policies
+
+function Set-RegistryPolicies {
+    <#
+    .SYNOPSIS
+        Apply Windows registry policies for Chromium.
+    #>
+    param(
+        [object]$RegistryConfig,
+        [switch]$DryRunMode
+    )
+
+    if (-not $RegistryConfig) {
+        return
+    }
+
+    $regPath = $RegistryConfig.path -replace '^HKCU:\\', 'HKCU:\'
+
+    Write-Status "Registry path: $regPath" -Type Detail
+
+    if ($DryRunMode) {
+        Write-Status "Would apply $($RegistryConfig.policies.PSObject.Properties.Count) policies" -Type Detail
+        return
+    }
+
+    try {
+        # Create key if needed
+        if (-not (Test-Path $regPath)) {
+            New-Item -Path $regPath -Force | Out-Null
+        }
+
+        # Apply policies
+        $policyCount = 0
+        foreach ($property in $RegistryConfig.policies.PSObject.Properties) {
+            Set-ItemProperty -Path $regPath -Name $property.Name -Value $property.Value -Type DWord -Force
+            $policyCount++
+        }
+
+        Write-Status "Applied $policyCount policies" -Type Detail
+
+        # Apply subkeys
+        if ($RegistryConfig.subkeys) {
+            foreach ($subkeyProp in $RegistryConfig.subkeys.PSObject.Properties) {
+                $subkeyPath = Join-Path $regPath $subkeyProp.Name
+
+                if (-not (Test-Path $subkeyPath)) {
+                    New-Item -Path $subkeyPath -Force | Out-Null
+                }
+
+                $i = 1
+                foreach ($val in $subkeyProp.Value) {
+                    Set-ItemProperty -Path $subkeyPath -Name $i.ToString() -Value $val -Type String -Force
+                    $i++
+                }
+
+                Write-Status "Applied subkey: $($subkeyProp.Name)" -Type Detail
+            }
+        }
+    }
+    catch {
+        Write-Status "Registry error: $_" -Type Error
+    }
+}
+
+#endregion
+
+#region Browser Launch
+
+function Build-BrowserCommand {
+    <#
+    .SYNOPSIS
+        Build the browser command line with all flags.
+    #>
+    param(
+        [object]$Config,
+        [string]$BrowserExe,
+        [string]$ExtPath,
+        [string]$UBlockPath
+    )
+
+    $cmd = [System.Collections.ArrayList]@()
+    [void]$cmd.Add($BrowserExe)
+
+    $browserConfig = $Config.browser
+
+    # Add profile directory if specified
+    if ($browserConfig.profile) {
+        [void]$cmd.Add("--profile-directory=$($browserConfig.profile)")
+    }
+
+    # Add explicit flags
+    foreach ($flag in $browserConfig.flags) {
+        [void]$cmd.Add($flag)
+    }
+
+    # Build --enable-features
+    if ($browserConfig.enable_features -and $browserConfig.enable_features.Count -gt 0) {
+        $enableFeatures = $browserConfig.enable_features -join ","
+        [void]$cmd.Add("--enable-features=$enableFeatures")
+    }
+
+    # Build --disable-features
+    if ($browserConfig.disable_features -and $browserConfig.disable_features.Count -gt 0) {
+        $disableFeatures = $browserConfig.disable_features -join ","
+        [void]$cmd.Add("--disable-features=$disableFeatures")
+    }
+
+    # Build extension list
+    $extensions = [System.Collections.ArrayList]@()
+
+    # Add patched extensions
+    foreach ($extName in $Config.extensions.sources) {
+        $extDir = Join-Path $ExtPath $extName
+        if (Test-Path $extDir) {
+            [void]$extensions.Add($extDir)
+        }
+    }
+
+    # Add uBlock Origin
+    if ($UBlockPath -and (Test-Path $UBlockPath)) {
+        [void]$extensions.Add($UBlockPath)
+    }
+
+    if ($extensions.Count -gt 0) {
+        $extList = $extensions -join ","
+        [void]$cmd.Add("--load-extension=$extList")
+    }
+
+    return $cmd
+}
+
+function Start-Browser {
+    <#
+    .SYNOPSIS
+        Launch the browser with the built command.
+    #>
+    param(
+        [array]$Command,
+        [switch]$DryRunMode
+    )
+
+    if ($DryRunMode) {
+        Write-Host ""
+        Write-Status "Would launch with command:" -Type Info
+        Write-Host $Command[0]
+        Write-Host "Flags: $($Command.Count - 1)"
+        return $null
+    }
+
+    $exe = $Command[0]
+    $args = $Command[1..($Command.Count - 1)]
+
+    $process = Start-Process -FilePath $exe -ArgumentList $args -PassThru
+    return $process
+}
+
+#endregion
+
+#region Main
+
+function Main {
+    Write-Host ""
+    Write-Host "╔══════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
+    Write-Host "║           Meteor v2 - Privacy Enhancement System              ║" -ForegroundColor Cyan
+    Write-Host "║                     Version $script:MeteorVersion                          ║" -ForegroundColor Cyan
+    Write-Host "╚══════════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
+    Write-Host ""
+
+    # Determine paths
+    $scriptDir = Split-Path -Parent $PSCommandPath
+    $baseDir = $scriptDir
+
+    # Load config
+    $configPath = if ($Config) { $Config } else { Join-Path $baseDir "config.json" }
+    $config = Get-MeteorConfig -ConfigPath $configPath
+
+    # Resolve paths
+    $patchedExtPath = Resolve-MeteorPath -BasePath $baseDir -RelativePath $config.paths.patched_extensions
+    $ublockPath = Resolve-MeteorPath -BasePath $baseDir -RelativePath $config.paths.ublock
+    $statePath = Resolve-MeteorPath -BasePath $baseDir -RelativePath $config.paths.state_file
+    $patchesPath = Resolve-MeteorPath -BasePath $baseDir -RelativePath $config.paths.patches
+
+    # Load state
+    $state = Get-MeteorState -StatePath $statePath
+
+    if ($DryRun) {
+        Write-Status "DRY RUN MODE - No changes will be made" -Type Warning
+        Write-Host ""
+    }
+
+    # Kill running Comet processes if -Force is specified
+    if ($Force) {
+        $cometProcesses = Get-Process -Name "comet" -ErrorAction SilentlyContinue
+        if ($cometProcesses) {
+            if ($DryRun) {
+                Write-Status "Would stop $($cometProcesses.Count) running Comet process(es)" -Type DryRun
+            } else {
+                Write-Status "Stopping $($cometProcesses.Count) running Comet process(es)..." -Type Warning
+                $cometProcesses | Stop-Process -Force -ErrorAction SilentlyContinue
+                Start-Sleep -Milliseconds 500  # Brief pause for file handles to release
+                Write-Status "Comet processes stopped" -Type Success
+            }
+        }
+    }
+
+    # ═══════════════════════════════════════════════════════════════
+    # Step 0: Comet Installation
+    # ═══════════════════════════════════════════════════════════════
+    Write-Status "Step 0: Checking Comet Installation" -Type Step
+
+    $comet = Get-CometInstallation
+
+    if (-not $comet) {
+        $comet = Install-Comet -DownloadUrl $config.comet.download_url -DryRunMode:$DryRun
+    }
+
+    if (-not $comet -and -not $DryRun) {
+        Write-Status "Could not find or install Comet browser" -Type Error
+        exit 1
+    }
+
+    if ($comet) {
+        Write-Status "Comet found: $($comet.Executable)" -Type Success
+        $cometVersion = Get-CometVersion -ExePath $comet.Executable
+        Write-Status "Version: $cometVersion" -Type Detail
+    }
+
+    # ═══════════════════════════════════════════════════════════════
+    # Step 1: Comet Update Check
+    # ═══════════════════════════════════════════════════════════════
+    Write-Status "Step 1: Checking for Comet Updates" -Type Step
+
+    if ($config.comet.auto_update -and $comet) {
+        $updateInfo = Test-CometUpdate -CurrentVersion $cometVersion -DownloadUrl $config.comet.download_url
+
+        if ($updateInfo) {
+            Write-Status "Update available: $($updateInfo.Version) (current: $cometVersion)" -Type Warning
+            if (-not $DryRun) {
+                Write-Status "Downloading Comet update..." -Type Info
+                $newComet = Install-Comet -DownloadUrl $config.comet.download_url -DryRunMode:$DryRun
+                if ($newComet) {
+                    $comet = $newComet
+                    $cometVersion = Get-CometVersion -ExePath $comet.Executable
+                    Write-Status "Updated to version: $cometVersion" -Type Success
+                }
+            } else {
+                Write-Status "Would download and install Comet $($updateInfo.Version)" -Type DryRun
+            }
+        }
+        else {
+            Write-Status "Comet is up to date" -Type Success
+        }
+    }
+    else {
+        Write-Status "Auto-update disabled or Comet not installed" -Type Detail
+    }
+
+    # ═══════════════════════════════════════════════════════════════
+    # Step 2: Extension Update Check
+    # ═══════════════════════════════════════════════════════════════
+    Write-Status "Step 2: Checking for Extension Updates" -Type Step
+
+    $extensionsUpdated = $false
+    if ($config.extensions.check_updates -and $comet) {
+        $defaultAppsDir = Join-Path $comet.Directory "default_apps"
+        if (Test-Path $defaultAppsDir) {
+            $crxFiles = Get-ChildItem -Path $defaultAppsDir -Filter "*.crx" -ErrorAction SilentlyContinue
+            foreach ($crx in $crxFiles) {
+                $manifest = Get-CrxManifest -CrxPath $crx.FullName
+                if (-not $manifest) { continue }
+
+                $extId = if ($manifest.key) {
+                    # Generate extension ID from public key
+                    $keyBytes = [Convert]::FromBase64String($manifest.key)
+                    $hash = [System.Security.Cryptography.SHA256]::Create().ComputeHash($keyBytes)
+                    $idChars = $hash[0..15] | ForEach-Object { [char](97 + ($_ % 26)) }
+                    -join $idChars
+                } else { $null }
+
+                $updateUrl = $manifest.update_url
+                $currentVersion = $manifest.version
+
+                if ($extId -and $updateUrl -and $currentVersion) {
+                    Write-Status "Checking $($manifest.name)..." -Type Detail
+                    $extUpdate = Get-ExtensionUpdateInfo -UpdateUrl $updateUrl -ExtensionId $extId -CurrentVersion $currentVersion
+
+                    if ($extUpdate -and $extUpdate.Version -and $extUpdate.Codebase) {
+                        $comparison = Compare-Versions -Version1 $extUpdate.Version -Version2 $currentVersion
+                        if ($comparison -gt 0) {
+                            Write-Status "  Update available: $currentVersion -> $($extUpdate.Version)" -Type Info
+                            if (-not $DryRun) {
+                                try {
+                                    $tempCrx = Join-Path $env:TEMP "meteor_ext_$(Get-Random).crx"
+                                    Invoke-WebRequest -Uri $extUpdate.Codebase -OutFile $tempCrx -UseBasicParsing -Headers @{
+                                        "User-Agent" = $script:UserAgent
+                                    }
+                                    Copy-Item -Path $tempCrx -Destination $crx.FullName -Force
+                                    Remove-Item -Path $tempCrx -Force -ErrorAction SilentlyContinue
+                                    Write-Status "  Updated $($manifest.name) to $($extUpdate.Version)" -Type Success
+                                    $extensionsUpdated = $true
+                                } catch {
+                                    Write-Status "  Failed to update: $_" -Type Error
+                                }
+                            } else {
+                                Write-Status "  Would download from $($extUpdate.Codebase)" -Type DryRun
+                            }
+                        } else {
+                            Write-Status "  Up to date ($currentVersion)" -Type Detail
+                        }
+                    } else {
+                        Write-Status "  Up to date ($currentVersion)" -Type Detail
+                    }
+                }
+            }
+        }
+    }
+    else {
+        Write-Status "Extension update checking disabled" -Type Detail
+    }
+
+    # ═══════════════════════════════════════════════════════════════
+    # Step 3: Change Detection
+    # ═══════════════════════════════════════════════════════════════
+    Write-Status "Step 3: Detecting Changes" -Type Step
+
+    $needsSetup = $Force -or $extensionsUpdated -or -not (Test-Path $patchedExtPath)
+
+    if (-not $needsSetup -and $comet) {
+        # Check if source files have changed
+        $defaultAppsDir = Join-Path $comet.Directory "default_apps"
+        if (Test-Path $defaultAppsDir) {
+            $crxFiles = Get-ChildItem -Path $defaultAppsDir -Filter "*.crx" -ErrorAction SilentlyContinue
+            foreach ($crx in $crxFiles) {
+                if (Test-FileChanged -FilePath $crx.FullName -State $state) {
+                    Write-Status "Changed: $($crx.Name)" -Type Detail
+                    $needsSetup = $true
+                }
+            }
+        }
+    }
+
+    if ($needsSetup) {
+        Write-Status "Setup required" -Type Info
+    }
+    else {
+        Write-Status "No changes detected - using cached setup" -Type Success
+    }
+
+    # ═══════════════════════════════════════════════════════════════
+    # Step 4: Extract & Patch
+    # ═══════════════════════════════════════════════════════════════
+    Write-Status "Step 4: Extracting and Patching" -Type Step
+
+    if ($needsSetup -and $comet) {
+        $setupResult = Initialize-PatchedExtensions `
+            -CometDir $comet.Directory `
+            -OutputDir $patchedExtPath `
+            -PatchesDir $patchesPath `
+            -PatchConfig $config.extensions.patch_config `
+            -DryRunMode:$DryRun
+
+        if ($setupResult) {
+            Write-Status "Extensions patched successfully" -Type Success
+
+            # Update state with new hashes
+            if (-not $DryRun) {
+                $defaultAppsDir = Join-Path $comet.Directory "default_apps"
+                if (Test-Path $defaultAppsDir) {
+                    $crxFiles = Get-ChildItem -Path $defaultAppsDir -Filter "*.crx" -ErrorAction SilentlyContinue
+                    foreach ($crx in $crxFiles) {
+                        Update-FileHash -FilePath $crx.FullName -State $state
+                    }
+                }
+            }
+
+            # Clear Comet's CRX cache to ensure it loads our patched extensions
+            $crxCachePath = Join-Path $env:LOCALAPPDATA "Perplexity\Comet\User Data\extensions_crx_cache"
+            if (Test-Path $crxCachePath) {
+                $cacheFiles = Get-ChildItem -Path $crxCachePath -File -ErrorAction SilentlyContinue
+                if ($cacheFiles) {
+                    if ($DryRun) {
+                        Write-Status "Would clear CRX cache ($($cacheFiles.Count) files)" -Type DryRun
+                    } else {
+                        Remove-Item -Path "$crxCachePath\*" -Force -ErrorAction SilentlyContinue
+                        Write-Status "Cleared CRX cache ($($cacheFiles.Count) files)" -Type Detail
+                    }
+                }
+            }
+        }
+        else {
+            Write-Status "Extension patching failed" -Type Error
+        }
+
+        # PAK modifications (if enabled)
+        if ($config.pak_modifications.enabled) {
+            Initialize-PakModifications -CometDir $comet.Directory -PakConfig $config.pak_modifications -DryRunMode:$DryRun
+        }
+    }
+    else {
+        Write-Status "Using existing patched extensions" -Type Detail
+    }
+
+    # ═══════════════════════════════════════════════════════════════
+    # Step 5: uBlock Origin
+    # ═══════════════════════════════════════════════════════════════
+    Write-Status "Step 5: Checking uBlock Origin" -Type Step
+
+    if ($config.ublock.enabled) {
+        $ublockResult = Get-UBlockOrigin -OutputDir $ublockPath -UBlockConfig $config.ublock -DryRunMode:$DryRun
+    }
+    else {
+        Write-Status "uBlock Origin disabled in config" -Type Detail
+        $ublockPath = $null
+    }
+
+    # ═══════════════════════════════════════════════════════════════
+    # Step 6: Registry Policies
+    # ═══════════════════════════════════════════════════════════════
+    Write-Status "Step 6: Applying Registry Policies" -Type Step
+
+    Set-RegistryPolicies -RegistryConfig $config.registry -DryRunMode:$DryRun
+    Write-Status "Registry policies applied" -Type Success
+
+    # Save state
+    if (-not $DryRun) {
+        $state.last_update_check = (Get-Date).ToString("o")
+        if ($comet) {
+            $state.comet_version = $cometVersion
+        }
+        Save-MeteorState -StatePath $statePath -State $state
+    }
+
+    # ═══════════════════════════════════════════════════════════════
+    # Step 7: Launch Browser
+    # ═══════════════════════════════════════════════════════════════
+    if ($NoLaunch) {
+        Write-Status "Step 7: Skipping Launch (NoLaunch specified)" -Type Step
+        Write-Host ""
+        Write-Status "Setup complete. Run without -NoLaunch to start browser." -Type Success
+        return
+    }
+
+    Write-Status "Step 7: Launching Browser" -Type Step
+
+    if (-not $comet -and -not $DryRun) {
+        Write-Status "Cannot launch - Comet not installed" -Type Error
+        exit 1
+    }
+
+    if ($comet -or $DryRun) {
+        $browserExe = if ($comet) { $comet.Executable } else { "comet.exe" }
+        $cmd = Build-BrowserCommand -Config $config -BrowserExe $browserExe -ExtPath $patchedExtPath -UBlockPath $ublockPath
+
+        $proc = Start-Browser -Command $cmd -DryRunMode:$DryRun
+
+        if ($proc) {
+            Write-Host ""
+            Write-Status "Browser launched (PID: $($proc.Id))" -Type Success
+            Write-Status "Meteor v2 active - privacy protections enabled" -Type Info
+        }
+    }
+}
+
+# Run main
+Main
+
+#endregion
