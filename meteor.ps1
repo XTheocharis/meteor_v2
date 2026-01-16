@@ -1260,11 +1260,25 @@ function Initialize-PatchedExtensions {
         New-Item -Path $OutputDir -ItemType Directory -Force | Out-Null
     }
 
-    # Find and process CRX files
-    $crxFiles = Get-ChildItem -Path $defaultAppsDir -Filter "*.crx" -ErrorAction SilentlyContinue
+    # Find and process CRX files (prefer active .crx over .crx.disabled)
+    $crxSources = @{}
 
-    foreach ($crx in $crxFiles) {
-        $extName = [System.IO.Path]::GetFileNameWithoutExtension($crx.Name)
+    # First collect .crx.disabled files
+    $disabledFiles = Get-ChildItem -Path $defaultAppsDir -Filter "*.crx.disabled" -ErrorAction SilentlyContinue
+    foreach ($file in $disabledFiles) {
+        $baseName = $file.Name -replace '\.crx\.disabled$', ''
+        $crxSources[$baseName] = $file
+    }
+
+    # Then collect active .crx files (these override .disabled versions)
+    $activeFiles = Get-ChildItem -Path $defaultAppsDir -Filter "*.crx" -ErrorAction SilentlyContinue
+    foreach ($file in $activeFiles) {
+        $baseName = $file.Name -replace '\.crx$', ''
+        $crxSources[$baseName] = $file
+    }
+
+    foreach ($extName in $crxSources.Keys | Sort-Object) {
+        $crx = $crxSources[$extName]
         $extOutputDir = Join-Path $OutputDir $extName
 
         Write-Status "Processing: $extName" -Type Info
@@ -1845,11 +1859,20 @@ function Main {
     $needsSetup = $Force -or $extensionsUpdated -or -not (Test-Path $patchedExtPath)
 
     if (-not $needsSetup -and $comet) {
-        # Check if source files have changed
+        # Check if source files have changed (both .crx and .crx.disabled)
         $defaultAppsDir = Join-Path $comet.Directory "default_apps"
         if (Test-Path $defaultAppsDir) {
+            # Check active CRX files
             $crxFiles = Get-ChildItem -Path $defaultAppsDir -Filter "*.crx" -ErrorAction SilentlyContinue
             foreach ($crx in $crxFiles) {
+                if (Test-FileChanged -FilePath $crx.FullName -State $state) {
+                    Write-Status "Changed: $($crx.Name)" -Type Detail
+                    $needsSetup = $true
+                }
+            }
+            # Check disabled CRX files
+            $disabledFiles = Get-ChildItem -Path $defaultAppsDir -Filter "*.crx.disabled" -ErrorAction SilentlyContinue
+            foreach ($crx in $disabledFiles) {
                 if (Test-FileChanged -FilePath $crx.FullName -State $state) {
                     Write-Status "Changed: $($crx.Name)" -Type Detail
                     $needsSetup = $true
@@ -1881,7 +1904,7 @@ function Main {
         if ($setupResult) {
             Write-Status "Extensions patched successfully" -Type Success
 
-            # Update state with new hashes
+            # Update state with new hashes (track both .crx and .crx.disabled)
             if (-not $DryRun) {
                 $defaultAppsDir = Join-Path $comet.Directory "default_apps"
                 if (Test-Path $defaultAppsDir) {
@@ -1889,21 +1912,61 @@ function Main {
                     foreach ($crx in $crxFiles) {
                         Update-FileHash -FilePath $crx.FullName -State $state
                     }
+                    $disabledFiles = Get-ChildItem -Path $defaultAppsDir -Filter "*.crx.disabled" -ErrorAction SilentlyContinue
+                    foreach ($crx in $disabledFiles) {
+                        Update-FileHash -FilePath $crx.FullName -State $state
+                    }
                 }
             }
 
-            # Clear Comet's CRX cache to ensure it loads our patched extensions
-            $crxCachePath = Join-Path $env:LOCALAPPDATA "Perplexity\Comet\User Data\extensions_crx_cache"
-            if (Test-Path $crxCachePath) {
-                $cacheFiles = @(Get-ChildItem -Path $crxCachePath -File -ErrorAction SilentlyContinue)
-                if ($cacheFiles.Count -gt 0) {
-                    $cacheCount = $cacheFiles.Count
+            # Clear Comet's CRX caches to ensure it loads our patched extensions
+            $cachePaths = @(
+                (Join-Path $env:LOCALAPPDATA "Perplexity\Comet\User Data\extensions_crx_cache"),
+                (Join-Path $env:LOCALAPPDATA "Perplexity\Comet\User Data\component_crx_cache")
+            )
+            foreach ($crxCachePath in $cachePaths) {
+                if (Test-Path $crxCachePath) {
                     if ($DryRun) {
-                        Write-Status "Would clear CRX cache: $cacheCount files" -Type DryRun
+                        Write-Status "Would clear: $crxCachePath" -Type Detail
                     }
                     else {
-                        Remove-Item -Path "$crxCachePath\*" -Force -ErrorAction SilentlyContinue
-                        Write-Status "Cleared CRX cache: $cacheCount files" -Type Detail
+                        Remove-Item -Path $crxCachePath -Recurse -Force -ErrorAction SilentlyContinue
+                        Write-Status "Cleared: $(Split-Path -Leaf $crxCachePath)" -Type Detail
+                    }
+                }
+            }
+
+            # Disable bundled extensions to prevent conflicts
+            $defaultAppsDir = Join-Path $comet.Directory "default_apps"
+            if (Test-Path $defaultAppsDir) {
+                # Clear external_extensions.json (backup first)
+                $extJsonPath = Join-Path $defaultAppsDir "external_extensions.json"
+                $extJsonBackup = "$extJsonPath.meteor-backup"
+                if (Test-Path $extJsonPath) {
+                    if ($DryRun) {
+                        Write-Status "Would clear external_extensions.json" -Type Detail
+                    }
+                    else {
+                        if (-not (Test-Path $extJsonBackup)) {
+                            Copy-Item -Path $extJsonPath -Destination $extJsonBackup -Force
+                        }
+                        Set-Content -Path $extJsonPath -Value "{}" -Encoding UTF8
+                        Write-Status "Cleared external_extensions.json" -Type Detail
+                    }
+                }
+
+                # Rename .crx files to .crx.disabled
+                $crxFilesToDisable = Get-ChildItem -Path $defaultAppsDir -Filter "*.crx" -ErrorAction SilentlyContinue
+                foreach ($crx in $crxFilesToDisable) {
+                    $disabledPath = "$($crx.FullName).disabled"
+                    if (-not (Test-Path $disabledPath)) {
+                        if ($DryRun) {
+                            Write-Status "Would disable: $($crx.Name)" -Type Detail
+                        }
+                        else {
+                            Move-Item -Path $crx.FullName -Destination $disabledPath -Force
+                            Write-Status "Disabled: $($crx.Name)" -Type Detail
+                        }
                     }
                 }
             }

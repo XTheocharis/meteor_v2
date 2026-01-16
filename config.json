@@ -10,12 +10,22 @@
     "flags": [
       "--homepage=https://www.perplexity.ai/b/home",
       "--no-pings",
+      "--no-first-run",
+      "--no-default-browser-check",
       "--disable-domain-reliability",
       "--disable-client-side-phishing-detection",
+      "--disable-search-engine-choice-screen",
+      "--disable-infobars",
+      "--disable-quic",
       "--ip-protection-proxy-opt-out",
       "--propagate-iph-for-testing",
       "--perplexity-enable-bundle-extension-unpacked-loading",
-      "--enable-experimental-extension-apis"
+      "--enable-experimental-extension-apis",
+      "--extensions-on-chrome-urls",
+      "--extensions-on-extension-urls",
+      "--webtransport-developer-mode",
+      "--test-type",
+      "--show-component-extension-options"
     ],
     "enable_features": [
       "ExtensionsOnChromeURLs",
