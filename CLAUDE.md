@@ -28,6 +28,10 @@ Invoke-ScriptAnalyzer -Path .\meteor.ps1 -Settings .\PSScriptAnalyzerSettings.ps
 # Format code
 $content = Get-Content .\meteor.ps1 -Raw
 Invoke-Formatter -ScriptDefinition $content | Set-Content .\meteor.ps1
+
+# Fix missing UTF-8 BOM (if PSUseBOMForUnicodeEncodedFile warning appears)
+$content = Get-Content .\meteor.ps1 -Raw
+[System.IO.File]::WriteAllText(".\meteor.ps1", $content, [System.Text.UTF8Encoding]::new($true))
 ```
 
 ### Manual Verification (after launch)
@@ -122,3 +126,4 @@ All settings are in `config.json`. Key sections:
    - `ExtensionManifestV2DeprecationWarning`
    - `ExtensionManifestV2Disabled`
    - `ExtensionManifestV2Unsupported`
+5. **UTF-8 BOM Required**: `meteor.ps1` must have a UTF-8 BOM (byte order mark). PowerShell 5.1 reads files without BOM as ANSI, which corrupts the µ character in embedded uBlock JavaScript and causes parse errors. PSScriptAnalyzer warns via `PSUseBOMForUnicodeEncodedFile` if missing.
