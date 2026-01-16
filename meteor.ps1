@@ -60,6 +60,7 @@ $ErrorActionPreference = "Stop"
 
 $script:MeteorVersion = "2.0.0"
 $script:UserAgent = "Meteor/$script:MeteorVersion"
+$script:ExtensionKeyFile = Join-Path $PSScriptRoot ".extension-key.pem"
 
 #endregion
 
@@ -703,6 +704,214 @@ function Get-CrxPublicKey {
     }
 }
 
+function ConvertTo-SpkiBase64 {
+    <#
+    .SYNOPSIS
+        Convert RSA parameters to SubjectPublicKeyInfo (SPKI) base64 format.
+    .DESCRIPTION
+        Takes RSA public key parameters (modulus and exponent) and encodes them
+        in the DER/SPKI format that Chrome uses for extension public keys.
+    #>
+    param([System.Security.Cryptography.RSAParameters]$Params)
+
+    function Get-DerInteger {
+        param([byte[]]$Value)
+        $i = 0
+        while ($i -lt $Value.Length - 1 -and $Value[$i] -eq 0) { $i++ }
+        $Value = $Value[$i..($Value.Length - 1)]
+        if ($Value[0] -band 0x80) {
+            $Value = @([byte]0) + $Value
+        }
+        $len = $Value.Length
+        if ($len -lt 128) {
+            return @([byte]0x02, [byte]$len) + $Value
+        } elseif ($len -lt 256) {
+            return @([byte]0x02, [byte]0x81, [byte]$len) + $Value
+        } else {
+            return @([byte]0x02, [byte]0x82, [byte](($len -shr 8) -band 0xFF), [byte]($len -band 0xFF)) + $Value
+        }
+    }
+
+    function Get-DerSequence {
+        param([byte[]]$Content)
+        $len = $Content.Length
+        if ($len -lt 128) {
+            return @([byte]0x30, [byte]$len) + $Content
+        } elseif ($len -lt 256) {
+            return @([byte]0x30, [byte]0x81, [byte]$len) + $Content
+        } else {
+            return @([byte]0x30, [byte]0x82, [byte](($len -shr 8) -band 0xFF), [byte]($len -band 0xFF)) + $Content
+        }
+    }
+
+    function Get-DerBitString {
+        param([byte[]]$Content)
+        $len = $Content.Length + 1
+        if ($len -lt 128) {
+            return @([byte]0x03, [byte]$len, [byte]0x00) + $Content
+        } elseif ($len -lt 256) {
+            return @([byte]0x03, [byte]0x81, [byte]$len, [byte]0x00) + $Content
+        } else {
+            return @([byte]0x03, [byte]0x82, [byte](($len -shr 8) -band 0xFF), [byte]($len -band 0xFF), [byte]0x00) + $Content
+        }
+    }
+
+    $rsaOid = [byte[]]@(0x06, 0x09, 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x01)
+    $nullParam = [byte[]]@(0x05, 0x00)
+    $algorithmId = Get-DerSequence -Content ($rsaOid + $nullParam)
+
+    $modulus = Get-DerInteger -Value $Params.Modulus
+    $exponent = Get-DerInteger -Value $Params.Exponent
+    $rsaPublicKey = Get-DerSequence -Content ([byte[]]$modulus + [byte[]]$exponent)
+
+    $publicKeyBitString = Get-DerBitString -Content $rsaPublicKey
+    $spki = Get-DerSequence -Content ([byte[]]$algorithmId + [byte[]]$publicKeyBitString)
+
+    return [Convert]::ToBase64String([byte[]]$spki)
+}
+
+function Ensure-ExtensionKey {
+    <#
+    .SYNOPSIS
+        Generate and store an RSA key pair for extension signing if not present.
+    .DESCRIPTION
+        Creates a 2048-bit RSA key pair and stores it in XML format.
+        This key is used to give all unpacked extensions a consistent ID.
+    #>
+    if (Test-Path $script:ExtensionKeyFile) {
+        return $true
+    }
+
+    Write-Status "Generating extension pinning key..." -Type Info
+
+    try {
+        $rsa = New-Object System.Security.Cryptography.RSACryptoServiceProvider(2048)
+        $xmlKey = $rsa.ToXmlString($true)
+
+        Set-Content -Path $script:ExtensionKeyFile -Value $xmlKey -Encoding UTF8 -NoNewline
+        Write-Status "Extension key generated: $script:ExtensionKeyFile" -Type Success
+        return $true
+    }
+    catch {
+        Write-Status "Could not generate extension key: $_" -Type Warning
+        return $false
+    }
+}
+
+function Get-PublicKeyBase64 {
+    <#
+    .SYNOPSIS
+        Get the public key in base64 SPKI format from the stored key file.
+    #>
+    if (-not (Test-Path $script:ExtensionKeyFile)) {
+        return $null
+    }
+
+    try {
+        $xmlKey = Get-Content $script:ExtensionKeyFile -Raw
+
+        $rsa = New-Object System.Security.Cryptography.RSACryptoServiceProvider
+        $rsa.FromXmlString($xmlKey)
+        $params = $rsa.ExportParameters($false)
+
+        return ConvertTo-SpkiBase64 -Params $params
+    }
+    catch {
+        Write-Status "Could not extract public key: $_" -Type Warning
+        return $null
+    }
+}
+
+function Get-ExtensionIdFromKey {
+    <#
+    .SYNOPSIS
+        Calculate the extension ID from a public key.
+    .DESCRIPTION
+        Chrome extension IDs are derived from the first 128 bits of the SHA256 hash
+        of the public key, encoded using a-p alphabet (not hex).
+    #>
+    param([string]$PublicKeyBase64)
+
+    try {
+        $keyBytes = [Convert]::FromBase64String($PublicKeyBase64)
+        $sha256 = [System.Security.Cryptography.SHA256]::Create()
+        $hashBytes = $sha256.ComputeHash($keyBytes)
+
+        $chars = 'abcdefghijklmnop'
+        $extId = ''
+        for ($i = 0; $i -lt 16; $i++) {
+            $extId += $chars[[int][Math]::Floor($hashBytes[$i] / 16)]
+            $extId += $chars[$hashBytes[$i] % 16]
+        }
+        return $extId
+    }
+    catch {
+        Write-Status "Could not calculate extension ID: $_" -Type Warning
+        return $null
+    }
+}
+
+function Add-ExtensionKey {
+    <#
+    .SYNOPSIS
+        Inject the Meteor extension key into an extension's manifest.json.
+    .DESCRIPTION
+        Adds or updates the "key" field in manifest.json to ensure a consistent extension ID.
+        Returns the extension ID that will result from this key.
+    #>
+    param(
+        [string]$ExtensionDir,
+        [string]$ExtensionName
+    )
+
+    $manifestPath = Join-Path $ExtensionDir "manifest.json"
+
+    if (-not (Test-Path $manifestPath)) {
+        Write-Status "Manifest not found: $manifestPath" -Type Warning
+        return $null
+    }
+
+    try {
+        # Ensure we have a key
+        if (-not (Ensure-ExtensionKey)) {
+            return $null
+        }
+
+        $publicKeyB64 = Get-PublicKeyBase64
+        if (-not $publicKeyB64) {
+            Write-Status "Could not get public key" -Type Warning
+            return $null
+        }
+
+        $extId = Get-ExtensionIdFromKey $publicKeyB64
+        if (-not $extId) {
+            Write-Status "Could not calculate extension ID" -Type Warning
+            return $null
+        }
+
+        $manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
+
+        $existingKey = $null
+        if ($manifest.PSObject.Properties.Name -contains 'key') {
+            $existingKey = $manifest.key
+        }
+
+        if ($existingKey -eq $publicKeyB64) {
+            Write-Status "Extension key verified ($ExtensionName ID: $extId)" -Type Detail
+            return $extId
+        }
+
+        $manifest | Add-Member -NotePropertyName 'key' -NotePropertyValue $publicKeyB64 -Force
+        $manifest | ConvertTo-Json -Depth 20 | Set-Content -Path $manifestPath -Encoding UTF8
+        Write-Status "Updated extension key ($ExtensionName ID: $extId)" -Type Success
+        return $extId
+    }
+    catch {
+        Write-Status "Could not update extension key for ${ExtensionName}: $_" -Type Warning
+        return $null
+    }
+}
+
 function Export-CrxToDirectory {
     <#
     .SYNOPSIS
@@ -1225,6 +1434,12 @@ function Get-UBlockOrigin {
             }
         }
 
+        # Inject extension key for consistent ID (always run, even if download wasn't needed)
+        $ublockExtId = Add-ExtensionKey -ExtensionDir $OutputDir -ExtensionName "uBlock Origin"
+        if ($ublockExtId) {
+            Write-Status "uBlock Origin ID: $ublockExtId" -Type Detail
+        }
+
         # Apply defaults if configured - using auto-import approach (always run, even if not downloading)
         if ($UBlockConfig.defaults) {
             # Save settings file that auto-import.js will load
@@ -1739,8 +1954,20 @@ function Set-BrowserPreferences {
     # Critical settings that must be set before startup
     # These cannot be effectively set by meteor-prefs.js (runs too late)
 
-    # uBlock Origin extension ID (from Edge Add-ons)
-    $ublockExtId = "odfafepnkmbhccpbejgmiehpchacaeak"
+    # Compute uBlock Origin extension ID from the Meteor key
+    # This ensures the ID matches what we inject into uBlock's manifest
+    $ublockExtId = $null
+    if (Ensure-ExtensionKey) {
+        $pubKey = Get-PublicKeyBase64
+        if ($pubKey) {
+            $ublockExtId = Get-ExtensionIdFromKey $pubKey
+        }
+    }
+    # Fallback to a placeholder if key computation fails
+    if (-not $ublockExtId) {
+        Write-Status "Could not compute uBlock extension ID, pinning may not work" -Type Warning
+        $ublockExtId = "ublockorigin"  # Placeholder, won't match but won't crash
+    }
 
     $criticalSettings = @{
         extensions = @{
