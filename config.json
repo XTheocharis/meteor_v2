@@ -268,7 +268,7 @@
     "defaults": {
       "userSettings": {
         "advancedUserEnabled": true,
-        "externalLists": "https://filters.adtidy.org/extension/ublock/filters/14.txt\nhttps://filters.adtidy.org/extension/ublock/filters/3.txt\nhttps://gitflic.ru/project/magnolia1234/bypass-paywalls-clean-filters/blob/raw?file=bpc-paywall-filter.txt\nhttps://malware-filter.gitlab.io/pup-filter/pup-filter.txt\nhttps://raw.githubusercontent.com/DandelionSprout/adfilt/master/BrowseWebsitesWithoutLoggingIn.txt\nhttps://raw.githubusercontent.com/DandelionSprout/adfilt/master/ClearURLs%20for%20uBo/clear_urls_uboified.txt\nhttps://raw.githubusercontent.com/DandelionSprout/adfilt/master/LegitimateURLShortener.txt\nhttps://raw.githubusercontent.com/bogachenko/fuckfuckadblock/master/fuckfuckadblock-mining.txt\nhttps://raw.githubusercontent.com/bogachenko/fuckfuckadblock/master/fuckfuckadblock.txt\nhttps://raw.githubusercontent.com/liamengland1/miscfilters/master/antipaywall.txt",
+        "externalLists": "https://filters.adtidy.org/extension/ublock/filters/14.txt\nhttps://filters.adtidy.org/extension/ublock/filters/3.txt\nhttps://gitflic.ru/project/magnolia1234/bypass-paywalls-clean-filters/blob/raw?file=bpc-paywall-filter.txt\nhttps://malware-filter.gitlab.io/pup-filter/pup-filter.txt\nhttps://raw.githubusercontent.com/DandelionSprout/adfilt/master/BrowseWebsitesWithoutLoggingIn.txt\nhttps://raw.githubusercontent.com/DandelionSprout/adfilt/master/ClearURLs%20for%20uBo/clear_urls_uboified.txt\nhttps://raw.githubusercontent.com/DandelionSprout/adfilt/master/LegitimateURLShortener.txt\nhttps://raw.githubusercontent.com/bogachenko/fuckfuckadblock/master/fuckfuckadblock.txt\nhttps://raw.githubusercontent.com/liamengland1/miscfilters/master/antipaywall.txt",
         "importedLists": [
           "https://filters.adtidy.org/extension/ublock/filters/14.txt",
           "https://filters.adtidy.org/extension/ublock/filters/3.txt",
@@ -277,7 +277,6 @@
           "https://raw.githubusercontent.com/DandelionSprout/adfilt/master/BrowseWebsitesWithoutLoggingIn.txt",
           "https://raw.githubusercontent.com/DandelionSprout/adfilt/master/ClearURLs%20for%20uBo/clear_urls_uboified.txt",
           "https://raw.githubusercontent.com/DandelionSprout/adfilt/master/LegitimateURLShortener.txt",
-          "https://raw.githubusercontent.com/bogachenko/fuckfuckadblock/master/fuckfuckadblock-mining.txt",
           "https://raw.githubusercontent.com/bogachenko/fuckfuckadblock/master/fuckfuckadblock.txt",
           "https://raw.githubusercontent.com/liamengland1/miscfilters/master/antipaywall.txt"
         ],
@@ -294,6 +293,7 @@
         "ublock-unbreak",
         "ublock-experimental",
         "easylist",
+        "easylist-ai",
         "adguard-generic",
         "adguard-mobile",
         "easyprivacy",
@@ -325,7 +325,6 @@
         "https://raw.githubusercontent.com/DandelionSprout/adfilt/master/BrowseWebsitesWithoutLoggingIn.txt",
         "https://raw.githubusercontent.com/DandelionSprout/adfilt/master/ClearURLs%20for%20uBo/clear_urls_uboified.txt",
         "https://raw.githubusercontent.com/DandelionSprout/adfilt/master/LegitimateURLShortener.txt",
-        "https://raw.githubusercontent.com/bogachenko/fuckfuckadblock/master/fuckfuckadblock-mining.txt",
         "https://raw.githubusercontent.com/bogachenko/fuckfuckadblock/master/fuckfuckadblock.txt",
         "https://raw.githubusercontent.com/liamengland1/miscfilters/master/antipaywall.txt"
       ],
