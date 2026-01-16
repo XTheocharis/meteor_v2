@@ -14,7 +14,7 @@ Meteor v2 is a privacy-focused enhancement system for the Comet browser (Chromiu
 ```powershell
 .\meteor.ps1                  # Full automated workflow: setup, patch, launch
 .\meteor.ps1 -DryRun          # Show what would be done without making changes
-.\meteor.ps1 -Force           # Force re-setup even if files haven't changed
+.\meteor.ps1 -Force           # Force re-setup (stops running Comet, clears CRX caches)
 .\meteor.ps1 -NoLaunch        # Run setup only, don't launch browser
 .\meteor.ps1 -Config path.json # Use alternate configuration file
 .\meteor.ps1 -Verbose         # Enable verbose output (PowerShell common parameter)
@@ -61,15 +61,14 @@ When you run `.\meteor.ps1`, it performs these steps automatically:
 4. **Step 3: Change Detection** - Compares file hashes to detect if re-patching is needed
 5. **Step 4: Extract & Patch** - Extracts CRX files and applies Meteor modifications
 6. **Step 5: uBlock Origin** - Downloads uBlock Origin MV2 if not present
-7. **Step 6: Registry Policies** - Applies Windows registry policies
-8. **Step 7: Launch Browser** - Starts Comet with all privacy enhancements
+7. **Step 6: Launch Browser** - Starts Comet with all privacy enhancements
 
 ### Key Files
 
 | File | Purpose |
 |------|---------|
 | `meteor.ps1` | Main script - handles entire workflow |
-| `config.json` | All configuration (browser flags, patches, uBlock, registry) |
+| `config.json` | All configuration (browser flags, patches, uBlock) |
 | `.meteor/state.json` | Runtime state (file hashes, versions) - auto-generated |
 | `patches/perplexity/telemetry.json` | 16 DNR rules for telemetry blocking |
 | `patches/perplexity/meteor-prefs.js` | Service worker preference enforcement |
@@ -79,15 +78,16 @@ When you run `.\meteor.ps1`, it performs these steps automatically:
 
 **meteor.ps1**: Consolidated PowerShell script that:
 - Auto-detects or downloads Comet browser
-- Extracts and patches CRX extensions
+- Extracts and patches CRX extensions (handles both `.crx` and `.crx.disabled` files)
 - Reads/writes Chromium PAK files (v4/v5 format)
 - Manages uBlock Origin MV2 download
-- Applies Windows registry policies
-- Builds command line with 100+ disabled features
+- Builds command line with 156 disabled features and 10 enabled features
 - Tracks file changes via SHA256 hashes
+- Clears Comet's CRX caches during re-patching to ensure changes take effect
+- Stops running Comet processes when `-Force` is used
 
 **patches/perplexity/meteor-prefs.js**: Service worker module that:
-- Enforces 16 privacy preferences via `chrome.settingsPrivate` (disables adblock, metrics, history search, proactive scraping)
+- Enforces 39 privacy preferences via `chrome.settingsPrivate` (disables adblock, metrics, telemetry, AI features, sync, signin, etc.)
 - Exposes `globalThis.MeteorMCP` API wrapping `chrome.perplexity.mcp.*`
 - Redirects local URLs (chrome://, comet://) to perplexity.ai via `chrome.tabs` API
 
@@ -104,11 +104,11 @@ When you run `.\meteor.ps1`, it performs these steps automatically:
 ## Configuration
 
 All settings are in `config.json`. Key sections:
-- `browser.flags/enable_features/disable_features`: Chromium launch configuration
+- `browser.flags/enable_features/disable_features`: Chromium launch configuration (21 flags, 10 enabled features, 156 disabled features)
+- `extensions.sources`: Extensions to patch (`perplexity`, `comet_web_resources`, `agents`)
 - `extensions.patch_config.perplexity`: Patching rules for the perplexity extension
 - `pak_modifications`: Regex replacements for resources.pak
 - `ublock.defaults`: Filter lists and settings (41 lists + custom telemetry rules)
-- `registry.policies`: Windows registry privacy policies
 
 ## Critical Rules for Changes
 

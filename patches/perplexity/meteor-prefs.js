@@ -42,7 +42,58 @@
     'perplexity.feature.navigate-to-perplexity-search-same-doc': false,
 
     // Skip setup
-    'perplexity.onboarding_completed': true
+    'perplexity.onboarding_completed': true,
+
+    // ========================================================================
+    // Chromium Privacy Settings
+    // ========================================================================
+
+    // Search & Omnibox
+    'search.suggest_enabled': false,
+
+    // Safe Browsing & Security
+    'safebrowsing.scout_reporting_enabled': false,
+    'safebrowsing.password_protection_warning_trigger': 0,
+    'profile.password_dismiss_compromised_alert': false,
+
+    // UI Preferences
+    'browser.show_home_button': true,
+    'omnibox.prevent_url_elisions': true,
+    'bookmark_bar.show_apps_shortcut': false,
+
+    // Sign-in & Profile
+    'signin.allowed': false,
+    'profile.browser_guest_enforced': false,
+    'profile.add_person_enabled': false,
+
+    // AI & Lens Features
+    'devtools.gen_ai_settings': 2,
+    'browser.gemini_settings': 1,
+    'lens.policy.lens_overlay_settings': 1,
+    'policy.lens_desktop_ntp_search_enabled': false,
+    'policy.lens_region_search_enabled': false,
+
+    // ========================================================================
+    // Additional Settings
+    // ========================================================================
+
+    // Profile & Startup
+    'profile.picker_availability_on_startup': 1,  // 1 = disabled
+
+    // Cloud & Auth
+    'auth.cloud_ap_auth.enabled': false,
+
+    // Developer Tools
+    'devtools.availability': 1,  // 1 = always available
+
+    // Extensions
+    'extensions.ui.developer_mode': true,
+    'extensions.unpublished_availability': 1,  // 1 = enabled
+    'extensions.block_external_extensions': false,
+
+    // Feedback & Sync
+    'feedback_allowed': false,
+    'sync.managed': true  // true = sync disabled/managed
   };
 
   // ============================================================================

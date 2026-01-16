@@ -8,7 +8,6 @@
     - Checks for and applies Comet updates
     - Checks for extension updates from their update URLs
     - Extracts and patches extensions and resources.pak as needed
-    - Applies Windows registry policies
     - Launches Comet with privacy enhancements
 
 .PARAMETER Config
@@ -1541,75 +1540,6 @@ function Initialize-PakModifications {
 
 #endregion
 
-#region Registry Policies
-
-function Set-RegistryPolicies {
-    <#
-    .SYNOPSIS
-        Apply Windows registry policies for Chromium.
-    #>
-    param(
-        [object]$RegistryConfig,
-        [switch]$DryRunMode
-    )
-
-    if (-not $RegistryConfig) {
-        return
-    }
-
-    $regPath = $RegistryConfig.path -replace '^HKCU:\\', 'HKCU:\'
-
-    Write-Status "Registry path: $regPath" -Type Detail
-
-    if ($DryRunMode) {
-        Write-Status "Would apply $($RegistryConfig.policies.PSObject.Properties.Count) policies" -Type Detail
-        return
-    }
-
-    try {
-        # Create key if needed
-        if (-not (Test-Path $regPath)) {
-            New-Item -Path $regPath -Force | Out-Null
-        }
-
-        # Apply policies
-        $policyCount = 0
-        foreach ($property in $RegistryConfig.policies.PSObject.Properties) {
-            Set-ItemProperty -Path $regPath -Name $property.Name -Value $property.Value -Type DWord -Force
-            $policyCount++
-        }
-
-        Write-Status "Applied $policyCount policies" -Type Detail
-
-        # Apply subkeys
-        if ($RegistryConfig.subkeys) {
-            foreach ($subkeyProp in $RegistryConfig.subkeys.PSObject.Properties) {
-                $subkeyPath = Join-Path $regPath $subkeyProp.Name
-
-                if (-not (Test-Path $subkeyPath)) {
-                    New-Item -Path $subkeyPath -Force | Out-Null
-                }
-
-                $i = 1
-                foreach ($val in $subkeyProp.Value) {
-                    Set-ItemProperty -Path $subkeyPath -Name $i.ToString() -Value $val -Type String -Force
-                    $i++
-                }
-
-                Write-Status "Applied subkey: $($subkeyProp.Name)" -Type Detail
-            }
-        }
-
-        return $true
-    }
-    catch {
-        Write-Status "Registry error: $_ (may need admin rights)" -Type Warning
-        return $false
-    }
-}
-
-#endregion
-
 #region Browser Launch
 
 function Build-BrowserCommand {
@@ -2017,19 +1947,6 @@ function Main {
         $ublockPath = $null
     }
 
-    # ═══════════════════════════════════════════════════════════════
-    # Step 6: Registry Policies
-    # ═══════════════════════════════════════════════════════════════
-    Write-Status "Step 6: Applying Registry Policies" -Type Step
-
-    $registrySuccess = Set-RegistryPolicies -RegistryConfig $config.registry -DryRunMode:$DryRun
-    if ($registrySuccess) {
-        Write-Status "Registry policies applied" -Type Success
-    }
-    else {
-        Write-Status "Registry policies skipped (non-critical)" -Type Detail
-    }
-
     # Save state
     if (-not $DryRun) {
         $state.last_update_check = (Get-Date).ToString("o")
@@ -2040,16 +1957,16 @@ function Main {
     }
 
     # ═══════════════════════════════════════════════════════════════
-    # Step 7: Launch Browser
+    # Step 6: Launch Browser
     # ═══════════════════════════════════════════════════════════════
     if ($NoLaunch) {
-        Write-Status "Step 7: Skipping Launch (NoLaunch specified)" -Type Step
+        Write-Status "Step 6: Skipping Launch (NoLaunch specified)" -Type Step
         Write-Host ""
         Write-Status "Setup complete. Run without -NoLaunch to start browser." -Type Success
         return
     }
 
-    Write-Status "Step 7: Launching Browser" -Type Step
+    Write-Status "Step 6: Launching Browser" -Type Step
 
     if (-not $comet -and -not $DryRun) {
         Write-Status "Cannot launch - Comet not installed" -Type Error

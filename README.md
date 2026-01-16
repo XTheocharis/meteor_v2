@@ -16,7 +16,7 @@ A privacy-focused enhancement system for the Comet browser (Chromium-based by Pe
 
 ```
 LAYER 0: STATIC (PAK)     - Modified resources.pak with disabled telemetry defaults
-LAYER 1: LAUNCH (FLAGS)   - Privacy-focused Chromium flags + registry policies
+LAYER 1: LAUNCH (FLAGS)   - Privacy-focused Chromium flags (156 disabled, 10 enabled features)
 LAYER 2: SOURCE (EXT)     - Modified perplexity extension with DNR rules
 LAYER 3: CONTENT (STUBS)  - SDK stubs injected before CDN scripts load
 LAYER 4: NETWORK (DNR)    - 16 declarative net request blocking rules
@@ -39,7 +39,6 @@ LAYER 7: REDIRECT (URLs)  - Force remote perplexity.ai URLs instead of chrome-ex
 # - Downloads Comet browser if not installed
 # - Extracts and patches extensions
 # - Downloads uBlock Origin
-# - Applies registry policies
 # - Launches browser with all enhancements
 .\meteor.ps1
 ```
@@ -50,15 +49,14 @@ That's it. Meteor automatically:
 3. Extracts CRX extensions from Comet's `default_apps/`
 4. Applies Meteor patches (DNR rules, content scripts, preferences)
 5. Downloads uBlock Origin MV2
-6. Applies Windows registry privacy policies
-7. Launches browser with 100+ disabled telemetry features
+6. Launches browser with 156 disabled Chromium features
 
 ### Options
 
 ```powershell
 .\meteor.ps1                  # Full automated workflow
 .\meteor.ps1 -DryRun          # Show what would be done without making changes
-.\meteor.ps1 -Force           # Force re-setup even if files haven't changed
+.\meteor.ps1 -Force           # Force re-setup (stops running Comet, clears CRX caches)
 .\meteor.ps1 -NoLaunch        # Run setup only, don't launch browser
 .\meteor.ps1 -Verbose         # Enable verbose output (PowerShell common parameter)
 .\meteor.ps1 -Config path.json # Use alternate configuration file
@@ -118,23 +116,6 @@ Edit `config.json` to customize:
 ```
 - `install_path`: Custom path to Comet executable (leave empty for auto-detection)
 
-### Windows Registry Policies
-```json
-{
-  "registry": {
-    "policies": {
-      "SafeBrowsingProtectionLevel": 0,
-      "PrivacySandboxPromptEnabled": 0
-    }
-  }
-}
-```
-
-### Force-Installed Extensions
-These extensions are installed via registry policy (`ExtensionInstallForcelist`):
-- **uBlock Origin** - Ad blocker (from Microsoft Edge Add-ons)
-- **AdGuard Extra** - Bypasses anti-adblock scripts (from Chrome Web Store)
-
 ### Paths
 ```json
 {
@@ -150,6 +131,18 @@ These extensions are installed via registry policy (`ExtensionInstallForcelist`)
 - `ublock`: Output directory for uBlock Origin
 - `state_file`: Path to Meteor state file (tracks file hashes for change detection)
 - `patches`: Source directory for Meteor patch files
+
+### Extensions
+```json
+{
+  "extensions": {
+    "check_updates": true,
+    "sources": ["perplexity", "comet_web_resources", "agents"]
+  }
+}
+```
+- `check_updates`: Auto-check for extension updates from their update URLs
+- `sources`: Extensions to extract and patch from Comet's `default_apps/` (supports `.crx` and `.crx.disabled`)
 
 ## MCP API
 
