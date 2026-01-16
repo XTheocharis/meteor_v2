@@ -11,6 +11,6 @@
     ExcludeRules = @(
         'PSAvoidUsingWriteHost'        # Intentional for CLI output
         'PSUseSingularNouns'           # Would be breaking changes to rename
-        'PSUseBOMForUnicodeEncodedFile' # BOM can cause issues with some tools
+        # PSUseBOMForUnicodeEncodedFile - ENABLED: Required for PS 5.1 with Unicode chars
     )
 }
