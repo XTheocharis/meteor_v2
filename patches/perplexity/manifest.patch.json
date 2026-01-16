@@ -1,0 +1,31 @@
+{
+  "$comment": "Manifest modifications to apply to perplexity/manifest.json",
+  "add": {
+    "declarative_net_request": {
+      "rule_resources": [{
+        "id": "meteor_telemetry",
+        "enabled": true,
+        "path": "rules/telemetry.json"
+      }]
+    },
+    "content_scripts": [
+      {
+        "matches": [
+          "https://www.perplexity.ai/*",
+          "https://perplexity.ai/*",
+          "chrome-extension://mjdcklhepheaaemphcopihnmjlmjpcnh/*",
+          "comet-extension://mjdcklhepheaaemphcopihnmjlmjpcnh/*"
+        ],
+        "js": ["content/sdk-neutralizer.js", "content/feature-flags.js"],
+        "run_at": "document_start",
+        "world": "MAIN",
+        "all_frames": true
+      }
+    ]
+  },
+  "notes": {
+    "permissions": "The perplexity extension already has 'declarativeNetRequest' permission (manifest line 40)",
+    "world": "Content scripts run in MAIN world to intercept before CDN scripts load",
+    "service_worker_loader": "Also modify service-worker-loader.js to add: import './meteor-prefs.js';"
+  }
+}

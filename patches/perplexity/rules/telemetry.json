@@ -1,0 +1,147 @@
+[
+  {
+    "id": 1,
+    "priority": 1,
+    "action": { "type": "block" },
+    "condition": {
+      "urlFilter": "||browser-intake-datadoghq.com",
+      "resourceTypes": ["xmlhttprequest", "ping", "other", "main_frame", "sub_frame", "script"]
+    }
+  },
+  {
+    "id": 2,
+    "priority": 1,
+    "action": { "type": "block" },
+    "condition": {
+      "urlFilter": "||sdk-api-v1.singular.net",
+      "resourceTypes": ["xmlhttprequest", "ping", "other", "script", "image"]
+    }
+  },
+  {
+    "id": 3,
+    "priority": 1,
+    "action": { "type": "block" },
+    "condition": {
+      "urlFilter": "||fscdn.eppo.cloud",
+      "resourceTypes": ["xmlhttprequest", "ping", "other", "script"]
+    }
+  },
+  {
+    "id": 4,
+    "priority": 1,
+    "action": { "type": "block" },
+    "condition": {
+      "urlFilter": "||fs-edge-assignment.eppo.cloud",
+      "resourceTypes": ["xmlhttprequest", "ping", "other", "script"]
+    }
+  },
+  {
+    "id": 5,
+    "priority": 1,
+    "action": { "type": "block" },
+    "condition": {
+      "urlFilter": "||irontail.perplexity.ai",
+      "resourceTypes": ["xmlhttprequest", "ping", "other", "script"]
+    }
+  },
+  {
+    "id": 6,
+    "priority": 1,
+    "action": { "type": "block" },
+    "condition": {
+      "urlFilter": "/rest/event/analytics",
+      "resourceTypes": ["xmlhttprequest", "ping", "other"]
+    }
+  },
+  {
+    "id": 7,
+    "priority": 1,
+    "action": { "type": "block" },
+    "condition": {
+      "urlFilter": "/cdn-cgi/trace",
+      "resourceTypes": ["xmlhttprequest", "ping", "other", "script"]
+    }
+  },
+  {
+    "id": 8,
+    "priority": 1,
+    "action": { "type": "block" },
+    "condition": {
+      "urlFilter": "/api/intercom",
+      "resourceTypes": ["xmlhttprequest", "ping", "other"]
+    }
+  },
+  {
+    "id": 9,
+    "priority": 1,
+    "action": { "type": "block" },
+    "condition": {
+      "urlFilter": "||api.mixpanel.com",
+      "resourceTypes": ["xmlhttprequest", "ping", "other", "script"]
+    }
+  },
+  {
+    "id": 10,
+    "priority": 1,
+    "action": { "type": "block" },
+    "condition": {
+      "urlFilter": ".ingest.sentry.io",
+      "resourceTypes": ["xmlhttprequest", "ping", "other", "script"]
+    }
+  },
+  {
+    "id": 11,
+    "priority": 1,
+    "action": { "type": "block" },
+    "condition": {
+      "urlFilter": "singular-sdk",
+      "initiatorDomains": ["perplexity.ai", "pplx-next-static-public.perplexity.ai"],
+      "resourceTypes": ["script"]
+    }
+  },
+  {
+    "id": 12,
+    "priority": 1,
+    "action": { "type": "block" },
+    "condition": {
+      "urlFilter": "/rest/attribution/",
+      "resourceTypes": ["xmlhttprequest", "ping", "other"]
+    }
+  },
+  {
+    "id": 13,
+    "priority": 1,
+    "action": { "type": "block" },
+    "condition": {
+      "urlFilter": "/rest/homepage-widgets/upsell/interacted",
+      "resourceTypes": ["xmlhttprequest", "ping", "other"]
+    }
+  },
+  {
+    "id": 14,
+    "priority": 1,
+    "action": { "type": "block" },
+    "condition": {
+      "urlFilter": "/rest/ntp/upsell/interacted",
+      "resourceTypes": ["xmlhttprequest", "ping", "other"]
+    }
+  },
+  {
+    "id": 15,
+    "priority": 1,
+    "action": { "type": "block" },
+    "condition": {
+      "urlFilter": "/rest/autosuggest/track-query-clicked",
+      "resourceTypes": ["xmlhttprequest", "ping", "other"]
+    }
+  },
+  {
+    "id": 16,
+    "priority": 1,
+    "action": { "type": "block" },
+    "condition": {
+      "urlFilter": "/rest/live-events/subscription",
+      "resourceTypes": ["xmlhttprequest", "ping", "other"]
+    }
+  }
+]
