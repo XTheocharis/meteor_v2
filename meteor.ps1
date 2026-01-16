@@ -1292,8 +1292,8 @@ function Initialize-PatchedExtensions {
         Export-CrxToDirectory -CrxPath $crx.FullName -OutputDir $extOutputDir -InjectKey
         Write-Status "Extracted to: $extOutputDir" -Type Detail
 
-        # Apply patches if configured
-        if ($PatchConfig.$extName) {
+        # Apply patches if configured (check property exists to avoid StrictMode error)
+        if ($PatchConfig.PSObject.Properties[$extName]) {
             $config = $PatchConfig.$extName
 
             # Copy additional files
