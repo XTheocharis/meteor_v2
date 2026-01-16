@@ -848,13 +848,18 @@ function Get-ExtensionUpdateInfo {
         $ns = @{ g = "http://www.google.com/update2/response" }
         $app = Select-Xml -Xml $xml -XPath "//g:app[@appid='$ExtensionId']" -Namespace $ns
 
-        if ($app) {
+        if ($app -and $app.Node) {
             # Access updatecheck child directly - works in both PS 5.1 and 7
             $node = $app.Node.updatecheck
-            if ($node -and $node.version -and $node.codebase) {
-                return @{
-                    Version  = $node.version
-                    Codebase = $node.codebase
+            if ($node) {
+                # Use PSObject.Properties to avoid StrictMode errors
+                $hasVersion = $node.PSObject.Properties['version']
+                $hasCodebase = $node.PSObject.Properties['codebase']
+                if ($hasVersion -and $hasCodebase) {
+                    return @{
+                        Version  = $node.version
+                        Codebase = $node.codebase
+                    }
                 }
             }
         }
