@@ -60,7 +60,7 @@ $ErrorActionPreference = "Stop"
 
 $script:MeteorVersion = "2.0.0"
 $script:UserAgent = "Meteor/$script:MeteorVersion"
-$script:ExtensionKeyFile = Join-Path $PSScriptRoot ".meteor" "extension-key.pem"
+$script:ExtensionKeyFile = Join-Path (Join-Path $PSScriptRoot ".meteor") "extension-key.pem"
 
 #endregion
 
