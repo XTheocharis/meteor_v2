@@ -1140,32 +1140,39 @@ function Get-UBlockOrigin {
             Write-Status "Update check failed: $_" -Type Warning
         }
 
+        $needsDownload = $true
+        $latestVersion = $null
+
         if (-not $updateInfo -or -not $updateInfo.Codebase) {
             if ($currentVersion) {
                 Write-Status "Could not check for updates, using existing installation ($currentVersion)" -Type Warning
-                return $OutputDir
-            }
-            # Try direct download URL as fallback
-            Write-Status "Update check failed, trying direct download..." -Type Warning
-            $updateInfo = @{
-                Version  = "unknown"
-                Codebase = "$updateUrl`?id=$extensionId&uc"
-            }
-        }
-
-        $latestVersion = $updateInfo.Version
-        Write-Status "Latest version: $latestVersion" -Type Detail
-
-        # Compare versions if already installed
-        $needsDownload = $true
-        if ($currentVersion) {
-            $comparison = Compare-Versions -Version1 $latestVersion -Version2 $currentVersion
-            if ($comparison -le 0) {
-                Write-Status "uBlock Origin is up to date ($currentVersion)" -Type Success
                 $needsDownload = $false
+                $latestVersion = $currentVersion
             }
             else {
-                Write-Status "Update available: $currentVersion -> $latestVersion" -Type Info
+                # Try direct download URL as fallback
+                Write-Status "Update check failed, trying direct download..." -Type Warning
+                $updateInfo = @{
+                    Version  = "unknown"
+                    Codebase = "$updateUrl`?id=$extensionId&uc"
+                }
+                $latestVersion = $updateInfo.Version
+            }
+        }
+        else {
+            $latestVersion = $updateInfo.Version
+            Write-Status "Latest version: $latestVersion" -Type Detail
+
+            # Compare versions if already installed
+            if ($currentVersion) {
+                $comparison = Compare-Versions -Version1 $latestVersion -Version2 $currentVersion
+                if ($comparison -le 0) {
+                    Write-Status "uBlock Origin is up to date ($currentVersion)" -Type Success
+                    $needsDownload = $false
+                }
+                else {
+                    Write-Status "Update available: $currentVersion -> $latestVersion" -Type Info
+                }
             }
         }
 
