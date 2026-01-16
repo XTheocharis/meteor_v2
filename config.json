@@ -47,6 +47,7 @@
       "ExtensionManifestV2DeprecationWarning",
       "ExtensionManifestV2Disabled",
       "ExtensionManifestV2Unsupported",
+      "extension-disable-unsupported-developer-mode-extensions",
       "PromptApiForGeminiNanoMultimodalInput",
       "OptimizationGuideOnDeviceModel",
       "TextSafetyClassifier",
