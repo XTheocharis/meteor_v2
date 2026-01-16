@@ -1871,12 +1871,13 @@ function Main {
             if (Test-Path $crxCachePath) {
                 $cacheFiles = Get-ChildItem -Path $crxCachePath -File -ErrorAction SilentlyContinue
                 if ($cacheFiles) {
+                    $cacheCount = $cacheFiles.Count
                     if ($DryRun) {
-                        Write-Status "Would clear CRX cache ($($cacheFiles.Count) files)" -Type DryRun
+                        Write-Status "Would clear CRX cache ($cacheCount files)" -Type DryRun
                     }
                     else {
                         Remove-Item -Path "$crxCachePath\*" -Force -ErrorAction SilentlyContinue
-                        Write-Status "Cleared CRX cache ($($cacheFiles.Count) files)" -Type Detail
+                        Write-Status "Cleared CRX cache ($cacheCount files)" -Type Detail
                     }
                 }
             }
