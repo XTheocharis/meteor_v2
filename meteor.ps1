@@ -1441,7 +1441,6 @@ function Initialize-PakModifications {
         # Get resource bytes
         $resourceBytes = Get-PakResource -Pak $pak -ResourceId $resourceId
         if ($null -eq $resourceBytes) { continue }
-        if ($resourceBytes.Count -eq 0) { continue }
 
         # Try to decode as UTF-8 text (skip binary resources)
         try {
