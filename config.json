@@ -162,9 +162,7 @@
             {
               "matches": [
                 "https://www.perplexity.ai/*",
-                "https://perplexity.ai/*",
-                "chrome-extension://mjdcklhepheaaemphcopihnmjlmjpcnh/*",
-                "comet-extension://mjdcklhepheaaemphcopihnmjlmjpcnh/*"
+                "https://perplexity.ai/*"
               ],
               "js": ["content/content-script.js"],
               "run_at": "document_start",
