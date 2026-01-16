@@ -1196,21 +1196,117 @@ function Get-UBlockOrigin {
             $manifest | ConvertTo-Json -Depth 20 | Set-Content -Path $manifestPath -Encoding UTF8
         }
 
-        # Apply defaults if configured
+        # Apply defaults if configured - using auto-import approach
         if ($UBlockConfig.defaults) {
-            $assetsUser = Join-Path $OutputDir "assets\user"
-            if (-not (Test-Path $assetsUser)) {
-                New-Item -Path $assetsUser -ItemType Directory -Force | Out-Null
+            # Save settings file that auto-import.js will load
+            $settingsPath = Join-Path $OutputDir "ublock-settings.json"
+            $UBlockConfig.defaults | ConvertTo-Json -Depth 20 | Set-Content -Path $settingsPath -Encoding UTF8
+
+            # Get custom filter lists for the auto-import check
+            $customLists = $UBlockConfig.defaults.selectedFilterLists | Where-Object { $_ -match '^https?://' }
+            $customListsJson = $customLists | ConvertTo-Json -Compress
+
+            # Create auto-import.js that applies settings on first run
+            $jsDir = Join-Path $OutputDir "js"
+            $autoImportPath = Join-Path $jsDir "auto-import.js"
+            $autoImportCode = @"
+/*******************************************************************************
+
+    Meteor - Auto-import custom defaults on first run
+
+*******************************************************************************/
+
+import µb from './background.js';
+import io from './assets.js';
+
+/******************************************************************************/
+
+const customFilterLists = $customListsJson;
+
+const checkAndImport = async () => {
+    try {
+        await µb.isReadyPromise;
+
+        const stored = await vAPI.storage.get(['lastRestoreFile', 'importedLists']);
+
+        if (stored.lastRestoreFile === 'meteor-auto-import') {
+            console.log('[Meteor] uBlock settings already imported, skipping');
+            return;
+        }
+
+        const importedLists = stored.importedLists || [];
+        const allPresent = customFilterLists.every(url => importedLists.includes(url));
+
+        if (allPresent) {
+            console.log('[Meteor] Custom lists already imported, skipping');
+            return;
+        }
+
+        console.log('[Meteor] Importing uBlock settings...');
+
+        const response = await fetch('/ublock-settings.json');
+        if (!response.ok) {
+            console.error('[Meteor] Failed to load ublock-settings.json');
+            return;
+        }
+
+        const userData = await response.json();
+
+        console.log('[Meteor] Applying uBlock settings...');
+
+        io.rmrf();
+
+        await vAPI.storage.set({
+            ...userData.userSettings,
+            netWhitelist: userData.whitelist || [],
+            dynamicFilteringString: userData.dynamicFilteringString || '',
+            urlFilteringString: userData.urlFilteringString || '',
+            hostnameSwitchesString: userData.hostnameSwitchesString || '',
+            lastRestoreFile: 'meteor-auto-import',
+            lastRestoreTime: Date.now()
+        });
+
+        if (userData.userFilters) {
+            await µb.saveUserFilters(userData.userFilters);
+        }
+
+        if (Array.isArray(userData.selectedFilterLists)) {
+            await µb.saveSelectedFilterLists(userData.selectedFilterLists);
+        }
+
+        console.log('[Meteor] uBlock settings applied, restarting...');
+
+        vAPI.app.restart();
+
+    } catch (ex) {
+        console.error('[Meteor] Error importing uBlock settings:', ex);
+    }
+};
+
+setTimeout(checkAndImport, 3000);
+
+/******************************************************************************/
+"@
+            Set-Content -Path $autoImportPath -Value $autoImportCode -Encoding UTF8
+
+            # Patch start.js to import auto-import.js
+            $startJsPath = Join-Path $jsDir "start.js"
+            if (Test-Path $startJsPath) {
+                $startContent = Get-Content -Path $startJsPath -Raw
+                if ($startContent -notmatch "import './auto-import.js';") {
+                    # Find last import statement and add our import after it
+                    $importPattern = "(import .+ from .+;)\n"
+                    $importMatches = [regex]::Matches($startContent, $importPattern)
+                    if ($importMatches.Count -gt 0) {
+                        $lastMatch = $importMatches[$importMatches.Count - 1]
+                        $insertPos = $lastMatch.Index + $lastMatch.Length
+                        $newContent = $startContent.Substring(0, $insertPos) + "import './auto-import.js';`n" + $startContent.Substring($insertPos)
+                        Set-Content -Path $startJsPath -Value $newContent -Encoding UTF8 -NoNewline
+                    }
+                }
             }
 
-            if ($UBlockConfig.defaults.userFilters) {
-                $userFilters = Join-Path $assetsUser "filters.txt"
-                Set-Content -Path $userFilters -Value $UBlockConfig.defaults.userFilters -Encoding UTF8
-            }
-
-            # Save full defaults
-            $defaultsPath = Join-Path $OutputDir "meteor-defaults.json"
-            $UBlockConfig.defaults | ConvertTo-Json -Depth 10 | Set-Content -Path $defaultsPath -Encoding UTF8
+            Write-Status "uBlock auto-import configured" -Type Detail
         }
 
         if ($currentVersion) {
