@@ -828,9 +828,9 @@ function Get-ExtensionUpdateInfo {
         $app = Select-Xml -Xml $xml -XPath "//g:app[@appid='$ExtensionId']" -Namespace $ns
 
         if ($app) {
-            $updateCheck = $app.Node.SelectSingleNode("g:updatecheck", $xml.CreateNavigator().GetNamespacesInScope([System.Xml.XmlNamespaceScope]::All))
-            if ($updateCheck -or $app.Node.updatecheck) {
-                $node = if ($updateCheck) { $updateCheck } else { $app.Node.updatecheck }
+            # Access updatecheck child directly - works in both PS 5.1 and 7
+            $node = $app.Node.updatecheck
+            if ($node -and $node.version -and $node.codebase) {
                 return @{
                     Version  = $node.version
                     Codebase = $node.codebase
