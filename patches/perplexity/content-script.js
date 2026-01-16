@@ -72,6 +72,34 @@
   // SINGULAR ANALYTICS STUB
   // --------------------------------------------------------------------------
 
+  // SingularConfig class stub - must be a proper constructor
+  class SingularConfigStub {
+    constructor(apiKey, secretKey, productId) {
+      this.apiKey = apiKey;
+      this.secretKey = secretKey;
+      this.productId = productId;
+      this._customUserId = null;
+    }
+    withCustomUserId(userId) {
+      this._customUserId = userId;
+      return this;
+    }
+    withSessionIdleTimeout() { return this; }
+    withAutoPersistentSingularDeviceId() { return this; }
+    withSkipSingularLinkResolution() { return this; }
+    withWaitForTrackingAuthorizationTimeout() { return this; }
+    withGlobalProperty() { return this; }
+    withSingularLinks() { return this; }
+    withSupportedDomains() { return this; }
+    withInitFinishedCallback() { return this; }
+    withSessionTimeoutCallback() { return this; }
+    withShortLinkResolveTimeout() { return this; }
+    withLogLevel() { return this; }
+    toParams() { return {}; }
+  }
+
+  window.SingularConfig = SingularConfigStub;
+
   window.singularSdk = {
     init: () => {},
     event: () => {},
@@ -84,7 +112,13 @@
     unsetGlobalProperty: () => {},
     clearGlobalProperties: () => {},
     buildWebToAppLink: () => '',
-    openApp: () => {}
+    openApp: () => {},
+    // Additional methods that might be called
+    pageVisit: () => {},
+    setGlobalProperties: () => {},
+    getGlobalProperties: () => ({}),
+    getSingularDeviceId: () => '',
+    getWebUrl: () => ''
   };
 
   // --------------------------------------------------------------------------
@@ -343,8 +377,62 @@
   // --------------------------------------------------------------------------
 
   const originalFetch = window.fetch;
+
+  // Stub module for Singular SDK - exported as 's' to match bundler convention
+  const SINGULAR_STUB_MODULE = `
+    export const s = {
+      SingularConfig: class SingularConfig {
+        constructor(apiKey, secretKey, productId) {
+          this.apiKey = apiKey;
+          this.secretKey = secretKey;
+          this.productId = productId;
+        }
+        withCustomUserId(userId) { return this; }
+        withSessionIdleTimeout() { return this; }
+        withAutoPersistentSingularDeviceId() { return this; }
+        withSkipSingularLinkResolution() { return this; }
+        withWaitForTrackingAuthorizationTimeout() { return this; }
+        withGlobalProperty() { return this; }
+        withSingularLinks() { return this; }
+        withSupportedDomains() { return this; }
+        withInitFinishedCallback() { return this; }
+        withSessionTimeoutCallback() { return this; }
+        withShortLinkResolveTimeout() { return this; }
+        withLogLevel() { return this; }
+        toParams() { return {}; }
+      },
+      singularSdk: {
+        init: () => {},
+        event: () => {},
+        revenue: () => {},
+        setCustomUserId: () => {},
+        unsetCustomUserId: () => {},
+        setDeviceCustomUserId: () => {},
+        unsetDeviceCustomUserId: () => {},
+        setGlobalProperty: () => {},
+        unsetGlobalProperty: () => {},
+        clearGlobalProperties: () => {},
+        buildWebToAppLink: () => '',
+        openApp: () => {},
+        pageVisit: () => {},
+        setGlobalProperties: () => {},
+        getGlobalProperties: () => ({}),
+        getSingularDeviceId: () => '',
+        getWebUrl: () => ''
+      }
+    };
+  `;
+
   window.fetch = function(input, init) {
     const url = getUrlString(input);
+
+    // Intercept Singular SDK script requests with stub module
+    if (url.includes('singular-sdk') && url.endsWith('.js')) {
+      return Promise.resolve(new Response(SINGULAR_STUB_MODULE, {
+        status: 200,
+        headers: { 'Content-Type': 'application/javascript', 'X-Meteor-Intercepted': 'singular' }
+      }));
+    }
 
     // Intercept Eppo SDK requests with mock config
     if (isEppoEndpoint(url)) {
