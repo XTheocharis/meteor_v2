@@ -242,8 +242,13 @@
     }
   });
 
-  // Intercept new tab creation
+  // Intercept new tab creation - but only if there's no pending navigation
+  // (browser menus create tabs briefly with empty URL before navigating)
   chrome.tabs.onCreated.addListener((tab) => {
+    // Skip if there's a pending navigation (e.g., from browser menu action)
+    if (tab.pendingUrl && tab.pendingUrl !== 'chrome://newtab/' && tab.pendingUrl !== 'comet://newtab/') {
+      return;
+    }
     if (!tab.url || tab.url === 'chrome://newtab/' || tab.url === 'comet://newtab/' || tab.url === '') {
       chrome.tabs.update(tab.id, { url: REMOTE_URLS.home });
     }
