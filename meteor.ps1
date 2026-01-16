@@ -1973,6 +1973,24 @@ function Main {
         exit 1
     }
 
+    # CRITICAL: Stop any running Comet processes before launching
+    # Chromium ignores command-line flags when an instance is already running -
+    # it just signals the existing process to open a new window. This means
+    # --no-first-run, --disable-features, etc. would all be ignored.
+    $cometProcesses = Get-Process -Name "comet" -ErrorAction SilentlyContinue
+    if ($cometProcesses) {
+        if ($DryRun) {
+            Write-Status "Would stop $($cometProcesses.Count) running Comet process(es) to apply flags" -Type DryRun
+        }
+        else {
+            Write-Status "Stopping running Comet to apply command-line flags..." -Type Warning
+            Write-Status "(Chromium ignores flags when browser is already running)" -Type Detail
+            $cometProcesses | Stop-Process -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Milliseconds 1000  # Wait for processes to fully exit
+            Write-Status "Comet stopped - will relaunch with privacy flags" -Type Success
+        }
+    }
+
     if ($comet -or $DryRun) {
         $browserExe = if ($comet) { $comet.Executable } else { "comet.exe" }
         $cmd = Build-BrowserCommand -Config $config -BrowserExe $browserExe -ExtPath $patchedExtPath -UBlockPath $ublockPath
