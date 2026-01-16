@@ -146,6 +146,26 @@ function Resolve-MeteorPath {
 
 #region State Management
 
+function ConvertTo-Hashtable {
+    # Convert PSCustomObject to hashtable (PS 5.1 compatibility)
+    param([object]$InputObject)
+
+    if ($InputObject -is [System.Collections.IEnumerable] -and $InputObject -isnot [string]) {
+        $collection = @(foreach ($item in $InputObject) { ConvertTo-Hashtable $item })
+        return $collection
+    }
+    elseif ($InputObject -is [PSCustomObject]) {
+        $hash = @{}
+        foreach ($prop in $InputObject.PSObject.Properties) {
+            $hash[$prop.Name] = ConvertTo-Hashtable $prop.Value
+        }
+        return $hash
+    }
+    else {
+        return $InputObject
+    }
+}
+
 function Get-MeteorState {
     param([string]$StatePath)
 
@@ -160,7 +180,8 @@ function Get-MeteorState {
     }
 
     $content = Get-Content -Path $StatePath -Raw -Encoding UTF8
-    return $content | ConvertFrom-Json -AsHashtable
+    $json = $content | ConvertFrom-Json
+    return ConvertTo-Hashtable $json
 }
 
 function Save-MeteorState {
