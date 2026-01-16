@@ -20,6 +20,22 @@ Meteor v2 is a privacy-focused enhancement system for the Comet browser (Chromiu
 .\meteor.ps1 -Verbose         # Enable verbose output (PowerShell common parameter)
 ```
 
+### Linting & Formatting
+```powershell
+# Lint with PS 5.1 compatibility checking (uses PSScriptAnalyzerSettings.psd1)
+Invoke-ScriptAnalyzer -Path .\meteor.ps1 -Settings .\PSScriptAnalyzerSettings.psd1
+
+# Format code
+$content = Get-Content .\meteor.ps1 -Raw
+Invoke-Formatter -ScriptDefinition $content | Set-Content .\meteor.ps1
+```
+
+### Manual Verification (after launch)
+1. **MCP UI**: Settings > Connectors should show "Custom Connector" button
+2. **uBlock**: Popup should show blocking statistics
+3. **Telemetry**: DevTools Network tab should show no requests to datadoghq.com, sentry.io, etc.
+4. **New Tab**: Should open https://www.perplexity.ai/b/home
+
 ## Architecture
 
 The system uses 8 layers (0-7), all managed by `meteor.ps1` and configured in `config.json`:
@@ -87,26 +103,12 @@ When you run `.\meteor.ps1`, it performs these steps automatically:
 
 ## Configuration
 
-Edit `config.json` to customize:
-
-- `comet.download_url`: URL to download Comet installer
-- `comet.install_path`: Custom Comet installation path (leave empty for auto-detection)
-- `comet.auto_update`: Enable/disable automatic update checking
-- `browser.profile`: Browser profile to use (default: "Default")
-- `browser.flags`: Command-line flags for browser
-- `browser.enable_features`: Chromium features to enable (MV2 extensions, privacy)
-- `browser.disable_features`: Chromium features to disable (100+ by default)
-- `extensions.sources`: Extensions to load (`perplexity`, `comet_web_resources`, `agents`)
-- `extensions.patch_config`: Per-extension patching configuration (currently only `perplexity` is patched; others pass through unmodified)
-- `pak_modifications`: Text replacements for resources.pak
-- `ublock.enabled`: Enable/disable uBlock Origin
-- `ublock.defaults`: uBlock filter lists (41 lists) and settings, including `userFilters` with Meteor-specific telemetry blocking rules
-- `registry.policies`: Windows registry policies
-- `registry.subkeys.ExtensionInstallForcelist`: Force-installed extensions (uBlock Origin, AdGuard Extra)
-- `paths.patched_extensions`: Output directory for patched extensions
-- `paths.ublock`: Output directory for uBlock Origin
-- `paths.state_file`: Path to Meteor state file for change detection
-- `paths.patches`: Source directory for patch files
+All settings are in `config.json`. Key sections:
+- `browser.flags/enable_features/disable_features`: Chromium launch configuration
+- `extensions.patch_config.perplexity`: Patching rules for the perplexity extension
+- `pak_modifications`: Regex replacements for resources.pak
+- `ublock.defaults`: Filter lists and settings (41 lists + custom telemetry rules)
+- `registry.policies`: Windows registry privacy policies
 
 ## Critical Rules for Changes
 

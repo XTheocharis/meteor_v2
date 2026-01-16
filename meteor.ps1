@@ -74,12 +74,12 @@ function Write-Status {
     )
 
     switch ($Type) {
-        "Info"    { Write-Host "[*] $Message" -ForegroundColor Cyan }
+        "Info" { Write-Host "[*] $Message" -ForegroundColor Cyan }
         "Success" { Write-Host "[+] $Message" -ForegroundColor Green }
         "Warning" { Write-Host "[!] $Message" -ForegroundColor Yellow }
-        "Error"   { Write-Host "[!] $Message" -ForegroundColor Red }
-        "Detail"  { Write-Host "    -> $Message" -ForegroundColor Gray }
-        "Step"    { Write-Host "`n=== $Message ===" -ForegroundColor Magenta }
+        "Error" { Write-Host "[!] $Message" -ForegroundColor Red }
+        "Detail" { Write-Host "    -> $Message" -ForegroundColor Gray }
+        "Step" { Write-Host "`n=== $Message ===" -ForegroundColor Magenta }
     }
 }
 
@@ -151,11 +151,11 @@ function Get-MeteorState {
 
     if (-not (Test-Path $StatePath)) {
         return @{
-            version = $script:MeteorVersion
-            comet_version = ""
-            file_hashes = @{}
+            version            = $script:MeteorVersion
+            comet_version      = ""
+            file_hashes        = @{}
             extension_versions = @{}
-            last_update_check = ""
+            last_update_check  = ""
         }
     }
 
@@ -229,11 +229,11 @@ function Read-PakFile {
     }
 
     $pak = @{
-        Version = $version
-        Encoding = $bytes[4]
+        Version   = $version
+        Encoding  = $bytes[4]
         Resources = [System.Collections.ArrayList]@()
-        Aliases = [System.Collections.ArrayList]@()
-        RawBytes = $bytes
+        Aliases   = [System.Collections.ArrayList]@()
+        RawBytes  = $bytes
     }
 
     $offset = 5
@@ -260,9 +260,9 @@ function Read-PakFile {
         $resOffset = ConvertTo-LittleEndianUInt32 -Bytes $bytes -Offset ($offset + 2)
 
         [void]$pak.Resources.Add(@{
-            Id = $resId
-            Offset = $resOffset
-        })
+                Id     = $resId
+                Offset = $resOffset
+            })
 
         $offset += 6
     }
@@ -274,9 +274,9 @@ function Read-PakFile {
             $aliasIndex = ConvertTo-LittleEndianUInt16 -Bytes $bytes -Offset ($offset + 2)
 
             [void]$pak.Aliases.Add(@{
-                Id = $aliasId
-                ResourceIndex = $aliasIndex
-            })
+                    Id            = $aliasId
+                    ResourceIndex = $aliasIndex
+                })
 
             $offset += 4
         }
@@ -460,7 +460,7 @@ function Invoke-PakModifications {
     $results = @{
         Modified = @()
         NotFound = @()
-        Errors = @()
+        Errors   = @()
     }
 
     foreach ($relativePath in $Modifications.files.PSObject.Properties.Name) {
@@ -510,7 +510,7 @@ function Invoke-PakModifications {
 
     return @{
         Modified = $modified
-        Results = $results
+        Results  = $results
     }
 }
 
@@ -832,7 +832,7 @@ function Get-ExtensionUpdateInfo {
             if ($updateCheck -or $app.Node.updatecheck) {
                 $node = if ($updateCheck) { $updateCheck } else { $app.Node.updatecheck }
                 return @{
-                    Version = $node.version
+                    Version  = $node.version
                     Codebase = $node.codebase
                 }
             }
@@ -927,7 +927,7 @@ function Get-CometInstallation {
         if ($path -and (Test-Path $path)) {
             return @{
                 Executable = $path
-                Directory = Split-Path -Parent $path
+                Directory  = Split-Path -Parent $path
             }
         }
     }
@@ -939,12 +939,13 @@ function Get-CometInstallation {
             $exe = ($whereResult -split "`n")[0].Trim()
             return @{
                 Executable = $exe
-                Directory = Split-Path -Parent $exe
+                Directory  = Split-Path -Parent $exe
             }
         }
     }
     catch {
-        # Ignore
+        # where.exe not available or failed - continue to return $null
+        $null = $_.Exception
     }
 
     return $null
@@ -1055,7 +1056,7 @@ function Test-CometUpdate {
             $comparison = Compare-Versions -Version1 $latestVersion -Version2 $CurrentVersion
             if ($comparison -gt 0) {
                 return @{
-                    Version = $latestVersion
+                    Version     = $latestVersion
                     DownloadUrl = $DownloadUrl
                 }
             }
@@ -1103,7 +1104,8 @@ function Get-UBlockOrigin {
 
     try {
         # Query update URL for latest version info (same method as other extensions)
-        $updateInfo = Get-ExtensionUpdateInfo -UpdateUrl $updateUrl -ExtensionId $extensionId -CurrentVersion ($currentVersion ?? "0.0.0")
+        $versionToCheck = if ($currentVersion) { $currentVersion } else { "0.0.0" }
+        $updateInfo = Get-ExtensionUpdateInfo -UpdateUrl $updateUrl -ExtensionId $extensionId -CurrentVersion $versionToCheck
 
         if (-not $updateInfo -or -not $updateInfo.Codebase) {
             throw "Could not get update info from Microsoft Edge Add-ons"
@@ -1384,7 +1386,8 @@ function Initialize-PakModifications {
     try {
         $pak = Read-PakFile -Path $pakPath
         Write-Status "Parsed PAK v$($pak.Version) with $($pak.Resources.Count - 1) resources" -Type Detail
-    } catch {
+    }
+    catch {
         Write-Status "Failed to parse PAK: $_" -Type Error
         return $false
     }
@@ -1407,11 +1410,11 @@ function Initialize-PakModifications {
             $content = [System.Text.Encoding]::UTF8.GetString($resourceBytes)
             # Skip if it looks like binary (has null bytes or non-printable chars)
             if ($content -match '[\x00-\x08\x0E-\x1F]') { continue }
-        } catch {
+        }
+        catch {
             continue
         }
 
-        $originalContent = $content
         $resourceModified = $false
 
         # Try each modification pattern
@@ -1438,11 +1441,13 @@ function Initialize-PakModifications {
 
         if ($DryRunMode) {
             Write-Status "Would modify resource $resourceId" -Type DryRun
-        } else {
+        }
+        else {
             $success = Set-PakResource -Pak $pak -ResourceId $resourceId -NewData $newBytes
             if ($success) {
                 $modified = $true
-            } else {
+            }
+            else {
                 Write-Status "Failed to set resource $resourceId" -Type Error
             }
         }
@@ -1460,7 +1465,8 @@ function Initialize-PakModifications {
         try {
             Write-PakFile -Pak $pak -Path $pakPath
             Write-Status "Wrote modified PAK ($($modifiedResources.Count) resources, $appliedCount modifications)" -Type Success
-        } catch {
+        }
+        catch {
             Write-Status "Failed to write PAK: $_" -Type Error
             if (Test-Path $backupPath) {
                 Copy-Item -Path $backupPath -Destination $pakPath -Force
@@ -1468,7 +1474,8 @@ function Initialize-PakModifications {
             }
             return $false
         }
-    } elseif ($appliedCount -eq 0) {
+    }
+    elseif ($appliedCount -eq 0) {
         Write-Status "PAK modifications: No matching patterns found" -Type Warning
     }
 
@@ -1627,9 +1634,9 @@ function Start-Browser {
     }
 
     $exe = $Command[0]
-    $args = $Command[1..($Command.Count - 1)]
+    $processArgs = $Command[1..($Command.Count - 1)]
 
-    $process = Start-Process -FilePath $exe -ArgumentList $args -PassThru
+    $process = Start-Process -FilePath $exe -ArgumentList $processArgs -PassThru
     return $process
 }
 
@@ -1673,7 +1680,8 @@ function Main {
         if ($cometProcesses) {
             if ($DryRun) {
                 Write-Status "Would stop $($cometProcesses.Count) running Comet process(es)" -Type DryRun
-            } else {
+            }
+            else {
                 Write-Status "Stopping $($cometProcesses.Count) running Comet process(es)..." -Type Warning
                 $cometProcesses | Stop-Process -Force -ErrorAction SilentlyContinue
                 Start-Sleep -Milliseconds 500  # Brief pause for file handles to release
@@ -1722,7 +1730,8 @@ function Main {
                     $cometVersion = Get-CometVersion -ExePath $comet.Executable
                     Write-Status "Updated to version: $cometVersion" -Type Success
                 }
-            } else {
+            }
+            else {
                 Write-Status "Would download and install Comet $($updateInfo.Version)" -Type DryRun
             }
         }
@@ -1754,7 +1763,8 @@ function Main {
                     $hash = [System.Security.Cryptography.SHA256]::Create().ComputeHash($keyBytes)
                     $idChars = $hash[0..15] | ForEach-Object { [char](97 + ($_ % 26)) }
                     -join $idChars
-                } else { $null }
+                }
+                else { $null }
 
                 $updateUrl = $manifest.update_url
                 $currentVersion = $manifest.version
@@ -1777,16 +1787,20 @@ function Main {
                                     Remove-Item -Path $tempCrx -Force -ErrorAction SilentlyContinue
                                     Write-Status "  Updated $($manifest.name) to $($extUpdate.Version)" -Type Success
                                     $extensionsUpdated = $true
-                                } catch {
+                                }
+                                catch {
                                     Write-Status "  Failed to update: $_" -Type Error
                                 }
-                            } else {
+                            }
+                            else {
                                 Write-Status "  Would download from $($extUpdate.Codebase)" -Type DryRun
                             }
-                        } else {
+                        }
+                        else {
                             Write-Status "  Up to date ($currentVersion)" -Type Detail
                         }
-                    } else {
+                    }
+                    else {
                         Write-Status "  Up to date ($currentVersion)" -Type Detail
                     }
                 }
@@ -1859,7 +1873,8 @@ function Main {
                 if ($cacheFiles) {
                     if ($DryRun) {
                         Write-Status "Would clear CRX cache ($($cacheFiles.Count) files)" -Type DryRun
-                    } else {
+                    }
+                    else {
                         Remove-Item -Path "$crxCachePath\*" -Force -ErrorAction SilentlyContinue
                         Write-Status "Cleared CRX cache ($($cacheFiles.Count) files)" -Type Detail
                     }
@@ -1885,7 +1900,7 @@ function Main {
     Write-Status "Step 5: Checking uBlock Origin" -Type Step
 
     if ($config.ublock.enabled) {
-        $ublockResult = Get-UBlockOrigin -OutputDir $ublockPath -UBlockConfig $config.ublock -DryRunMode:$DryRun
+        $null = Get-UBlockOrigin -OutputDir $ublockPath -UBlockConfig $config.ublock -DryRunMode:$DryRun
     }
     else {
         Write-Status "uBlock Origin disabled in config" -Type Detail
