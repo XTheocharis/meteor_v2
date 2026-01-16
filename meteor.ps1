@@ -1544,9 +1544,12 @@ function Set-RegistryPolicies {
                 Write-Status "Applied subkey: $($subkeyProp.Name)" -Type Detail
             }
         }
+
+        return $true
     }
     catch {
-        Write-Status "Registry error: $_" -Type Error
+        Write-Status "Registry error: $_ (may need admin rights)" -Type Warning
+        return $false
     }
 }
 
@@ -1915,8 +1918,13 @@ function Main {
     # ═══════════════════════════════════════════════════════════════
     Write-Status "Step 6: Applying Registry Policies" -Type Step
 
-    Set-RegistryPolicies -RegistryConfig $config.registry -DryRunMode:$DryRun
-    Write-Status "Registry policies applied" -Type Success
+    $registrySuccess = Set-RegistryPolicies -RegistryConfig $config.registry -DryRunMode:$DryRun
+    if ($registrySuccess) {
+        Write-Status "Registry policies applied" -Type Success
+    }
+    else {
+        Write-Status "Registry policies skipped (non-critical)" -Type Detail
+    }
 
     # Save state
     if (-not $DryRun) {
