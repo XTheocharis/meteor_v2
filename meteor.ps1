@@ -1030,6 +1030,8 @@ function Test-CometUpdate {
     }
 
     try {
+        $latestVersion = $null
+
         # Make HEAD request to get final redirect URL or Content-Disposition
         $response = Invoke-WebRequest -Uri $DownloadUrl -Method Head -UseBasicParsing -MaximumRedirection 5 -Headers @{
             "User-Agent" = $script:UserAgent
@@ -1869,8 +1871,8 @@ function Main {
             # Clear Comet's CRX cache to ensure it loads our patched extensions
             $crxCachePath = Join-Path $env:LOCALAPPDATA "Perplexity\Comet\User Data\extensions_crx_cache"
             if (Test-Path $crxCachePath) {
-                $cacheFiles = Get-ChildItem -Path $crxCachePath -File -ErrorAction SilentlyContinue
-                if ($cacheFiles) {
+                $cacheFiles = @(Get-ChildItem -Path $crxCachePath -File -ErrorAction SilentlyContinue)
+                if ($cacheFiles.Count -gt 0) {
                     $cacheCount = $cacheFiles.Count
                     if ($DryRun) {
                         Write-Status "Would clear CRX cache: $cacheCount files" -Type DryRun
