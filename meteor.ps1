@@ -1540,6 +1540,179 @@ function Initialize-PakModifications {
 
 #endregion
 
+#region Preferences Pre-seeding
+
+function Set-BrowserPreferences {
+    <#
+    .SYNOPSIS
+        Pre-seed browser Preferences file with critical settings.
+    .DESCRIPTION
+        Settings like extensions.ui.developer_mode must be set BEFORE the browser
+        loads extensions, otherwise unpacked extensions (loaded via --load-extension)
+        will fail with "requires developer mode" errors.
+
+        The service worker (meteor-prefs.js) runs too late - after startup checks.
+        This function pre-seeds the Preferences file before launch.
+    #>
+    param(
+        [string]$ProfileName = "Default",
+        [switch]$DryRunMode
+    )
+
+    # Determine User Data path
+    $userDataPaths = @(
+        (Join-Path $env:LOCALAPPDATA "Perplexity\Comet\User Data"),
+        (Join-Path $env:LOCALAPPDATA "Comet\User Data")
+    )
+
+    $userDataPath = $null
+    foreach ($path in $userDataPaths) {
+        if (Test-Path $path) {
+            $userDataPath = $path
+            break
+        }
+    }
+
+    if (-not $userDataPath) {
+        # User Data doesn't exist yet - will be created on first run
+        # Create it now so we can pre-seed Preferences
+        $userDataPath = $userDataPaths[0]
+        if (-not $DryRunMode) {
+            $null = New-Item -ItemType Directory -Path $userDataPath -Force
+        }
+    }
+
+    $profilePath = Join-Path $userDataPath $ProfileName
+    $prefsPath = Join-Path $profilePath "Preferences"
+    $firstRunPath = Join-Path $userDataPath "First Run"
+
+    if ($DryRunMode) {
+        Write-Status "Would pre-seed Preferences at: $prefsPath" -Type DryRun
+        return $true
+    }
+
+    # Ensure profile directory exists
+    if (-not (Test-Path $profilePath)) {
+        $null = New-Item -ItemType Directory -Path $profilePath -Force
+    }
+
+    # Create "First Run" sentinel file to skip first-run dialogs
+    # Chromium checks for this file's existence, not its contents
+    if (-not (Test-Path $firstRunPath)) {
+        $null = New-Item -ItemType File -Path $firstRunPath -Force
+    }
+
+    # Critical settings that must be set before startup
+    # These cannot be effectively set by meteor-prefs.js (runs too late)
+    $criticalSettings = @{
+        extensions = @{
+            ui = @{
+                developer_mode = $true
+            }
+        }
+        signin = @{
+            allowed = $false
+        }
+        sync = @{
+            managed = $true
+        }
+        browser = @{
+            show_home_button = $true
+        }
+        bookmark_bar = @{
+            show_apps_shortcut = $false
+        }
+        # Perplexity-specific settings
+        perplexity = @{
+            onboarding_completed = $true
+            metrics_allowed = $false
+        }
+    }
+
+    try {
+        $prefs = @{}
+
+        # Load existing preferences if file exists
+        if (Test-Path $prefsPath) {
+            $content = Get-Content $prefsPath -Raw -ErrorAction SilentlyContinue
+            if ($content) {
+                try {
+                    $prefs = $content | ConvertFrom-Json -AsHashtable -ErrorAction Stop
+                }
+                catch {
+                    # PowerShell 5.1 doesn't support -AsHashtable
+                    $jsonObj = $content | ConvertFrom-Json -ErrorAction Stop
+                    $prefs = Convert-PSObjectToHashtable $jsonObj
+                }
+            }
+        }
+
+        # Deep merge critical settings
+        $prefs = Merge-Hashtables -Base $prefs -Override $criticalSettings
+
+        # Write back
+        $json = $prefs | ConvertTo-Json -Depth 20 -Compress
+        Set-Content -Path $prefsPath -Value $json -Encoding UTF8 -Force
+
+        Write-Status "Browser preferences pre-seeded (developer mode enabled)" -Type Success
+        return $true
+    }
+    catch {
+        Write-Status "Failed to pre-seed preferences: $_" -Type Warning
+        return $false
+    }
+}
+
+function Convert-PSObjectToHashtable {
+    <#
+    .SYNOPSIS
+        Convert PSCustomObject to hashtable (for PS 5.1 compatibility).
+    #>
+    param([object]$Object)
+
+    if ($null -eq $Object) { return @{} }
+    if ($Object -is [hashtable]) { return $Object }
+    if ($Object -is [array]) { return @($Object | ForEach-Object { Convert-PSObjectToHashtable $_ }) }
+    if ($Object -is [PSCustomObject]) {
+        $hash = @{}
+        foreach ($prop in $Object.PSObject.Properties) {
+            $hash[$prop.Name] = Convert-PSObjectToHashtable $prop.Value
+        }
+        return $hash
+    }
+    return $Object
+}
+
+function Merge-Hashtables {
+    <#
+    .SYNOPSIS
+        Deep merge two hashtables, with Override taking precedence.
+    #>
+    param(
+        [hashtable]$Base,
+        [hashtable]$Override
+    )
+
+    if ($null -eq $Base) { $Base = @{} }
+    $result = $Base.Clone()
+
+    foreach ($key in $Override.Keys) {
+        if ($result.ContainsKey($key) -and
+            $result[$key] -is [hashtable] -and
+            $Override[$key] -is [hashtable]) {
+            # Recursive merge for nested hashtables
+            $result[$key] = Merge-Hashtables -Base $result[$key] -Override $Override[$key]
+        }
+        else {
+            $result[$key] = $Override[$key]
+        }
+    }
+
+    return $result
+}
+
+#endregion
+
 #region Browser Launch
 
 function Build-BrowserCommand {
@@ -1990,6 +2163,11 @@ function Main {
             Write-Status "Comet stopped - will relaunch with privacy flags" -Type Success
         }
     }
+
+    # Pre-seed Preferences file with critical settings before launch
+    # This ensures extensions.ui.developer_mode is set BEFORE extension loading
+    $profileName = if ($config.browser.profile) { $config.browser.profile } else { "Default" }
+    $null = Set-BrowserPreferences -ProfileName $profileName -DryRunMode:$DryRun
 
     if ($comet -or $DryRun) {
         $browserExe = if ($comet) { $comet.Executable } else { "comet.exe" }

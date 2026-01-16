@@ -12,6 +12,8 @@
       "--no-pings",
       "--no-first-run",
       "--no-default-browser-check",
+      "--skip-onboarding-for-testing",
+      "--silent-launch",
       "--disable-domain-reliability",
       "--disable-client-side-phishing-detection",
       "--disable-search-engine-choice-screen",
