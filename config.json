@@ -184,23 +184,23 @@
     "enabled": true,
     "modifications": [
       {
-        "pattern": "REPORT_OMNIBOX_TEXT:\\s*true",
-        "replacement": "REPORT_OMNIBOX_TEXT: false",
+        "pattern": "\\[BooleanFlags\\.REPORT_OMNIBOX_TEXT\\]:\\s*true",
+        "replacement": "[BooleanFlags.REPORT_OMNIBOX_TEXT]: false",
         "description": "Disable omnibox text reporting"
       },
       {
-        "pattern": "SEND_VISITED_URLS_EVENT_INTERVAL_MINS:\\s*\\d+",
-        "replacement": "SEND_VISITED_URLS_EVENT_INTERVAL_MINS: 0",
+        "pattern": "\\[NumericFlags\\.SEND_VISITED_URLS_EVENT_INTERVAL_MINS\\]:\\s*\\d+",
+        "replacement": "[NumericFlags.SEND_VISITED_URLS_EVENT_INTERVAL_MINS]: 0",
         "description": "Disable URL visit reporting"
       },
       {
         "pattern": "https://www\\.perplexity\\.ai/rest/event/analytics",
-        "replacement": "",
-        "description": "Null analytics endpoint URL"
+        "replacement": "https://localhost:1/blocked",
+        "description": "Redirect analytics endpoint to localhost"
       },
       {
-        "pattern": "window\\.PERPLEXITY_JS_SENTRY_DSN",
-        "replacement": "\"\"",
+        "pattern": "window\\.PERPLEXITY_JS_SENTRY_DSN\\s*\\?\\?\\s*\"\"",
+        "replacement": "\"\" ?? \"\"",
         "description": "Empty Sentry DSN"
       }
     ]
@@ -351,7 +351,11 @@
       "CloudAPAuthEnabled": 0,
       "QuicAllowed": 0,
       "DefaultBrowserSettingEnabled": 0,
-      "BrowserLabsEnabled": 0
+      "BrowserLabsEnabled": 0,
+      "ExtensionDeveloperModeSettings": 1,
+      "DeveloperToolsAvailability": 1,
+      "ExtensionUnpublishedAvailability": 1,
+      "BlockExternalExtensions": 0
     },
     "subkeys": {
       "ExtensionInstallForcelist": [

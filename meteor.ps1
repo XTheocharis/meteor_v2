@@ -1133,10 +1133,25 @@ function Get-UBlockOrigin {
     try {
         # Query update URL for latest version info (same method as other extensions)
         $versionToCheck = if ($currentVersion) { $currentVersion } else { "0.0.0" }
-        $updateInfo = Get-ExtensionUpdateInfo -UpdateUrl $updateUrl -ExtensionId $extensionId -CurrentVersion $versionToCheck
+        $updateInfo = $null
+        try {
+            $updateInfo = Get-ExtensionUpdateInfo -UpdateUrl $updateUrl -ExtensionId $extensionId -CurrentVersion $versionToCheck
+        }
+        catch {
+            Write-Status "Update check failed: $_" -Type Warning
+        }
 
         if (-not $updateInfo -or -not $updateInfo.Codebase) {
-            throw "Could not get update info from Microsoft Edge Add-ons"
+            if ($currentVersion) {
+                Write-Status "Could not check for updates, using existing installation ($currentVersion)" -Type Warning
+                return $OutputDir
+            }
+            # Try direct download URL as fallback
+            Write-Status "Update check failed, trying direct download..." -Type Warning
+            $updateInfo = @{
+                Version  = "unknown"
+                Codebase = "$updateUrl`?id=$extensionId&uc"
+            }
         }
 
         $latestVersion = $updateInfo.Version
