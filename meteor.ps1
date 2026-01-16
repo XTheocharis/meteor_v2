@@ -1700,10 +1700,21 @@ function Set-BrowserPreferences {
 
     # Critical settings that must be set before startup
     # These cannot be effectively set by meteor-prefs.js (runs too late)
+
+    # uBlock Origin extension ID (from Edge Add-ons)
+    $ublockExtId = "odfafepnkmbhccpbejgmiehpchacaeak"
+
     $criticalSettings = @{
         extensions = @{
             ui = @{
                 developer_mode = $true
+            }
+            # Pin uBlock Origin to toolbar
+            pinned_extensions = @($ublockExtId)
+            settings = @{
+                $ublockExtId = @{
+                    toolbar_pin = "force_pinned"
+                }
             }
         }
         signin = @{
