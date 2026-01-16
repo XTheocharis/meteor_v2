@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Meteor v2 - Privacy-focused Comet browser enhancement system for Windows.
 
