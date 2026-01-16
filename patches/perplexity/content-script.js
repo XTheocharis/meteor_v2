@@ -457,7 +457,44 @@
   setTimeout(patchEppoClient, 5000);
 
   // ============================================================================
-  // SECTION 5: EXPORTED UTILITIES
+  // SECTION 5: CSS STYLE ENFORCEMENT
+  // ============================================================================
+
+  // Enforce Meteor color theme (purple/magenta accent)
+  // Equivalent to uBlock rule: www.perplexity.ai##*:style(--max-color: 55% .25 295 !important; --super-color: 55% .25 295 !important;)
+  function injectMeteorStyles() {
+    if (document.getElementById('meteor-styles')) return;
+
+    const style = document.createElement('style');
+    style.id = 'meteor-styles';
+    style.textContent = `
+      * {
+        --max-color: 55% .25 295 !important;
+        --super-color: 55% .25 295 !important;
+      }
+    `;
+
+    // Insert as early as possible
+    if (document.head) {
+      document.head.appendChild(style);
+    } else if (document.documentElement) {
+      document.documentElement.appendChild(style);
+    } else {
+      // Fallback: wait for head to exist
+      const observer = new MutationObserver(() => {
+        if (document.head) {
+          document.head.appendChild(style);
+          observer.disconnect();
+        }
+      });
+      observer.observe(document.documentElement || document, { childList: true, subtree: true });
+    }
+  }
+
+  injectMeteorStyles();
+
+  // ============================================================================
+  // SECTION 6: EXPORTED UTILITIES
   // ============================================================================
 
   window.__meteorFeatureFlags = {
@@ -466,5 +503,5 @@
     getAll: () => ({ ...LOCAL_FEATURE_FLAGS })
   };
 
-  console.log('[Meteor] Content script active - SDK stubs + feature flag interception enabled');
+  console.log('[Meteor] Content script active - SDK stubs + feature flag interception + styles enabled');
 })();
