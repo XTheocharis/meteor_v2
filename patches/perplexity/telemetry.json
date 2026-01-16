@@ -94,22 +94,12 @@
     "priority": 1,
     "action": { "type": "block" },
     "condition": {
-      "urlFilter": "singular-sdk",
-      "initiatorDomains": ["perplexity.ai", "pplx-next-static-public.perplexity.ai"],
-      "resourceTypes": ["script"]
-    }
-  },
-  {
-    "id": 12,
-    "priority": 1,
-    "action": { "type": "block" },
-    "condition": {
       "urlFilter": "/rest/attribution/",
       "resourceTypes": ["xmlhttprequest", "ping", "other"]
     }
   },
   {
-    "id": 13,
+    "id": 12,
     "priority": 1,
     "action": { "type": "block" },
     "condition": {
@@ -118,7 +108,7 @@
     }
   },
   {
-    "id": 14,
+    "id": 13,
     "priority": 1,
     "action": { "type": "block" },
     "condition": {
@@ -127,7 +117,7 @@
     }
   },
   {
-    "id": 15,
+    "id": 14,
     "priority": 1,
     "action": { "type": "block" },
     "condition": {
@@ -136,7 +126,7 @@
     }
   },
   {
-    "id": 16,
+    "id": 15,
     "priority": 1,
     "action": { "type": "block" },
     "condition": {

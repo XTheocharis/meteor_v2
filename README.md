@@ -81,7 +81,7 @@ meteor_v2/
 │   └── state.json            # File hashes for change detection
 ├── patches/perplexity/        # Extension modifications
 │   ├── meteor-prefs.js        # Preference enforcement + MCP API
-│   ├── telemetry.json         # 16 DNR blocking rules
+│   ├── telemetry.json         # 15 DNR blocking rules
 │   └── content-script.js      # SDK stubs + feature flag interception
 ├── patched_extensions/        # Generated at runtime by meteor.ps1 (gitignored)
 └── ublock-origin/             # Downloaded at runtime by meteor.ps1 (gitignored)

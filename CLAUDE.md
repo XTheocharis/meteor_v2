@@ -70,7 +70,7 @@ When you run `.\meteor.ps1`, it performs these steps automatically:
 | `meteor.ps1` | Main script - handles entire workflow |
 | `config.json` | All configuration (browser flags, patches, uBlock) |
 | `.meteor/state.json` | Runtime state (file hashes, versions) - auto-generated |
-| `patches/perplexity/telemetry.json` | 16 DNR rules for telemetry blocking |
+| `patches/perplexity/telemetry.json` | 15 DNR rules for telemetry blocking |
 | `patches/perplexity/meteor-prefs.js` | Service worker preference enforcement |
 | `patches/perplexity/content-script.js` | SDK stubs + feature flag interception |
 
@@ -97,7 +97,7 @@ When you run `.\meteor.ps1`, it performs these steps automatically:
 - Force-enables MCP UI flags (`comet-mcp-enabled`, `custom-remote-mcps`, `comet-dxt-enabled`)
 - Patches fetch/XHR/sendBeacon as backup telemetry blocking layer
 
-**patches/perplexity/telemetry.json**: 16 DNR rules blocking:
+**patches/perplexity/telemetry.json**: 15 DNR rules blocking:
 - DataDog RUM, Singular, Eppo, Mixpanel, Sentry, Intercom
 - Perplexity internal telemetry (irontail, analytics endpoints)
 
@@ -112,7 +112,7 @@ All settings are in `config.json`. Key sections:
 
 ## Critical Rules for Changes
 
-1. **DNR Rules**: Must maintain exactly 16 rules with sequential IDs 1-16
+1. **DNR Rules**: Must maintain exactly 15 rules with sequential IDs 1-15
 2. **MCP Flags**: These flags MUST be `true` for MCP UI to work:
    - `comet-mcp-enabled`
    - `custom-remote-mcps`
