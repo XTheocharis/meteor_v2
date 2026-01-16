@@ -60,7 +60,7 @@ $ErrorActionPreference = "Stop"
 
 $script:MeteorVersion = "2.0.0"
 $script:UserAgent = "Meteor/$script:MeteorVersion"
-$script:ExtensionKeyFile = Join-Path $PSScriptRoot ".extension-key.pem"
+$script:ExtensionKeyFile = Join-Path $PSScriptRoot ".meteor" "extension-key.pem"
 
 #endregion
 
@@ -785,6 +785,12 @@ function Ensure-ExtensionKey {
     Write-Status "Generating extension pinning key..." -Type Info
 
     try {
+        # Ensure .meteor directory exists
+        $keyDir = Split-Path $script:ExtensionKeyFile -Parent
+        if (-not (Test-Path $keyDir)) {
+            $null = New-Item -ItemType Directory -Path $keyDir -Force
+        }
+
         $rsa = New-Object System.Security.Cryptography.RSACryptoServiceProvider(2048)
         $xmlKey = $rsa.ToXmlString($true)
 

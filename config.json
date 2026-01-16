@@ -338,7 +338,7 @@
   },
   "paths": {
     "patched_extensions": "./patched_extensions",
-    "ublock": "./ublock-origin",
+    "ublock": "./patched_extensions/ublock-origin",
     "state_file": "./.meteor/state.json",
     "patches": "./patches"
   }
