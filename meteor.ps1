@@ -38,6 +38,18 @@
     Force re-setup even if files haven't changed.
 #>
 
+# Suppress PSScriptAnalyzer warnings for internal helper functions
+# These are internal functions that don't need ShouldProcess support
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Scope = 'Function', Target = 'Update-FileHash')]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Scope = 'Function', Target = 'Set-PakResource')]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Scope = 'Function', Target = 'Update-Extension')]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Scope = 'Function', Target = 'Set-BrowserPreferences')]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Scope = 'Function', Target = 'Start-Browser')]
+# Script parameters are used in Main function via direct variable access
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'Config', Justification = 'Used in Main function')]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'DryRun', Justification = 'Used in Main function')]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'Force', Justification = 'Used in Main function')]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'NoLaunch', Justification = 'Used in Main function')]
 [CmdletBinding()]
 param(
     [Parameter()]
@@ -465,76 +477,6 @@ function Write-PakFile {
     [System.IO.File]::WriteAllBytes($Path, [byte[]]$output.ToArray())
 }
 
-function Invoke-PakModifications {
-    <#
-    .SYNOPSIS
-        Apply text modifications to resources in a PAK file.
-    #>
-    param(
-        [string]$PakPath,
-        [string]$ExtractedDir,
-        [object]$Modifications,
-        [switch]$DryRunMode
-    )
-
-    $modified = $false
-    $results = @{
-        Modified = @()
-        NotFound = @()
-        Errors   = @()
-    }
-
-    foreach ($relativePath in $Modifications.files.PSObject.Properties.Name) {
-        $fullPath = Join-Path $ExtractedDir $relativePath
-        $patterns = $Modifications.files.$relativePath
-
-        if (-not (Test-Path $fullPath)) {
-            Write-Status "PAK resource not found: $relativePath" -Type Warning
-            $results.NotFound += $relativePath
-            continue
-        }
-
-        try {
-            $content = Get-Content -Path $fullPath -Raw -Encoding UTF8
-            $originalContent = $content
-            $appliedMods = @()
-
-            foreach ($mod in $patterns) {
-                $pattern = $mod.pattern
-                $replacement = $mod.replacement
-
-                if ($content -match $pattern) {
-                    $content = [regex]::Replace($content, $pattern, $replacement, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
-                    $appliedMods += $mod.description
-                }
-            }
-
-            if ($appliedMods.Count -gt 0 -and $content -ne $originalContent) {
-                Write-Status "Modified: $relativePath" -Type Success
-                foreach ($desc in $appliedMods) {
-                    Write-Status $desc -Type Detail
-                }
-
-                if (-not $DryRunMode) {
-                    Set-Content -Path $fullPath -Value $content -Encoding UTF8 -NoNewline
-                }
-
-                $modified = $true
-                $results.Modified += $relativePath
-            }
-        }
-        catch {
-            Write-Status "Error processing $relativePath : $_" -Type Error
-            $results.Errors += $relativePath
-        }
-    }
-
-    return @{
-        Modified = $modified
-        Results  = $results
-    }
-}
-
 #endregion
 
 #region CRX Extraction
@@ -776,7 +718,7 @@ function ConvertTo-SpkiBase64 {
     return [Convert]::ToBase64String([byte[]]$spki)
 }
 
-function Ensure-ExtensionKey {
+function Initialize-ExtensionKey {
     <#
     .SYNOPSIS
         Generate and store an RSA key pair for extension signing if not present.
@@ -885,7 +827,7 @@ function Add-ExtensionKey {
 
     try {
         # Ensure we have a key
-        if (-not (Ensure-ExtensionKey)) {
+        if (-not (Initialize-ExtensionKey)) {
             return $null
         }
 
@@ -1969,7 +1911,7 @@ function Set-BrowserPreferences {
     # Compute uBlock Origin extension ID from the Meteor key
     # This ensures the ID matches what we inject into uBlock's manifest
     $ublockExtId = $null
-    if (Ensure-ExtensionKey) {
+    if (Initialize-ExtensionKey) {
         $pubKey = Get-PublicKeyBase64
         if ($pubKey) {
             $ublockExtId = Get-ExtensionIdFromKey $pubKey
