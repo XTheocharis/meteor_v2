@@ -1873,11 +1873,11 @@ function Main {
                 if ($cacheFiles) {
                     $cacheCount = $cacheFiles.Count
                     if ($DryRun) {
-                        Write-Status "Would clear CRX cache ($cacheCount files)" -Type DryRun
+                        Write-Status "Would clear CRX cache: $cacheCount files" -Type DryRun
                     }
                     else {
                         Remove-Item -Path "$crxCachePath\*" -Force -ErrorAction SilentlyContinue
-                        Write-Status "Cleared CRX cache ($cacheCount files)" -Type Detail
+                        Write-Status "Cleared CRX cache: $cacheCount files" -Type Detail
                     }
                 }
             }
