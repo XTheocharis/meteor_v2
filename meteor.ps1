@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Meteor v2 - Privacy-focused Comet browser enhancement system for Windows.
 
@@ -725,9 +725,11 @@ function ConvertTo-SpkiBase64 {
         $len = $Value.Length
         if ($len -lt 128) {
             return @([byte]0x02, [byte]$len) + $Value
-        } elseif ($len -lt 256) {
+        }
+        elseif ($len -lt 256) {
             return @([byte]0x02, [byte]0x81, [byte]$len) + $Value
-        } else {
+        }
+        else {
             return @([byte]0x02, [byte]0x82, [byte](($len -shr 8) -band 0xFF), [byte]($len -band 0xFF)) + $Value
         }
     }
@@ -737,9 +739,11 @@ function ConvertTo-SpkiBase64 {
         $len = $Content.Length
         if ($len -lt 128) {
             return @([byte]0x30, [byte]$len) + $Content
-        } elseif ($len -lt 256) {
+        }
+        elseif ($len -lt 256) {
             return @([byte]0x30, [byte]0x81, [byte]$len) + $Content
-        } else {
+        }
+        else {
             return @([byte]0x30, [byte]0x82, [byte](($len -shr 8) -band 0xFF), [byte]($len -band 0xFF)) + $Content
         }
     }
@@ -749,9 +753,11 @@ function ConvertTo-SpkiBase64 {
         $len = $Content.Length + 1
         if ($len -lt 128) {
             return @([byte]0x03, [byte]$len, [byte]0x00) + $Content
-        } elseif ($len -lt 256) {
+        }
+        elseif ($len -lt 256) {
             return @([byte]0x03, [byte]0x81, [byte]$len, [byte]0x00) + $Content
-        } else {
+        }
+        else {
             return @([byte]0x03, [byte]0x82, [byte](($len -shr 8) -band 0xFF), [byte]($len -band 0xFF), [byte]0x00) + $Content
         }
     }
@@ -1352,7 +1358,7 @@ function Get-UBlockOrigin {
         try {
             $apiUrl = "https://api.github.com/repos/$githubRepo/releases/latest"
             $release = Invoke-RestMethod -Uri $apiUrl -Headers @{
-                Accept = "application/vnd.github.v3+json"
+                Accept       = "application/vnd.github.v3+json"
                 "User-Agent" = $script:UserAgent
             } -TimeoutSec 30
 
@@ -1976,34 +1982,34 @@ function Set-BrowserPreferences {
     }
 
     $criticalSettings = @{
-        extensions = @{
-            ui = @{
+        extensions   = @{
+            ui                = @{
                 developer_mode = $true
             }
             # Pin uBlock Origin to toolbar
             pinned_extensions = @($ublockExtId)
-            settings = @{
+            settings          = @{
                 $ublockExtId = @{
                     toolbar_pin = "force_pinned"
                 }
             }
         }
-        signin = @{
+        signin       = @{
             allowed = $false
         }
-        sync = @{
+        sync         = @{
             managed = $true
         }
-        browser = @{
+        browser      = @{
             show_home_button = $true
         }
         bookmark_bar = @{
             show_apps_shortcut = $false
         }
         # Perplexity-specific settings
-        perplexity = @{
+        perplexity   = @{
             onboarding_completed = $true
-            metrics_allowed = $false
+            metrics_allowed      = $false
         }
     }
 
