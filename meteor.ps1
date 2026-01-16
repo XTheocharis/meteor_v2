@@ -1103,10 +1103,10 @@ function Test-CometUpdate {
 function Get-UBlockOrigin {
     <#
     .SYNOPSIS
-        Download uBlock Origin MV2 from Microsoft Edge Add-ons if not present or outdated.
+        Download uBlock Origin MV2 from GitHub releases if not present or outdated.
     .DESCRIPTION
-        Downloads the CRX directly from Microsoft Edge extension store update URL, extracts it using
-        the same method as other CRX files, and injects the public key for consistent ID.
+        Downloads the chromium zip directly from GitHub releases, extracts it, and configures
+        the auto-import system for applying Meteor defaults.
     #>
     param(
         [string]$OutputDir,
@@ -1114,8 +1114,7 @@ function Get-UBlockOrigin {
         [switch]$DryRunMode
     )
 
-    $extensionId = $UBlockConfig.extension_id
-    $updateUrl = $UBlockConfig.update_url
+    $githubRepo = $UBlockConfig.github_repo
     $manifestPath = Join-Path $OutputDir "manifest.json"
     $currentVersion = $null
 
@@ -1130,49 +1129,47 @@ function Get-UBlockOrigin {
     }
 
     try {
-        # Query update URL for latest version info (same method as other extensions)
-        $versionToCheck = if ($currentVersion) { $currentVersion } else { "0.0.0" }
-        $updateInfo = $null
-        try {
-            $updateInfo = Get-ExtensionUpdateInfo -UpdateUrl $updateUrl -ExtensionId $extensionId -CurrentVersion $versionToCheck
-        }
-        catch {
-            Write-Status "Update check failed: $_" -Type Warning
-        }
-
-        $needsDownload = $true
+        # Query GitHub API for latest release
         $latestVersion = $null
+        $downloadUrl = $null
+        $needsDownload = $true
 
-        if (-not $updateInfo -or -not $updateInfo.Codebase) {
-            if ($currentVersion) {
-                Write-Status "Could not check for updates, using existing installation ($currentVersion)" -Type Warning
-                $needsDownload = $false
-                $latestVersion = $currentVersion
-            }
-            else {
-                # Try direct download URL as fallback
-                Write-Status "Update check failed, trying direct download..." -Type Warning
-                $updateInfo = @{
-                    Version  = "unknown"
-                    Codebase = "$updateUrl`?id=$extensionId&uc"
-                }
-                $latestVersion = $updateInfo.Version
-            }
-        }
-        else {
-            $latestVersion = $updateInfo.Version
+        try {
+            $apiUrl = "https://api.github.com/repos/$githubRepo/releases/latest"
+            $release = Invoke-RestMethod -Uri $apiUrl -Headers @{
+                Accept = "application/vnd.github.v3+json"
+                "User-Agent" = $script:UserAgent
+            } -TimeoutSec 30
+
+            $latestVersion = $release.tag_name
             Write-Status "Latest version: $latestVersion" -Type Detail
+
+            # Build download URL for chromium zip
+            $downloadUrl = "https://github.com/$githubRepo/releases/download/$latestVersion/uBlock0_${latestVersion}.chromium.zip"
 
             # Compare versions if already installed
             if ($currentVersion) {
-                $comparison = Compare-Versions -Version1 $latestVersion -Version2 $currentVersion
-                if ($comparison -le 0) {
+                # Normalize versions for comparison (remove leading zeros, etc.)
+                $currentNormalized = $currentVersion -replace '\.0+', '.'
+                $latestNormalized = $latestVersion -replace '\.0+', '.'
+                if ($currentNormalized -eq $latestNormalized -or $currentVersion -eq $latestVersion) {
                     Write-Status "uBlock Origin is up to date ($currentVersion)" -Type Success
                     $needsDownload = $false
                 }
                 else {
                     Write-Status "Update available: $currentVersion -> $latestVersion" -Type Info
                 }
+            }
+        }
+        catch {
+            Write-Status "GitHub API check failed: $_" -Type Warning
+            if ($currentVersion) {
+                Write-Status "Using existing installation ($currentVersion)" -Type Warning
+                $needsDownload = $false
+                $latestVersion = $currentVersion
+            }
+            else {
+                throw "Cannot download uBlock Origin: GitHub API unavailable and no existing installation"
             }
         }
 
@@ -1183,31 +1180,48 @@ function Get-UBlockOrigin {
                     Write-Status "Would update uBlock Origin from $currentVersion to $latestVersion" -Type Detail
                 }
                 else {
-                    Write-Status "Would download uBlock Origin $latestVersion from Microsoft Edge Add-ons" -Type Detail
+                    Write-Status "Would download uBlock Origin $latestVersion from GitHub" -Type Detail
                 }
             }
             Write-Status "Would apply uBlock auto-import configuration" -Type Detail
             return $null
         }
 
-        # Download CRX if needed
+        # Download and extract if needed
         if ($needsDownload) {
-            $tempCrx = Join-Path $env:TEMP "ublock_$(Get-Random).crx"
+            $tempZip = Join-Path $env:TEMP "ublock_$(Get-Random).zip"
 
-            Write-Status "Downloading from Microsoft Edge Add-ons..." -Type Detail
-            Invoke-WebRequest -Uri $updateInfo.Codebase -OutFile $tempCrx -UseBasicParsing -TimeoutSec 120 -Headers @{
+            Write-Status "Downloading from GitHub releases..." -Type Detail
+            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+            Invoke-WebRequest -Uri $downloadUrl -OutFile $tempZip -UseBasicParsing -TimeoutSec 120 -Headers @{
                 "User-Agent" = $script:UserAgent
             }
 
-            # Extract CRX and inject public key for consistent extension ID
-            Export-CrxToDirectory -CrxPath $tempCrx -OutputDir $OutputDir -InjectKey
+            # Remove existing directory
+            if (Test-Path $OutputDir) {
+                Remove-Item $OutputDir -Recurse -Force
+            }
 
-            # Remove update_url from manifest (we manage updates ourselves)
-            $manifestPath = Join-Path $OutputDir "manifest.json"
-            if (Test-Path $manifestPath) {
-                $manifest = Get-Content -Path $manifestPath -Raw | ConvertFrom-Json
-                $manifest.PSObject.Properties.Remove('update_url')
-                $manifest | ConvertTo-Json -Depth 20 | Set-Content -Path $manifestPath -Encoding UTF8
+            # Extract zip
+            Write-Status "Extracting..." -Type Detail
+            $tempExtract = Join-Path $env:TEMP "ublock_extract_$(Get-Random)"
+            Add-Type -AssemblyName System.IO.Compression.FileSystem
+            [System.IO.Compression.ZipFile]::ExtractToDirectory($tempZip, $tempExtract)
+
+            # Move extracted folder to output directory
+            $extractedDir = Join-Path $tempExtract "uBlock0.chromium"
+            if (Test-Path $extractedDir) {
+                Move-Item $extractedDir $OutputDir -Force
+            }
+            else {
+                # Fallback: maybe the zip extracts directly
+                Move-Item $tempExtract $OutputDir -Force
+            }
+
+            # Cleanup
+            Remove-Item $tempZip -Force -ErrorAction SilentlyContinue
+            if (Test-Path $tempExtract) {
+                Remove-Item $tempExtract -Recurse -Force -ErrorAction SilentlyContinue
             }
         }
 
@@ -1346,8 +1360,12 @@ setTimeout(checkAndImport, 3000);
         return $null
     }
     finally {
-        if ((Test-Path variable:tempCrx) -and (Test-Path $tempCrx)) {
-            Remove-Item -Path $tempCrx -Force
+        # Cleanup temp files if they still exist
+        if ((Test-Path variable:tempZip) -and $tempZip -and (Test-Path $tempZip)) {
+            Remove-Item -Path $tempZip -Force -ErrorAction SilentlyContinue
+        }
+        if ((Test-Path variable:tempExtract) -and $tempExtract -and (Test-Path $tempExtract)) {
+            Remove-Item -Path $tempExtract -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
 }

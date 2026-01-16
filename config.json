@@ -264,8 +264,7 @@
   },
   "ublock": {
     "enabled": true,
-    "extension_id": "odfafepnkmbhccpbejgmiehpchacaeak",
-    "update_url": "https://edge.microsoft.com/extensionwebstorebase/v1/crx",
+    "github_repo": "gorhill/uBlock",
     "defaults": {
       "userSettings": {
         "advancedUserEnabled": true,
