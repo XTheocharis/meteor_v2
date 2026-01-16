@@ -16,7 +16,7 @@ A privacy-focused enhancement system for the Comet browser (Chromium-based by Pe
 
 ```
 LAYER 0: STATIC (PAK)     - Modified resources.pak with disabled telemetry defaults
-LAYER 1: LAUNCH (FLAGS)   - Privacy-focused Chromium flags (156 disabled, 10 enabled features)
+LAYER 1: LAUNCH (FLAGS)   - Privacy-focused Chromium flags (155 disabled, 10 enabled features)
 LAYER 2: SOURCE (EXT)     - Modified perplexity extension with DNR rules
 LAYER 3: CONTENT (STUBS)  - SDK stubs injected before CDN scripts load
 LAYER 4: NETWORK (DNR)    - 16 declarative net request blocking rules
@@ -49,7 +49,7 @@ That's it. Meteor automatically:
 3. Extracts CRX extensions from Comet's `default_apps/`
 4. Applies Meteor patches (DNR rules, content scripts, preferences)
 5. Downloads uBlock Origin MV2
-6. Launches browser with 156 disabled Chromium features
+6. Launches browser with 155 disabled Chromium features
 
 ### Options
 

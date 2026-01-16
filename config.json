@@ -173,7 +173,6 @@
       "DNSInterceptionChecks",
       "BrowserNetworkTimeQueries",
       "PromotionalTabsEnabled",
-      "EnableNtpBrowserPromos",
       "HappinessTrackingSurveysForDesktopSettings",
       "HappinessTrackingSurveysForDesktopSettingsPrivacy",
       "HappinessTrackingSurveysForDesktopPrivacyGuide",

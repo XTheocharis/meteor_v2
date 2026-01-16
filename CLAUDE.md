@@ -81,7 +81,7 @@ When you run `.\meteor.ps1`, it performs these steps automatically:
 - Extracts and patches CRX extensions (handles both `.crx` and `.crx.disabled` files)
 - Reads/writes Chromium PAK files (v4/v5 format)
 - Manages uBlock Origin MV2 download
-- Builds command line with 156 disabled features and 10 enabled features
+- Builds command line with 155 disabled features and 10 enabled features
 - Tracks file changes via SHA256 hashes
 - Clears Comet's CRX caches during re-patching to ensure changes take effect
 - Stops running Comet processes when `-Force` is used
@@ -104,7 +104,7 @@ When you run `.\meteor.ps1`, it performs these steps automatically:
 ## Configuration
 
 All settings are in `config.json`. Key sections:
-- `browser.flags/enable_features/disable_features`: Chromium launch configuration (21 flags, 10 enabled features, 156 disabled features)
+- `browser.flags/enable_features/disable_features`: Chromium launch configuration (21 flags, 10 enabled features, 155 disabled features)
 - `extensions.sources`: Extensions to patch (`perplexity`, `comet_web_resources`, `agents`)
 - `extensions.patch_config.perplexity`: Patching rules for the perplexity extension
 - `pak_modifications`: Regex replacements for resources.pak
