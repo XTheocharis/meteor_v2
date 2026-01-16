@@ -1157,46 +1157,54 @@ function Get-UBlockOrigin {
         Write-Status "Latest version: $latestVersion" -Type Detail
 
         # Compare versions if already installed
+        $needsDownload = $true
         if ($currentVersion) {
             $comparison = Compare-Versions -Version1 $latestVersion -Version2 $currentVersion
             if ($comparison -le 0) {
                 Write-Status "uBlock Origin is up to date ($currentVersion)" -Type Success
-                return $OutputDir
+                $needsDownload = $false
             }
-            Write-Status "Update available: $currentVersion -> $latestVersion" -Type Info
+            else {
+                Write-Status "Update available: $currentVersion -> $latestVersion" -Type Info
+            }
         }
 
         # Handle dry run mode
         if ($DryRunMode) {
-            if ($currentVersion) {
-                Write-Status "Would update uBlock Origin from $currentVersion to $latestVersion" -Type Detail
+            if ($needsDownload) {
+                if ($currentVersion) {
+                    Write-Status "Would update uBlock Origin from $currentVersion to $latestVersion" -Type Detail
+                }
+                else {
+                    Write-Status "Would download uBlock Origin $latestVersion from Microsoft Edge Add-ons" -Type Detail
+                }
             }
-            else {
-                Write-Status "Would download uBlock Origin $latestVersion from Microsoft Edge Add-ons" -Type Detail
-            }
+            Write-Status "Would apply uBlock auto-import configuration" -Type Detail
             return $null
         }
 
-        # Download CRX from Microsoft Edge Add-ons
-        $tempCrx = Join-Path $env:TEMP "ublock_$(Get-Random).crx"
+        # Download CRX if needed
+        if ($needsDownload) {
+            $tempCrx = Join-Path $env:TEMP "ublock_$(Get-Random).crx"
 
-        Write-Status "Downloading from Microsoft Edge Add-ons..." -Type Detail
-        Invoke-WebRequest -Uri $updateInfo.Codebase -OutFile $tempCrx -UseBasicParsing -TimeoutSec 120 -Headers @{
-            "User-Agent" = $script:UserAgent
+            Write-Status "Downloading from Microsoft Edge Add-ons..." -Type Detail
+            Invoke-WebRequest -Uri $updateInfo.Codebase -OutFile $tempCrx -UseBasicParsing -TimeoutSec 120 -Headers @{
+                "User-Agent" = $script:UserAgent
+            }
+
+            # Extract CRX and inject public key for consistent extension ID
+            Export-CrxToDirectory -CrxPath $tempCrx -OutputDir $OutputDir -InjectKey
+
+            # Remove update_url from manifest (we manage updates ourselves)
+            $manifestPath = Join-Path $OutputDir "manifest.json"
+            if (Test-Path $manifestPath) {
+                $manifest = Get-Content -Path $manifestPath -Raw | ConvertFrom-Json
+                $manifest.PSObject.Properties.Remove('update_url')
+                $manifest | ConvertTo-Json -Depth 20 | Set-Content -Path $manifestPath -Encoding UTF8
+            }
         }
 
-        # Extract CRX and inject public key for consistent extension ID
-        Export-CrxToDirectory -CrxPath $tempCrx -OutputDir $OutputDir -InjectKey
-
-        # Remove update_url from manifest (we manage updates ourselves)
-        $manifestPath = Join-Path $OutputDir "manifest.json"
-        if (Test-Path $manifestPath) {
-            $manifest = Get-Content -Path $manifestPath -Raw | ConvertFrom-Json
-            $manifest.PSObject.Properties.Remove('update_url')
-            $manifest | ConvertTo-Json -Depth 20 | Set-Content -Path $manifestPath -Encoding UTF8
-        }
-
-        # Apply defaults if configured - using auto-import approach
+        # Apply defaults if configured - using auto-import approach (always run, even if not downloading)
         if ($UBlockConfig.defaults) {
             # Save settings file that auto-import.js will load
             $settingsPath = Join-Path $OutputDir "ublock-settings.json"
@@ -1309,11 +1317,16 @@ setTimeout(checkAndImport, 3000);
             Write-Status "uBlock auto-import configured" -Type Detail
         }
 
-        if ($currentVersion) {
-            Write-Status "uBlock Origin updated: $currentVersion -> $latestVersion" -Type Success
+        if ($needsDownload) {
+            if ($currentVersion) {
+                Write-Status "uBlock Origin updated: $currentVersion -> $latestVersion" -Type Success
+            }
+            else {
+                Write-Status "uBlock Origin $latestVersion installed" -Type Success
+            }
         }
         else {
-            Write-Status "uBlock Origin $latestVersion installed" -Type Success
+            Write-Status "uBlock Origin configured ($currentVersion)" -Type Success
         }
         return $OutputDir
     }
