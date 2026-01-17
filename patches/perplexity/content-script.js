@@ -582,7 +582,74 @@
   injectMeteorStyles();
 
   // ============================================================================
-  // SECTION 6: EXPORTED UTILITIES
+  // SECTION 6: NEW THREAD BUTTON REDIRECT
+  // ============================================================================
+
+  const HOMEPAGE_URL = 'https://www.perplexity.ai/b/home';
+
+  /**
+   * Convert "New Thread" button to navigate to homepage instead of default behavior.
+   * The button is identified by aria-label="New Thread".
+   */
+  function setupNewThreadRedirect() {
+    const selector = 'button[aria-label="New Thread"]';
+
+    function patchButton(button) {
+      if (button.__meteorPatched) return;
+      button.__meteorPatched = true;
+
+      // Intercept click to navigate to homepage
+      button.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        window.location.href = HOMEPAGE_URL;
+      }, true); // Use capture phase to intercept before React handlers
+    }
+
+    // Patch any existing buttons
+    function patchExistingButtons() {
+      document.querySelectorAll(selector).forEach(patchButton);
+    }
+
+    // Watch for dynamically added buttons
+    const observer = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        for (const node of mutation.addedNodes) {
+          if (node.nodeType !== Node.ELEMENT_NODE) continue;
+
+          // Check if the added node is the button
+          if (node.matches?.(selector)) {
+            patchButton(node);
+          }
+
+          // Check descendants
+          node.querySelectorAll?.(selector).forEach(patchButton);
+        }
+      }
+    });
+
+    // Start observing once DOM is ready
+    if (document.body) {
+      patchExistingButtons();
+      observer.observe(document.body, { childList: true, subtree: true });
+    } else {
+      // Wait for body to exist
+      const bodyObserver = new MutationObserver(() => {
+        if (document.body) {
+          patchExistingButtons();
+          observer.observe(document.body, { childList: true, subtree: true });
+          bodyObserver.disconnect();
+        }
+      });
+      bodyObserver.observe(document.documentElement || document, { childList: true, subtree: true });
+    }
+  }
+
+  setupNewThreadRedirect();
+
+  // ============================================================================
+  // SECTION 7: EXPORTED UTILITIES
   // ============================================================================
 
   window.__meteorFeatureFlags = {
