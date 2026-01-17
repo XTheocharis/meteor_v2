@@ -259,6 +259,11 @@
         "pattern": "window\\.PERPLEXITY_JS_SENTRY_DSN\\s*\\?\\?\\s*\"\"",
         "replacement": "\"\" ?? \"\"",
         "description": "Empty Sentry DSN"
+      },
+      {
+        "pattern": "return !isPerplexityInternalUser && perplexityChannel != \"dev\";",
+        "replacement": "return false;",
+        "description": "Show Perplexity extensions in chrome://inspect"
       }
     ]
   },
