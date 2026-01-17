@@ -374,11 +374,11 @@ function Set-PakResource {
             $startOffset = $Pak.Resources[$i].Offset
             $endOffset = $Pak.Resources[$i + 1].Offset
             $oldLength = $endOffset - $startOffset
-            $newLength = [Array]::get_Length($NewData)
+            $newLength = $NewData.GetLength(0)
             $sizeDiff = $newLength - $oldLength
 
             # Create new byte array
-            $rawBytesLength = [Array]::get_Length($Pak.RawBytes)
+            $rawBytesLength = $Pak.RawBytes.GetLength(0)
             $newBytes = New-Object byte[] ($rawBytesLength + $sizeDiff)
 
             # Copy everything before this resource
@@ -671,13 +671,13 @@ function ConvertTo-SpkiBase64 {
     function Get-DerInteger {
         param([byte[]]$Value)
         $i = 0
-        $valueLen = [Array]::get_Length($Value)
+        $valueLen = $Value.GetLength(0)
         while ($i -lt $valueLen - 1 -and $Value[$i] -eq 0) { $i++ }
         $Value = $Value[$i..($valueLen - 1)]
         if ($Value[0] -band 0x80) {
             $Value = @([byte]0) + $Value
         }
-        $len = [Array]::get_Length($Value)
+        $len = $Value.GetLength(0)
         if ($len -lt 128) {
             return @([byte]0x02, [byte]$len) + $Value
         }
@@ -691,7 +691,7 @@ function ConvertTo-SpkiBase64 {
 
     function Get-DerSequence {
         param([byte[]]$Content)
-        $len = [Array]::get_Length($Content)
+        $len = $Content.GetLength(0)
         if ($len -lt 128) {
             return @([byte]0x30, [byte]$len) + $Content
         }
@@ -705,7 +705,7 @@ function ConvertTo-SpkiBase64 {
 
     function Get-DerBitString {
         param([byte[]]$Content)
-        $len = [Array]::get_Length($Content) + 1
+        $len = $Content.GetLength(0) + 1
         if ($len -lt 128) {
             return @([byte]0x03, [byte]$len, [byte]0x00) + $Content
         }
@@ -922,7 +922,7 @@ function Export-CrxToDirectory {
     }
 
     # Extract ZIP portion
-    $zipLength = [Array]::get_Length($bytes) - $zipOffset
+    $zipLength = $bytes.GetLength(0) - $zipOffset
     $zipBytes = New-Object byte[] $zipLength
     [Array]::Copy($bytes, $zipOffset, $zipBytes, 0, $zipLength)
 
@@ -1893,7 +1893,7 @@ function Initialize-PakModifications {
 
         # Get resource bytes
         $resourceBytes = Get-PakResource -Pak $pak -ResourceId $resourceId
-        if ($null -eq $resourceBytes -or [Array]::get_Length($resourceBytes) -lt 2) { continue }
+        if ($null -eq $resourceBytes -or $resourceBytes.GetLength(0) -lt 2) { continue }
 
         # Check if gzip compressed (magic bytes: 0x1f 0x8b)
         $isGzipped = ($resourceBytes[0] -eq 0x1f -and $resourceBytes[1] -eq 0x8b)
@@ -1979,7 +1979,7 @@ function Initialize-PakModifications {
                 $gz = New-Object System.IO.Compression.GZipStream($outMs, [System.IO.Compression.CompressionLevel]::Optimal, $true)
 
                 # Get length using .NET method to avoid PowerShell property resolution issues
-                $byteCount = [Array]::get_Length($newBytes)
+                $byteCount = $newBytes.GetLength(0)
                 Write-Verbose "[PAK] Writing $byteCount bytes to gzip stream..."
 
                 $gz.Write($newBytes, 0, $byteCount)
@@ -1993,7 +1993,7 @@ function Initialize-PakModifications {
                     continue
                 }
                 $newBytes = [byte[]]$compressedBytes
-                Write-Verbose "[PAK] Compressed to $([Array]::get_Length($newBytes)) bytes"
+                Write-Verbose "[PAK] Compressed to $($newBytes.GetLength(0)) bytes"
             }
 
             if ($DryRunMode) {
