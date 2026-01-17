@@ -660,12 +660,12 @@ function ConvertTo-SpkiBase64 {
     function Get-DerInteger {
         param([byte[]]$Value)
         $i = 0
-        while ($i -lt $Value.Length - 1 -and $Value[$i] -eq 0) { $i++ }
-        $Value = $Value[$i..($Value.Length - 1)]
+        while ($i -lt $Value.Count - 1 -and $Value[$i] -eq 0) { $i++ }
+        $Value = $Value[$i..($Value.Count - 1)]
         if ($Value[0] -band 0x80) {
             $Value = @([byte]0) + $Value
         }
-        $len = $Value.Length
+        $len = $Value.Count
         if ($len -lt 128) {
             return @([byte]0x02, [byte]$len) + $Value
         }
@@ -679,7 +679,7 @@ function ConvertTo-SpkiBase64 {
 
     function Get-DerSequence {
         param([byte[]]$Content)
-        $len = $Content.Length
+        $len = $Content.Count
         if ($len -lt 128) {
             return @([byte]0x30, [byte]$len) + $Content
         }
@@ -693,7 +693,7 @@ function ConvertTo-SpkiBase64 {
 
     function Get-DerBitString {
         param([byte[]]$Content)
-        $len = $Content.Length + 1
+        $len = $Content.Count + 1
         if ($len -lt 128) {
             return @([byte]0x03, [byte]$len, [byte]0x00) + $Content
         }
@@ -910,7 +910,7 @@ function Export-CrxToDirectory {
     }
 
     # Extract ZIP portion
-    $zipLength = $bytes.Length - $zipOffset
+    $zipLength = $bytes.Count - $zipOffset
     $zipBytes = New-Object byte[] $zipLength
     [Array]::Copy($bytes, $zipOffset, $zipBytes, 0, $zipLength)
 
@@ -1881,7 +1881,7 @@ function Initialize-PakModifications {
 
         # Get resource bytes
         $resourceBytes = Get-PakResource -Pak $pak -ResourceId $resourceId
-        if ($null -eq $resourceBytes -or $resourceBytes.Length -lt 2) { continue }
+        if ($null -eq $resourceBytes -or $resourceBytes.Count -lt 2) { continue }
 
         # Check if gzip compressed (magic bytes: 0x1f 0x8b)
         $isGzipped = ($resourceBytes[0] -eq 0x1f -and $resourceBytes[1] -eq 0x8b)
