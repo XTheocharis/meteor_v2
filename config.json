@@ -234,6 +234,30 @@
           "rules/telemetry.json": "perplexity/telemetry.json",
           "content/content-script.js": "perplexity/content-script.js"
         }
+      },
+      "agents": {
+        "manifest_additions": {
+          "content_scripts": [
+            {
+              "matches": ["<all_urls>"],
+              "js": ["adguard-extra-bridge.js"],
+              "run_at": "document_start",
+              "all_frames": true,
+              "world": "ISOLATED"
+            },
+            {
+              "matches": ["<all_urls>"],
+              "js": ["adguard-extra.js"],
+              "run_at": "document_start",
+              "all_frames": true,
+              "world": "MAIN"
+            }
+          ]
+        },
+        "copy_files": {
+          "adguard-extra.js": "agents/adguard-extra.js",
+          "adguard-extra-bridge.js": "agents/adguard-extra-bridge.js"
+        }
       }
     }
   },
