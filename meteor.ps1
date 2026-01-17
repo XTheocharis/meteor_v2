@@ -1701,8 +1701,8 @@ function Get-AdGuardExtra {
             Remove-Item $OutputDir -Recurse -Force
         }
 
-        # Extract CRX to output directory
-        Export-CrxToDirectory -CrxPath $crxFile -OutputDir $OutputDir
+        # Extract CRX to output directory (with key injection for consistent extension ID)
+        Export-CrxToDirectory -CrxPath $crxFile -OutputDir $OutputDir -InjectKey
 
         # Cleanup temp directory
         if (Test-Path $tempDir) {
@@ -2042,6 +2042,8 @@ function Set-BrowserPreferences {
     #>
     param(
         [string]$ProfileName = "Default",
+        [string]$UBlockExtensionId,
+        [string]$AdGuardExtraExtensionId,
         [switch]$DryRunMode
     )
 
@@ -2091,34 +2093,54 @@ function Set-BrowserPreferences {
     # Critical settings that must be set before startup
     # These cannot be effectively set by meteor-prefs.js (runs too late)
 
-    # Compute uBlock Origin extension ID from the Meteor key
-    # This ensures the ID matches what we inject into uBlock's manifest
-    $ublockExtId = $null
-    if (Initialize-ExtensionKey) {
-        $pubKey = Get-PublicKeyBase64
-        if ($pubKey) {
-            $ublockExtId = Get-ExtensionIdFromKey $pubKey
+    # Use provided extension IDs or compute from key
+    $ublockExtId = $UBlockExtensionId
+    if (-not $ublockExtId) {
+        if (Initialize-ExtensionKey) {
+            $pubKey = Get-PublicKeyBase64
+            if ($pubKey) {
+                $ublockExtId = Get-ExtensionIdFromKey $pubKey
+            }
+        }
+        if (-not $ublockExtId) {
+            Write-Status "Could not compute uBlock extension ID, some features may not work" -Type Warning
+            $ublockExtId = "ublockorigin"  # Placeholder
         }
     }
-    # Fallback to a placeholder if key computation fails
-    if (-not $ublockExtId) {
-        Write-Status "Could not compute uBlock extension ID, pinning may not work" -Type Warning
-        $ublockExtId = "ublockorigin"  # Placeholder, won't match but won't crash
+
+    # Build extension settings
+    $extensionSettings = @{
+        ui                = @{
+            developer_mode = $true
+        }
+        # Pin uBlock Origin to toolbar
+        pinned_extensions = @($ublockExtId)
+        settings          = @{}
+    }
+
+    # Configure uBlock Origin
+    if ($ublockExtId) {
+        $extensionSettings.settings[$ublockExtId] = @{
+            toolbar_pin = "force_pinned"
+            # Enable in incognito mode
+            incognito   = @{
+                enabled = $true
+            }
+        }
+    }
+
+    # Configure AdGuard Extra
+    if ($AdGuardExtraExtensionId) {
+        $extensionSettings.settings[$AdGuardExtraExtensionId] = @{
+            # Enable in incognito mode
+            incognito = @{
+                enabled = $true
+            }
+        }
     }
 
     $criticalSettings = @{
-        extensions   = @{
-            ui                = @{
-                developer_mode = $true
-            }
-            # Pin uBlock Origin to toolbar
-            pinned_extensions = @($ublockExtId)
-            settings          = @{
-                $ublockExtId = @{
-                    toolbar_pin = "force_pinned"
-                }
-            }
-        }
+        extensions   = $extensionSettings
         # Note: signin.allowed is NOT set here - allow sign-in but disable sync
         sync         = @{
             managed = $true
@@ -2691,7 +2713,9 @@ function Main {
     # Pre-seed Preferences file with critical settings before launch
     # This ensures extensions.ui.developer_mode is set BEFORE extension loading
     $profileName = if ($config.browser.profile) { $config.browser.profile } else { "Default" }
-    $null = Set-BrowserPreferences -ProfileName $profileName -DryRunMode:$DryRun
+    $ublockExtId = if ($config.ublock.extension_id) { $config.ublock.extension_id } else { $null }
+    $adguardExtId = if ($config.adguard_extra.extension_id) { $config.adguard_extra.extension_id } else { $null }
+    $null = Set-BrowserPreferences -ProfileName $profileName -UBlockExtensionId $ublockExtId -AdGuardExtraExtensionId $adguardExtId -DryRunMode:$DryRun
 
     if ($comet -or $DryRun) {
         $browserExe = if ($comet) { $comet.Executable } else { "comet.exe" }
