@@ -1941,16 +1941,30 @@ function Initialize-PakModifications {
         $textCount++
         $resourceModified = $false
 
-        # Log sample content for pattern debugging (first 200 chars of resources containing key terms)
+        # Log sample content for pattern debugging
         if ($content -match 'shouldHide|BooleanFlags|NumericFlags|perplexityChannel') {
             Write-Verbose "[PAK] Resource $resourceId contains potential target (gzip=$isGzipped)"
             $preview = $content.Substring(0, [Math]::Min(500, $content.Length)) -replace '[\r\n]+', ' '
             Write-Verbose "[PAK] Preview: $preview..."
+
+            # Extra logging for shouldHide functions
+            if ($content -match 'shouldHide\w*Perplexity|shouldHidePerplexity|hidePerplexity') {
+                Write-Status "  [DEBUG] Resource $resourceId contains Perplexity hide function" -Type Detail
+                # Find and show the function
+                if ($content -match '(function\s+shouldHide\w*[^}]+\})') {
+                    Write-Verbose "[PAK] Hide function: $($Matches[1] -replace '[\r\n]+', ' ')"
+                }
+            }
         }
 
         # Try each modification pattern
         foreach ($mod in $PakConfig.modifications) {
             if ($content -match $mod.pattern) {
+                # Show context around the match for debugging
+                if ($content -match "(.{0,100})($([regex]::Escape($mod.pattern)))(.{0,100})") {
+                    $context = "$($Matches[1])>>>$($Matches[2])<<<$($Matches[3])" -replace '[\r\n]+', ' '
+                    Write-Verbose "[PAK] Match context in $resourceId`: $context"
+                }
                 $content = $content -replace $mod.pattern, $mod.replacement
                 Write-Status "  Resource $resourceId - $($mod.description)" -Type Detail
                 $resourceModified = $true
