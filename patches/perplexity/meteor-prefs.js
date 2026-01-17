@@ -264,17 +264,6 @@
     'gkeojjjcdcopjkbelgbcpckplegclfeg': 'AdGuard Extra'
   };
 
-  // Track tabs we've already injected into
-  const injectedTabs = new Set();
-
-  /**
-   * Check if URL is an extensions page
-   */
-  function isExtensionsPage(url) {
-    if (!url) return false;
-    return url.startsWith('chrome://extensions') || url.startsWith('comet://extensions');
-  }
-
   /**
    * Enable incognito access for a specific extension using developerPrivate API
    */
@@ -325,44 +314,7 @@
     });
   }
 
-  /**
-   * Inject script into chrome://extensions page to enable developerPrivate access
-   * Uses programmatic injection since manifest content scripts can't target chrome:// URLs
-   */
-  async function injectExtensionsPageScript(tabId) {
-    if (injectedTabs.has(tabId)) return;
-    injectedTabs.add(tabId);
-
-    try {
-      // Try to inject using chrome.scripting API
-      if (chrome?.scripting?.executeScript) {
-        await chrome.scripting.executeScript({
-          target: { tabId: tabId },
-          files: ['content/extensions-page.js']
-        });
-        console.log(`[Meteor] Injected extensions-page.js into tab ${tabId}`);
-      }
-    } catch (err) {
-      console.warn(`[Meteor] Failed to inject into extensions page:`, err.message);
-      // Remove from set so we can retry
-      injectedTabs.delete(tabId);
-    }
-  }
-
-  // Listen for navigation to extensions page (injection only - redirects handled above)
-  chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-    // Inject into extensions page when it's loaded
-    if (changeInfo.status === 'complete' && tab.url && isExtensionsPage(tab.url)) {
-      injectExtensionsPageScript(tabId);
-    }
-  });
-
-  // Clean up tracking when tabs are closed
-  chrome.tabs.onRemoved.addListener((tabId) => {
-    injectedTabs.delete(tabId);
-  });
-
-  // Also monitor for extension installations/updates
+  // Monitor for extension installations/updates
   if (chrome?.management?.onInstalled) {
     chrome.management.onInstalled.addListener((extensionInfo) => {
       if (METEOR_EXTENSIONS[extensionInfo.id]) {
@@ -373,20 +325,6 @@
       }
     });
   }
-
-  // ============================================================================
-  // MESSAGE HANDLING
-  // ============================================================================
-
-  // Listen for messages from content scripts
-  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message.type === 'METEOR_ENABLE_INCOGNITO') {
-      console.log('[Meteor] Received incognito enable request from content script');
-      autoEnableIncognito();
-      sendResponse({ success: true });
-    }
-    return false; // Synchronous response
-  });
 
   // ============================================================================
   // INITIALIZATION

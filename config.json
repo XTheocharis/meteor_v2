@@ -215,8 +215,6 @@
               "path": "rules/telemetry.json"
             }]
           },
-          "permissions": ["scripting"],
-          "host_permissions": ["chrome://extensions/*"],
           "content_scripts": [
             {
               "matches": [
@@ -227,11 +225,6 @@
               "run_at": "document_start",
               "world": "MAIN",
               "all_frames": true
-            },
-            {
-              "matches": ["chrome://extensions/*"],
-              "js": ["content/extensions-page.js"],
-              "run_at": "document_end"
             }
           ]
         },
@@ -239,8 +232,7 @@
         "copy_files": {
           "meteor-prefs.js": "perplexity/meteor-prefs.js",
           "rules/telemetry.json": "perplexity/telemetry.json",
-          "content/content-script.js": "perplexity/content-script.js",
-          "content/extensions-page.js": "perplexity/extensions-page.js"
+          "content/content-script.js": "perplexity/content-script.js"
         }
       }
     }
