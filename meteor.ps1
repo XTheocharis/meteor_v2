@@ -1945,14 +1945,15 @@ function Initialize-PakModifications {
         if ($entry.WasGzipped) {
             try {
                 $outMs = New-Object System.IO.MemoryStream
-                $gz = New-Object System.IO.Compression.GZipStream($outMs, [System.IO.Compression.CompressionLevel]::Optimal)
+                $gz = New-Object System.IO.Compression.GZipStream($outMs, [System.IO.Compression.CompressionLevel]::Optimal, $true)
                 $gz.Write($newBytes, 0, $newBytes.Length)
-                $gz.Close()
+                $gz.Flush()
+                $gz.Dispose()
                 $newBytes = $outMs.ToArray()
-                $outMs.Close()
+                $outMs.Dispose()
             }
             catch {
-                Write-Status "Failed to recompress resource $resourceId" -Type Error
+                Write-Status "Failed to recompress resource $resourceId`: $_" -Type Error
                 continue
             }
         }
