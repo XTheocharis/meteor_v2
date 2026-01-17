@@ -2048,7 +2048,7 @@ function Set-BrowserPreferences {
             # Pin uBlock Origin to toolbar
             pinned_extensions = @($ublockExtId)
             settings          = @{
-                $ublockExtId = @{
+                $ublockExtId  = @{
                     toolbar_pin = "force_pinned"
                     incognito   = @{ enabled = $true }
                 }
@@ -2649,3 +2649,4 @@ function Main {
 Main
 
 #endregion
+
