@@ -1939,17 +1939,19 @@ function Initialize-PakModifications {
     $modified = $false
     foreach ($resourceId in $modifiedResources.Keys) {
         $entry = $modifiedResources[$resourceId]
-        [byte[]]$newBytes = [System.Text.Encoding]::UTF8.GetBytes($entry.Content)
+        $contentString = $entry['Content']
+        $wasGzipped = $entry['WasGzipped']
+        [byte[]]$newBytes = [System.Text.Encoding]::UTF8.GetBytes($contentString)
 
         # Re-compress if originally gzipped
-        if ($entry.WasGzipped) {
+        if ($wasGzipped) {
             try {
                 $outMs = New-Object System.IO.MemoryStream
                 $gz = New-Object System.IO.Compression.GZipStream($outMs, [System.IO.Compression.CompressionLevel]::Optimal, $true)
                 $gz.Write($newBytes, 0, $newBytes.Length)
                 $gz.Flush()
                 $gz.Dispose()
-                [byte[]]$newBytes = $outMs.ToArray()
+                $newBytes = [byte[]]$outMs.ToArray()  # Update existing variable, don't re-declare
                 $outMs.Dispose()
             }
             catch {
@@ -1959,10 +1961,10 @@ function Initialize-PakModifications {
         }
 
         if ($DryRunMode) {
-            Write-Status "Would modify resource $resourceId$(if ($entry.WasGzipped) { ' (gzipped)' })" -Type DryRun
+            Write-Status "Would modify resource $resourceId$(if ($wasGzipped) { ' (gzipped)' })" -Type DryRun
         }
         else {
-            $success = Set-PakResource -Pak $pak -ResourceId $resourceId -NewData ([byte[]]$newBytes)
+            $success = Set-PakResource -Pak $pak -ResourceId $resourceId -NewData $newBytes
             if ($success) {
                 $modified = $true
             }
