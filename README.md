@@ -71,19 +71,13 @@ After launching, verify the layers are working:
 3. **Telemetry**: Open DevTools Network tab - no requests to datadoghq.com, sentry.io, etc.
 4. **New Tab**: Opens https://www.perplexity.ai/b/home instead of chrome://newtab
 
-### Manual Extension Setup for Incognito Mode
+### Automatic Incognito Mode
 
-**Chrome does not allow programmatically enabling extensions in incognito mode** due to security restrictions. You must manually enable uBlock Origin and AdGuard Extra for incognito/inPrivate windows:
+**uBlock Origin and AdGuard Extra are automatically enabled in incognito mode.**
 
-1. Open Comet and go to `chrome://extensions`
-2. Find **uBlock Origin**, click **Details**
-3. Turn on **Allow in incognito**
-4. Find **AdGuard Extra**, click **Details**
-5. Turn on **Allow in incognito**
+Meteor uses the `--extensions-on-chrome-urls` flag to inject a content script into `chrome://extensions` that leverages the privileged `chrome.developerPrivate` API to enable incognito permissions. This happens automatically on first launch and when extensions are installed/updated.
 
-This is a one-time setup. The settings persist across browser restarts.
-
-**Why this is required:** Per [Chrome Enterprise documentation](https://support.google.com/chrome/a/answer/13130396), "As an admin, you can't automatically install extensions in Incognito mode." This is enforced by Chrome's HMAC protection mechanism in the Secure Preferences file. Any attempt to programmatically set incognito permissions is rejected and logged in `tracked_preferences_reset`.
+**Technical details:** While Chrome's HMAC protection normally prevents programmatic incognito enablement via Preferences file writes or `chrome.settingsPrivate` API, the `chrome.developerPrivate.updateExtensionConfiguration()` API (used by chrome://extensions UI) successfully bypasses this restriction when accessed from chrome:// pages with the appropriate flags.
 
 ## Directory Structure
 
