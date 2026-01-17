@@ -1094,6 +1094,106 @@ function Update-Extension {
     }
 }
 
+function Get-ChromeExtensionVersion {
+    <#
+    .SYNOPSIS
+        Get the latest version of a Chrome Web Store extension.
+    #>
+    param([Parameter(Mandatory)][string]$ExtensionId)
+
+    try {
+        $url = "https://chromewebstore.google.com/detail/$ExtensionId"
+        $response = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 30 -Headers @{
+            "User-Agent" = $script:UserAgent
+        }
+
+        if ($response.Content -match '\\"version\\":\s*\\"([\d.]+)\\"') {
+            return $Matches[1]
+        }
+
+        return $null
+    }
+    catch {
+        Write-Status "Failed to get version for extension $ExtensionId`: $_" -Type Warning
+        return $null
+    }
+}
+
+function Get-ChromeExtensionCrx {
+    <#
+    .SYNOPSIS
+        Download a CRX file from Chrome Web Store.
+    .DESCRIPTION
+        Downloads an extension from Chrome Web Store and saves it as a .crx file.
+        Optionally checks if the current version is up to date before downloading.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$ExtensionId,
+        [string]$CurrentVersion,
+        [string]$OutPath = "."
+    )
+
+    $latest = Get-ChromeExtensionVersion $ExtensionId
+    if (-not $latest) {
+        Write-Status "Could not get latest version for extension $ExtensionId" -Type Error
+        return $null
+    }
+
+    # Compare versions if current version provided
+    if ($CurrentVersion) {
+        $lParts = $latest -split '\.' | ForEach-Object { [int]$_ }
+        $cParts = $CurrentVersion -split '\.' | ForEach-Object { [int]$_ }
+        $newer = $false
+
+        for ($i = 0; $i -lt [Math]::Max($lParts.Count, $cParts.Count); $i++) {
+            $l = if ($i -lt $lParts.Count) { $lParts[$i] } else { 0 }
+            $c = if ($i -lt $cParts.Count) { $cParts[$i] } else { 0 }
+
+            if ($l -gt $c) {
+                $newer = $true
+                break
+            }
+            if ($l -lt $c) {
+                break
+            }
+        }
+
+        if (-not $newer) {
+            Write-Status "Extension $ExtensionId is up to date (current: $CurrentVersion, latest: $latest)" -Type Success
+            return $null
+        }
+    }
+
+    # Build download URL
+    $downloadUrl = "https://clients2.google.com/service/update2/crx?response=redirect&os=win&arch=x86-64&os_arch=x86-64&prod=chromecrx&prodchannel=unknown&prodversion=120.0.0.0&acceptformat=crx3&x=id%3D$ExtensionId%26uc"
+    $outFile = Join-Path $OutPath "$ExtensionId`_$latest.crx"
+
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        Invoke-WebRequest -Uri $downloadUrl -OutFile $outFile -UseBasicParsing -TimeoutSec 120 -Headers @{
+            "User-Agent" = $script:UserAgent
+            Referer      = "https://chrome.google.com/webstore/detail/$ExtensionId"
+        }
+
+        if ((Get-Item $outFile).Length -gt 0) {
+            Write-Status "Downloaded: $outFile (v$latest)" -Type Success
+            return $outFile
+        }
+        else {
+            Remove-Item $outFile -Force
+            Write-Status "Download failed - file is empty" -Type Error
+            return $null
+        }
+    }
+    catch {
+        Write-Status "Failed to download extension: $_" -Type Error
+        if (Test-Path $outFile) {
+            Remove-Item $outFile -Force
+        }
+        return $null
+    }
+}
+
 #endregion
 
 #region Comet Management
@@ -1536,6 +1636,94 @@ setTimeout(checkAndImport, 3000);
         if ((Test-Path variable:tempExtract) -and $tempExtract -and (Test-Path $tempExtract)) {
             Remove-Item -Path $tempExtract -Recurse -Force -ErrorAction SilentlyContinue
         }
+    }
+}
+
+function Get-AdGuardExtra {
+    <#
+    .SYNOPSIS
+        Download AdGuard Extra from Chrome Web Store if not present or outdated.
+    .DESCRIPTION
+        Downloads the extension from Chrome Web Store, extracts it, and ensures it's
+        enabled in both regular and incognito modes by default.
+    #>
+    param(
+        [string]$OutputDir,
+        [object]$AdGuardConfig,
+        [switch]$DryRunMode
+    )
+
+    $extensionId = $AdGuardConfig.extension_id
+    $manifestPath = Join-Path $OutputDir "manifest.json"
+    $currentVersion = $null
+
+    # Check if already installed
+    if ((Test-Path $OutputDir) -and (Test-Path $manifestPath)) {
+        $manifest = Get-Content -Path $manifestPath -Raw | ConvertFrom-Json
+        $currentVersion = $manifest.version
+        Write-Status "AdGuard Extra $currentVersion installed, checking for updates..." -Type Info
+    }
+    else {
+        Write-Status "AdGuard Extra not found, downloading..." -Type Info
+    }
+
+    try {
+        # Handle dry run mode
+        if ($DryRunMode) {
+            if ($currentVersion) {
+                Write-Status "Would check for AdGuard Extra updates" -Type Detail
+            }
+            else {
+                Write-Status "Would download AdGuard Extra from Chrome Web Store" -Type Detail
+            }
+            return $null
+        }
+
+        # Download CRX (will skip if up to date)
+        $tempDir = Join-Path $env:TEMP "adguard_extra_$(Get-Random)"
+        $crxFile = Get-ChromeExtensionCrx -ExtensionId $extensionId -CurrentVersion $currentVersion -OutPath $tempDir
+
+        if (-not $crxFile) {
+            # Either up to date or download failed
+            if ($currentVersion) {
+                # Already have a version installed
+                return $OutputDir
+            }
+            throw "Failed to download AdGuard Extra"
+        }
+
+        # Extract CRX
+        Write-Status "Extracting AdGuard Extra..." -Type Detail
+
+        # Remove existing directory
+        if (Test-Path $OutputDir) {
+            Remove-Item $OutputDir -Recurse -Force
+        }
+
+        # Extract using UnpackCrx
+        $extracted = Expand-CrxFile -CrxPath $crxFile
+        if (-not $extracted) {
+            throw "Failed to extract AdGuard Extra CRX"
+        }
+
+        # Move to output directory
+        Move-Item $extracted $OutputDir -Force
+
+        # Cleanup temp directory
+        if (Test-Path $tempDir) {
+            Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+
+        Write-Status "AdGuard Extra installed successfully" -Type Success
+        return $OutputDir
+    }
+    catch {
+        Write-Status "Failed to get AdGuard Extra: $_" -Type Error
+        if ($currentVersion) {
+            Write-Status "Continuing with existing installation ($currentVersion)" -Type Warning
+            return $OutputDir
+        }
+        return $null
     }
 }
 
@@ -2045,7 +2233,8 @@ function Build-BrowserCommand {
         [object]$Config,
         [string]$BrowserExe,
         [string]$ExtPath,
-        [string]$UBlockPath
+        [string]$UBlockPath,
+        [string]$AdGuardExtraPath
     )
 
     $cmd = [System.Collections.ArrayList]@()
@@ -2089,6 +2278,11 @@ function Build-BrowserCommand {
     # Add uBlock Origin
     if ($UBlockPath -and (Test-Path $UBlockPath)) {
         [void]$extensions.Add($UBlockPath)
+    }
+
+    # Add AdGuard Extra
+    if ($AdGuardExtraPath -and (Test-Path $AdGuardExtraPath)) {
+        [void]$extensions.Add($AdGuardExtraPath)
     }
 
     if ($extensions.Count -gt 0) {
@@ -2147,6 +2341,7 @@ function Main {
     # Resolve paths
     $patchedExtPath = Resolve-MeteorPath -BasePath $baseDir -RelativePath $config.paths.patched_extensions
     $ublockPath = Resolve-MeteorPath -BasePath $baseDir -RelativePath $config.paths.ublock
+    $adguardExtraPath = Resolve-MeteorPath -BasePath $baseDir -RelativePath $config.paths.adguard_extra
     $statePath = Resolve-MeteorPath -BasePath $baseDir -RelativePath $config.paths.state_file
     $patchesPath = Resolve-MeteorPath -BasePath $baseDir -RelativePath $config.paths.patches
 
@@ -2441,6 +2636,19 @@ function Main {
         $ublockPath = $null
     }
 
+    # ═══════════════════════════════════════════════════════════════
+    # Step 5.5: AdGuard Extra
+    # ═══════════════════════════════════════════════════════════════
+    Write-Status "Step 5.5: Checking AdGuard Extra" -Type Step
+
+    if ($config.adguard_extra.enabled) {
+        $null = Get-AdGuardExtra -OutputDir $adguardExtraPath -AdGuardConfig $config.adguard_extra -DryRunMode:$DryRun
+    }
+    else {
+        Write-Status "AdGuard Extra disabled in config" -Type Detail
+        $adguardExtraPath = $null
+    }
+
     # Save state
     if (-not $DryRun) {
         $state.last_update_check = (Get-Date).ToString("o")
@@ -2492,7 +2700,7 @@ function Main {
 
     if ($comet -or $DryRun) {
         $browserExe = if ($comet) { $comet.Executable } else { "comet.exe" }
-        $cmd = Build-BrowserCommand -Config $config -BrowserExe $browserExe -ExtPath $patchedExtPath -UBlockPath $ublockPath
+        $cmd = Build-BrowserCommand -Config $config -BrowserExe $browserExe -ExtPath $patchedExtPath -UBlockPath $ublockPath -AdGuardExtraPath $adguardExtraPath
 
         $proc = Start-Browser -Command $cmd -DryRunMode:$DryRun
 
