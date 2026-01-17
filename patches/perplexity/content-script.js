@@ -582,34 +582,49 @@
   injectMeteorStyles();
 
   // ============================================================================
-  // SECTION 6: NEW THREAD BUTTON REDIRECT
+  // SECTION 6: NEW THREAD BUTTON LINK WRAPPER
   // ============================================================================
 
   const HOMEPAGE_URL = 'https://www.perplexity.ai/b/home';
 
   /**
-   * Convert "New Thread" button to navigate to homepage instead of default behavior.
-   * The button is identified by aria-label="New Thread".
+   * Wrap "New Thread" button in an <a> element to enable native link behavior.
+   * This allows ctrl+click, middle-click, and right-click → open in new tab.
    */
-  function setupNewThreadRedirect() {
+  function setupNewThreadLink() {
     const selector = 'button[aria-label="New Thread"]';
 
-    function patchButton(button) {
-      if (button.__meteorPatched) return;
-      button.__meteorPatched = true;
+    function wrapButton(button) {
+      if (button.__meteorWrapped) return;
 
-      // Intercept click to navigate to homepage
+      // Skip if already wrapped in an <a>
+      if (button.parentElement?.tagName === 'A') {
+        button.__meteorWrapped = true;
+        return;
+      }
+
+      button.__meteorWrapped = true;
+
+      // Create wrapper link
+      const link = document.createElement('a');
+      link.href = HOMEPAGE_URL;
+      link.style.cssText = 'text-decoration: none; color: inherit; display: contents;';
+
+      // Wrap the button
+      button.parentNode.insertBefore(link, button);
+      link.appendChild(button);
+
+      // Prevent the button's default behavior from interfering
       button.addEventListener('click', (e) => {
-        e.preventDefault();
+        // Let the <a> handle navigation naturally for normal clicks
+        // Stop propagation to prevent React handlers
         e.stopPropagation();
-        e.stopImmediatePropagation();
-        window.location.href = HOMEPAGE_URL;
-      }, true); // Use capture phase to intercept before React handlers
+      }, true);
     }
 
-    // Patch any existing buttons
-    function patchExistingButtons() {
-      document.querySelectorAll(selector).forEach(patchButton);
+    // Wrap any existing buttons
+    function wrapExistingButtons() {
+      document.querySelectorAll(selector).forEach(wrapButton);
     }
 
     // Watch for dynamically added buttons
@@ -620,24 +635,24 @@
 
           // Check if the added node is the button
           if (node.matches?.(selector)) {
-            patchButton(node);
+            wrapButton(node);
           }
 
           // Check descendants
-          node.querySelectorAll?.(selector).forEach(patchButton);
+          node.querySelectorAll?.(selector).forEach(wrapButton);
         }
       }
     });
 
     // Start observing once DOM is ready
     if (document.body) {
-      patchExistingButtons();
+      wrapExistingButtons();
       observer.observe(document.body, { childList: true, subtree: true });
     } else {
       // Wait for body to exist
       const bodyObserver = new MutationObserver(() => {
         if (document.body) {
-          patchExistingButtons();
+          wrapExistingButtons();
           observer.observe(document.body, { childList: true, subtree: true });
           bodyObserver.disconnect();
         }
@@ -646,7 +661,7 @@
     }
   }
 
-  setupNewThreadRedirect();
+  setupNewThreadLink();
 
   // ============================================================================
   // SECTION 7: EXPORTED UTILITIES
