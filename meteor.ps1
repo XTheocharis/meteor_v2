@@ -1886,23 +1886,34 @@ function Initialize-PakModifications {
     # 3. Search all resources and apply modifications
     $modifiedResources = @{}
     $appliedCount = 0
+    $gzipCount = 0
+    $textCount = 0
+    $scannedCount = 0
 
     # Iterate through all resources (skip sentinel at end)
     for ($i = 0; $i -lt $pak.Resources.Count - 1; $i++) {
         $resource = $pak.Resources[$i]
         $resourceId = $resource.Id
 
-        # Get resource bytes (use @() to ensure array even if single element)
-        $resourceBytes = @(Get-PakResource -Pak $pak -ResourceId $resourceId)
-        if ($null -eq $resourceBytes -or $resourceBytes.Count -lt 2) { continue }
+        # Get resource bytes (comma operator in return preserves byte[] type)
+        $resourceBytes = Get-PakResource -Pak $pak -ResourceId $resourceId
+        if ($null -eq $resourceBytes) { continue }
+
+        # Ensure we have a byte[] and get its length safely
+        [byte[]]$resourceBytes = $resourceBytes
+        $byteLength = $resourceBytes.Length
+        if ($byteLength -lt 2) { continue }
+
+        $scannedCount++
 
         # Check if gzip compressed (magic bytes: 0x1f 0x8b)
         $isGzipped = ($resourceBytes[0] -eq 0x1f -and $resourceBytes[1] -eq 0x8b)
         $contentBytes = $resourceBytes
 
         if ($isGzipped) {
+            $gzipCount++
             try {
-                $ms = New-Object System.IO.MemoryStream(,$resourceBytes)
+                $ms = New-Object System.IO.MemoryStream($resourceBytes, $false)
                 $gz = New-Object System.IO.Compression.GZipStream($ms, [System.IO.Compression.CompressionMode]::Decompress)
                 $outMs = New-Object System.IO.MemoryStream
                 $gz.CopyTo($outMs)
@@ -1927,7 +1938,15 @@ function Initialize-PakModifications {
             continue
         }
 
+        $textCount++
         $resourceModified = $false
+
+        # Log sample content for pattern debugging (first 200 chars of resources containing key terms)
+        if ($content -match 'shouldHide|BooleanFlags|NumericFlags|perplexityChannel') {
+            Write-Verbose "[PAK] Resource $resourceId contains potential target (gzip=$isGzipped)"
+            $preview = $content.Substring(0, [Math]::Min(500, $content.Length)) -replace '[\r\n]+', ' '
+            Write-Verbose "[PAK] Preview: $preview..."
+        }
 
         # Try each modification pattern
         foreach ($mod in $PakConfig.modifications) {
@@ -1946,6 +1965,12 @@ function Initialize-PakModifications {
                 WasGzipped = $isGzipped
             }
         }
+    }
+
+    # Log scan statistics
+    Write-Verbose "[PAK] Scan complete: $scannedCount resources, $gzipCount gzipped, $textCount text files, $appliedCount patterns matched"
+    if ($appliedCount -eq 0) {
+        Write-Status "PAK scan stats: $scannedCount resources, $gzipCount gzipped, $textCount text - no pattern matches" -Type Detail
     }
 
     # 4. Apply all modifications to PAK structure
