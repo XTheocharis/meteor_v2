@@ -64,8 +64,9 @@ When you run `.\meteor.ps1`, it performs these steps automatically:
 3. **Step 2: Extension Update Check** - Queries extension update URLs and downloads newer versions
 4. **Step 3: Change Detection** - Compares file hashes to detect if re-patching is needed
 5. **Step 4: Extract & Patch** - Extracts CRX files and applies Meteor modifications
-6. **Step 5: uBlock Origin** - Downloads uBlock Origin MV2 if not present
-7. **Step 6: Launch Browser** - Starts Comet with all privacy enhancements
+6. **Step 5: uBlock Origin** - Downloads uBlock Origin MV2 from Chrome Web Store if not present
+7. **Step 5.5: AdGuard Extra** - Downloads AdGuard Extra from Chrome Web Store if not present
+8. **Step 6: Launch Browser** - Starts Comet with all privacy enhancements
 
 ### Key Files
 
@@ -84,7 +85,8 @@ When you run `.\meteor.ps1`, it performs these steps automatically:
 - Auto-detects or downloads Comet browser
 - Extracts and patches CRX extensions (handles both `.crx` and `.crx.disabled` files)
 - Reads/writes Chromium PAK files (v4/v5 format)
-- Manages uBlock Origin MV2 download
+- Downloads uBlock Origin MV2 and AdGuard Extra from Chrome Web Store
+- Preserves original extension public keys and update URLs for Chrome Web Store updates
 - Builds command line with 155 disabled features and 10 enabled features
 - Tracks file changes via SHA256 hashes
 - Clears Comet's CRX caches during re-patching to ensure changes take effect
@@ -112,7 +114,8 @@ All settings are in `config.json`. Key sections:
 - `extensions.sources`: Extensions to patch (`perplexity`, `comet_web_resources`, `agents`)
 - `extensions.patch_config.perplexity`: Patching rules for the perplexity extension
 - `pak_modifications`: Regex replacements for resources.pak
-- `ublock.defaults`: Filter lists and settings (41 lists + custom telemetry rules)
+- `ublock.extension_id` & `ublock.defaults`: Chrome Web Store ID (cjpalhdlnbpafiamejdnhcphjbkeiagm) and filter lists (41 lists + custom telemetry rules)
+- `adguard_extra.extension_id`: Chrome Web Store ID (gkeojjjcdcopjkbelgbcpckplegclfeg) for anti-adblock circumvention
 
 ## Critical Rules for Changes
 

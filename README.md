@@ -75,16 +75,20 @@ After launching, verify the layers are working:
 
 ```
 meteor_v2/
-├── meteor.ps1                # Main script - handles entire workflow
-├── config.json        # All configuration
-├── .meteor/                   # Runtime state (auto-generated, gitignored)
-│   └── state.json            # File hashes for change detection
-├── patches/perplexity/        # Extension modifications
-│   ├── meteor-prefs.js        # Preference enforcement + MCP API
-│   ├── telemetry.json         # 15 DNR blocking rules
-│   └── content-script.js      # SDK stubs + feature flag interception
-├── patched_extensions/        # Generated at runtime by meteor.ps1 (gitignored)
-└── ublock-origin/             # Downloaded at runtime by meteor.ps1 (gitignored)
+├── meteor.ps1                     # Main script - handles entire workflow
+├── config.json                    # All configuration
+├── .meteor/                       # Runtime state (auto-generated, gitignored)
+│   └── state.json                 # File hashes for change detection
+├── patches/perplexity/            # Extension modifications
+│   ├── meteor-prefs.js            # Preference enforcement + MCP API
+│   ├── telemetry.json             # 15 DNR blocking rules
+│   └── content-script.js          # SDK stubs + feature flag interception
+└── patched_extensions/            # Generated at runtime (gitignored)
+    ├── perplexity/                # Patched Comet extension
+    ├── comet_web_resources/       # Patched web resources
+    ├── agents/                    # Agents extension (extracted, not patched)
+    ├── ublock-origin/             # uBlock Origin MV2 from Chrome Web Store
+    └── adguard-extra/             # AdGuard Extra from Chrome Web Store
 ```
 
 ## Configuration
@@ -121,14 +125,16 @@ Edit `config.json` to customize:
 {
   "paths": {
     "patched_extensions": "./patched_extensions",
-    "ublock": "./ublock-origin",
+    "ublock": "./patched_extensions/ublock-origin",
+    "adguard_extra": "./patched_extensions/adguard-extra",
     "state_file": "./.meteor/state.json",
     "patches": "./patches"
   }
 }
 ```
-- `patched_extensions`: Output directory for patched extensions
-- `ublock`: Output directory for uBlock Origin
+- `patched_extensions`: Output directory for all extracted/patched extensions
+- `ublock`: Output directory for uBlock Origin MV2 (Chrome Web Store)
+- `adguard_extra`: Output directory for AdGuard Extra (Chrome Web Store)
 - `state_file`: Path to Meteor state file (tracks file hashes for change detection)
 - `patches`: Source directory for Meteor patch files
 
