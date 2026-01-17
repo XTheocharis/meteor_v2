@@ -1701,14 +1701,8 @@ function Get-AdGuardExtra {
             Remove-Item $OutputDir -Recurse -Force
         }
 
-        # Extract using UnpackCrx
-        $extracted = Expand-CrxFile -CrxPath $crxFile
-        if (-not $extracted) {
-            throw "Failed to extract AdGuard Extra CRX"
-        }
-
-        # Move to output directory
-        Move-Item $extracted $OutputDir -Force
+        # Extract CRX to output directory
+        Export-CrxToDirectory -CrxPath $crxFile -OutputDir $OutputDir
 
         # Cleanup temp directory
         if (Test-Path $tempDir) {
