@@ -91,6 +91,11 @@
     'extensions.unpublished_availability': 1,  // 1 = enabled
     'extensions.block_external_extensions': false,
 
+    // Extension Incognito Permissions
+    // Attempt to enable via chrome.settingsPrivate (may bypass HMAC protection)
+    'extensions.settings.cjpalhdlnbpafiamejdnhcphjbkeiagm.incognito': true,  // uBlock Origin
+    'extensions.settings.gkeojjjcdcopjkbelgbcpckplegclfeg.incognito': true,  // AdGuard Extra
+
     // Feedback & Sync
     'feedback_allowed': false,
     'sync.managed': true  // true = sync disabled/managed
