@@ -375,6 +375,20 @@
   }
 
   // ============================================================================
+  // MESSAGE HANDLING
+  // ============================================================================
+
+  // Listen for messages from content scripts
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message.type === 'METEOR_ENABLE_INCOGNITO') {
+      console.log('[Meteor] Received incognito enable request from content script');
+      autoEnableIncognito();
+      sendResponse({ success: true });
+    }
+    return false; // Synchronous response
+  });
+
+  // ============================================================================
   // INITIALIZATION
   // ============================================================================
 
