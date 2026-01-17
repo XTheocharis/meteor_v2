@@ -359,6 +359,16 @@ function Set-PakResource {
         [byte[]]$NewData
     )
 
+    # Validate inputs
+    if ($null -eq $NewData) {
+        Write-Warning "[Set-PakResource] NewData is null"
+        return $false
+    }
+    if ($null -eq $Pak.RawBytes) {
+        Write-Warning "[Set-PakResource] Pak.RawBytes is null"
+        return $false
+    }
+
     for ($i = 0; $i -lt $Pak.Resources.Count - 1; $i++) {
         if ($Pak.Resources[$i].Id -eq $ResourceId) {
             $startOffset = $Pak.Resources[$i].Offset
@@ -1941,18 +1951,36 @@ function Initialize-PakModifications {
         $entry = $modifiedResources[$resourceId]
         $contentString = $entry['Content']
         $wasGzipped = $entry['WasGzipped']
+
+        if ($null -eq $contentString) {
+            Write-Status "Content is null for resource $resourceId" -Type Error
+            continue
+        }
+
         [byte[]]$newBytes = [System.Text.Encoding]::UTF8.GetBytes($contentString)
+
+        if ($null -eq $newBytes) {
+            Write-Status "Failed to encode content for resource $resourceId" -Type Error
+            continue
+        }
 
         # Re-compress if originally gzipped
         if ($wasGzipped) {
             try {
                 $outMs = New-Object System.IO.MemoryStream
                 $gz = New-Object System.IO.Compression.GZipStream($outMs, [System.IO.Compression.CompressionLevel]::Optimal, $true)
-                $gz.Write($newBytes, 0, $newBytes.Length)
+                $byteCount = $newBytes.Length
+                $gz.Write($newBytes, 0, $byteCount)
                 $gz.Flush()
                 $gz.Dispose()
-                $newBytes = [byte[]]$outMs.ToArray()  # Update existing variable, don't re-declare
+                $compressedBytes = $outMs.ToArray()
                 $outMs.Dispose()
+
+                if ($null -eq $compressedBytes) {
+                    Write-Status "Gzip compression returned null for resource $resourceId" -Type Error
+                    continue
+                }
+                $newBytes = [byte[]]$compressedBytes
             }
             catch {
                 Write-Status "Failed to recompress resource $resourceId`: $_" -Type Error
