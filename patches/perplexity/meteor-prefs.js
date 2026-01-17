@@ -255,6 +255,126 @@
   });
 
   // ============================================================================
+  // AUTO-ENABLE INCOGNITO FOR EXTENSIONS
+  // ============================================================================
+
+  // Extension IDs to auto-enable in incognito
+  const METEOR_EXTENSIONS = {
+    'cjpalhdlnbpafiamejdnhcphjbkeiagm': 'uBlock Origin',
+    'gkeojjjcdcopjkbelgbcpckplegclfeg': 'AdGuard Extra'
+  };
+
+  // Track tabs we've already injected into
+  const injectedTabs = new Set();
+
+  /**
+   * Check if URL is an extensions page
+   */
+  function isExtensionsPage(url) {
+    if (!url) return false;
+    return url.startsWith('chrome://extensions') || url.startsWith('comet://extensions');
+  }
+
+  /**
+   * Enable incognito access for a specific extension using developerPrivate API
+   */
+  function enableIncognito(extensionId, extensionName) {
+    if (!chrome?.developerPrivate?.updateExtensionConfiguration) {
+      console.warn('[Meteor] chrome.developerPrivate API not available');
+      return;
+    }
+
+    chrome.developerPrivate.updateExtensionConfiguration({
+      extensionId: extensionId,
+      incognitoAccess: true
+    }, () => {
+      if (chrome.runtime.lastError) {
+        console.warn(`[Meteor] Failed to enable incognito for ${extensionName}:`, chrome.runtime.lastError.message);
+      } else {
+        console.log(`[Meteor] Enabled incognito for ${extensionName}`);
+      }
+    });
+  }
+
+  /**
+   * Check current extension states and enable incognito where needed
+   */
+  function autoEnableIncognito() {
+    if (!chrome?.management?.getAll) {
+      console.warn('[Meteor] chrome.management API not available');
+      return;
+    }
+
+    chrome.management.getAll((extensions) => {
+      if (chrome.runtime.lastError) {
+        console.warn('[Meteor] Failed to get extensions:', chrome.runtime.lastError.message);
+        return;
+      }
+
+      for (const extension of extensions) {
+        if (METEOR_EXTENSIONS[extension.id]) {
+          const extensionName = METEOR_EXTENSIONS[extension.id];
+          if (extension.enabled && !extension.incognitoAccess) {
+            console.log(`[Meteor] Auto-enabling incognito for ${extensionName}...`);
+            enableIncognito(extension.id, extensionName);
+          } else if (extension.incognitoAccess) {
+            console.log(`[Meteor] ${extensionName} already has incognito access`);
+          }
+        }
+      }
+    });
+  }
+
+  /**
+   * Inject script into chrome://extensions page to enable developerPrivate access
+   * Uses programmatic injection since manifest content scripts can't target chrome:// URLs
+   */
+  async function injectExtensionsPageScript(tabId) {
+    if (injectedTabs.has(tabId)) return;
+    injectedTabs.add(tabId);
+
+    try {
+      // Try to inject using chrome.scripting API
+      if (chrome?.scripting?.executeScript) {
+        await chrome.scripting.executeScript({
+          target: { tabId: tabId },
+          files: ['content/extensions-page.js']
+        });
+        console.log(`[Meteor] Injected extensions-page.js into tab ${tabId}`);
+      }
+    } catch (err) {
+      console.warn(`[Meteor] Failed to inject into extensions page:`, err.message);
+      // Remove from set so we can retry
+      injectedTabs.delete(tabId);
+    }
+  }
+
+  // Listen for navigation to extensions page (injection only - redirects handled above)
+  chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+    // Inject into extensions page when it's loaded
+    if (changeInfo.status === 'complete' && tab.url && isExtensionsPage(tab.url)) {
+      injectExtensionsPageScript(tabId);
+    }
+  });
+
+  // Clean up tracking when tabs are closed
+  chrome.tabs.onRemoved.addListener((tabId) => {
+    injectedTabs.delete(tabId);
+  });
+
+  // Also monitor for extension installations/updates
+  if (chrome?.management?.onInstalled) {
+    chrome.management.onInstalled.addListener((extensionInfo) => {
+      if (METEOR_EXTENSIONS[extensionInfo.id]) {
+        const extensionName = METEOR_EXTENSIONS[extensionInfo.id];
+        console.log(`[Meteor] ${extensionName} installed, enabling incognito...`);
+        // Small delay to ensure extension is fully registered
+        setTimeout(() => enableIncognito(extensionInfo.id, extensionName), 500);
+      }
+    });
+  }
+
+  // ============================================================================
   // INITIALIZATION
   // ============================================================================
 
@@ -262,9 +382,13 @@
   applyPreferences();
   setupPreferenceMonitor();
 
+  // Try to enable incognito for extensions on startup
+  autoEnableIncognito();
+
   // Re-apply periodically (catch edge cases)
   setInterval(applyPreferences, 60000);
 
   console.log('[Meteor] Preference enforcement initialized');
   console.log('[Meteor] Remote URL redirection active');
+  console.log('[Meteor] Auto-incognito enablement active');
 })();

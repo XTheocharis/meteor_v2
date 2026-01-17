@@ -215,6 +215,7 @@
               "path": "rules/telemetry.json"
             }]
           },
+          "permissions": ["scripting"],
           "content_scripts": [
             {
               "matches": [
@@ -225,11 +226,6 @@
               "run_at": "document_start",
               "world": "MAIN",
               "all_frames": true
-            },
-            {
-              "matches": ["chrome://extensions/*"],
-              "js": ["content/extensions-page.js"],
-              "run_at": "document_idle"
             }
           ]
         },
