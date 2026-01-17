@@ -62,7 +62,7 @@
     'bookmark_bar.show_apps_shortcut': false,
 
     // Sign-in & Profile
-    'signin.allowed': false,
+    // Note: signin.allowed is NOT set - allow sign-in but disable sync via sync.managed
     'profile.browser_guest_enforced': false,
     'profile.add_person_enabled': false,
 

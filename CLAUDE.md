@@ -91,7 +91,7 @@ When you run `.\meteor.ps1`, it performs these steps automatically:
 - Stops running Comet processes when `-Force` is used
 
 **patches/perplexity/meteor-prefs.js**: Service worker module that:
-- Enforces 39 privacy preferences via `chrome.settingsPrivate` (disables adblock, metrics, telemetry, AI features, sync, signin, etc.)
+- Enforces 38 privacy preferences via `chrome.settingsPrivate` (disables adblock, metrics, telemetry, AI features, sync, etc. - sign-in is allowed)
 - Exposes `globalThis.MeteorMCP` API wrapping `chrome.perplexity.mcp.*`
 - Redirects local URLs (chrome://, comet://) to perplexity.ai via `chrome.tabs` API
 

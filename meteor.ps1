@@ -1936,9 +1936,7 @@ function Set-BrowserPreferences {
                 }
             }
         }
-        signin       = @{
-            allowed = $false
-        }
+        # Note: signin.allowed is NOT set here - allow sign-in but disable sync
         sync         = @{
             managed = $true
         }
