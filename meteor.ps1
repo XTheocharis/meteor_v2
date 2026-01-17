@@ -2032,10 +2032,10 @@ function Set-BrowserPreferences {
             settings          = @{
                 $ublockExtId  = @{
                     toolbar_pin = "force_pinned"
-                    incognito   = @{ enabled = $true }
+                    incognito   = $true
                 }
                 $adguardExtId = @{
-                    incognito = @{ enabled = $true }
+                    incognito = $true
                 }
             }
         }
