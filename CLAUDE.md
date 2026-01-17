@@ -14,7 +14,7 @@ Meteor v2 is a privacy-focused enhancement system for the Comet browser (Chromiu
 ```powershell
 .\meteor.ps1                  # Full automated workflow: setup, patch, launch
 .\meteor.ps1 -DryRun          # Show what would be done without making changes
-.\meteor.ps1 -Force           # Force re-setup (stops running Comet, clears CRX caches)
+.\meteor.ps1 -Force           # Force re-setup (stops Comet, deletes Preferences, clears CRX caches)
 .\meteor.ps1 -NoLaunch        # Run setup only, don't launch browser
 .\meteor.ps1 -Config path.json # Use alternate configuration file
 .\meteor.ps1 -Verbose         # Enable verbose output (PowerShell common parameter)

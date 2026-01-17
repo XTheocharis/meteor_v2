@@ -18,6 +18,7 @@
 
 .PARAMETER Force
     Force re-extraction and re-patching even if files haven't changed.
+    Stops running Comet processes and deletes Preferences files to ensure fresh settings.
 
 .PARAMETER NoLaunch
     Perform all setup steps but don't launch the browser.
@@ -2280,6 +2281,42 @@ function Main {
                 $cometProcesses | Stop-Process -Force -ErrorAction SilentlyContinue
                 Start-Sleep -Milliseconds 500  # Brief pause for file handles to release
                 Write-Status "Comet processes stopped" -Type Success
+            }
+        }
+
+        # Delete Preferences files to force fresh settings on next launch
+        # This ensures extension incognito settings are written correctly
+        $userDataPaths = @(
+            (Join-Path $env:LOCALAPPDATA "Perplexity\Comet\User Data"),
+            (Join-Path $env:LOCALAPPDATA "Comet\User Data")
+        )
+
+        foreach ($userDataPath in $userDataPaths) {
+            if (Test-Path $userDataPath) {
+                $profileName = if ($config.browser.profile) { $config.browser.profile } else { "Default" }
+                $profilePath = Join-Path $userDataPath $profileName
+                $prefsPath = Join-Path $profilePath "Preferences"
+                $securePrefsPath = Join-Path $profilePath "Secure Preferences"
+
+                if (Test-Path $prefsPath) {
+                    if ($DryRun) {
+                        Write-Status "Would delete: $prefsPath" -Type DryRun
+                    }
+                    else {
+                        Remove-Item -Path $prefsPath -Force -ErrorAction SilentlyContinue
+                        Write-Status "Deleted Preferences file" -Type Detail
+                    }
+                }
+
+                if (Test-Path $securePrefsPath) {
+                    if ($DryRun) {
+                        Write-Status "Would delete: $securePrefsPath" -Type DryRun
+                    }
+                    else {
+                        Remove-Item -Path $securePrefsPath -Force -ErrorAction SilentlyContinue
+                        Write-Status "Deleted Secure Preferences file" -Type Detail
+                    }
+                }
             }
         }
     }
