@@ -71,6 +71,20 @@ After launching, verify the layers are working:
 3. **Telemetry**: Open DevTools Network tab - no requests to datadoghq.com, sentry.io, etc.
 4. **New Tab**: Opens https://www.perplexity.ai/b/home instead of chrome://newtab
 
+### Manual Extension Setup for Incognito Mode
+
+**Chrome does not allow programmatically enabling extensions in incognito mode** due to security restrictions. You must manually enable uBlock Origin and AdGuard Extra for incognito/inPrivate windows:
+
+1. Open Comet and go to `chrome://extensions`
+2. Find **uBlock Origin**, click **Details**
+3. Turn on **Allow in incognito**
+4. Find **AdGuard Extra**, click **Details**
+5. Turn on **Allow in incognito**
+
+This is a one-time setup. The settings persist across browser restarts.
+
+**Why this is required:** Per [Chrome Enterprise documentation](https://support.google.com/chrome/a/answer/13130396), "As an admin, you can't automatically install extensions in Incognito mode." This is enforced by Chrome's HMAC protection mechanism in the Secure Preferences file. Any attempt to programmatically set incognito permissions is rejected and logged in `tracked_preferences_reset`.
+
 ## Directory Structure
 
 ```

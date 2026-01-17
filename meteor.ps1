@@ -2020,8 +2020,11 @@ function Set-BrowserPreferences {
     # uBlock Origin extension ID (fixed ID from Chrome Web Store)
     $ublockExtId = "cjpalhdlnbpafiamejdnhcphjbkeiagm"
 
-    # AdGuard Extra extension ID (fixed ID from Chrome Web Store)
-    $adguardExtId = "gkeojjjcdcopjkbelgbcpckplegclfeg"
+    # NOTE: Chrome does not allow programmatically enabling extensions in incognito mode.
+    # Per Chrome Enterprise docs: "As an admin, you can't automatically install extensions
+    # in Incognito mode." Any incognito settings written to Preferences are rejected by
+    # Chrome's HMAC protection and added to tracked_preferences_reset.
+    # Users must manually enable via chrome://extensions → Details → Allow in incognito.
 
     $criticalSettings = @{
         extensions   = @{
@@ -2033,10 +2036,6 @@ function Set-BrowserPreferences {
             settings          = @{
                 $ublockExtId  = @{
                     toolbar_pin = "force_pinned"
-                    incognito   = $true
-                }
-                $adguardExtId = @{
-                    incognito = $true
                 }
             }
         }
