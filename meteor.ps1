@@ -1881,11 +1881,32 @@ function Initialize-PakModifications {
 
         # Get resource bytes
         $resourceBytes = Get-PakResource -Pak $pak -ResourceId $resourceId
-        if ($null -eq $resourceBytes) { continue }
+        if ($null -eq $resourceBytes -or $resourceBytes.Length -lt 2) { continue }
+
+        # Check if gzip compressed (magic bytes: 0x1f 0x8b)
+        $isGzipped = ($resourceBytes[0] -eq 0x1f -and $resourceBytes[1] -eq 0x8b)
+        $contentBytes = $resourceBytes
+
+        if ($isGzipped) {
+            try {
+                $ms = New-Object System.IO.MemoryStream(,$resourceBytes)
+                $gz = New-Object System.IO.Compression.GZipStream($ms, [System.IO.Compression.CompressionMode]::Decompress)
+                $outMs = New-Object System.IO.MemoryStream
+                $gz.CopyTo($outMs)
+                $gz.Close()
+                $ms.Close()
+                $contentBytes = $outMs.ToArray()
+                $outMs.Close()
+            }
+            catch {
+                # Failed to decompress, skip
+                continue
+            }
+        }
 
         # Try to decode as UTF-8 text (skip binary resources)
         try {
-            $content = [System.Text.Encoding]::UTF8.GetString($resourceBytes)
+            $content = [System.Text.Encoding]::UTF8.GetString($contentBytes)
             # Skip if it looks like binary (has null bytes or non-printable chars)
             if ($content -match '[\x00-\x08\x0E-\x1F]') { continue }
         }
@@ -1905,20 +1926,39 @@ function Initialize-PakModifications {
             }
         }
 
-        # Track modified resources
+        # Track modified resources (with compression flag)
         if ($resourceModified) {
-            $modifiedResources[$resourceId] = $content
+            $modifiedResources[$resourceId] = @{
+                Content = $content
+                WasGzipped = $isGzipped
+            }
         }
     }
 
     # 4. Apply all modifications to PAK structure
     $modified = $false
     foreach ($resourceId in $modifiedResources.Keys) {
-        $newContent = $modifiedResources[$resourceId]
-        $newBytes = [System.Text.Encoding]::UTF8.GetBytes($newContent)
+        $entry = $modifiedResources[$resourceId]
+        $newBytes = [System.Text.Encoding]::UTF8.GetBytes($entry.Content)
+
+        # Re-compress if originally gzipped
+        if ($entry.WasGzipped) {
+            try {
+                $outMs = New-Object System.IO.MemoryStream
+                $gz = New-Object System.IO.Compression.GZipStream($outMs, [System.IO.Compression.CompressionLevel]::Optimal)
+                $gz.Write($newBytes, 0, $newBytes.Length)
+                $gz.Close()
+                $newBytes = $outMs.ToArray()
+                $outMs.Close()
+            }
+            catch {
+                Write-Status "Failed to recompress resource $resourceId" -Type Error
+                continue
+            }
+        }
 
         if ($DryRunMode) {
-            Write-Status "Would modify resource $resourceId" -Type DryRun
+            Write-Status "Would modify resource $resourceId$(if ($entry.WasGzipped) { ' (gzipped)' })" -Type DryRun
         }
         else {
             $success = Set-PakResource -Pak $pak -ResourceId $resourceId -NewData $newBytes
