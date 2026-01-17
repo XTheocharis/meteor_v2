@@ -1428,8 +1428,8 @@ function Get-UBlockOrigin {
                 Remove-Item $OutputDir -Recurse -Force
             }
 
-            # Extract CRX to output directory
-            Export-CrxToDirectory -CrxPath $crxFile -OutputDir $OutputDir
+            # Extract CRX to output directory (with key injection for consistent extension ID)
+            Export-CrxToDirectory -CrxPath $crxFile -OutputDir $OutputDir -InjectKey
 
             # Cleanup temp directory
             if (Test-Path $tempDir) {
@@ -1626,8 +1626,8 @@ function Get-AdGuardExtra {
             Remove-Item $OutputDir -Recurse -Force
         }
 
-        # Extract CRX to output directory
-        Export-CrxToDirectory -CrxPath $crxFile -OutputDir $OutputDir
+        # Extract CRX to output directory (with key injection for consistent extension ID)
+        Export-CrxToDirectory -CrxPath $crxFile -OutputDir $OutputDir -InjectKey
 
         # Cleanup temp directory
         if (Test-Path $tempDir) {
