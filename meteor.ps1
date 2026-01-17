@@ -1681,6 +1681,7 @@ function Get-AdGuardExtra {
 
         # Download CRX (will skip if up to date)
         $tempDir = Join-Path $env:TEMP "adguard_extra_$(Get-Random)"
+        $null = New-Item -ItemType Directory -Path $tempDir -Force
         $crxFile = Get-ChromeExtensionCrx -ExtensionId $extensionId -CurrentVersion $currentVersion -OutPath $tempDir
 
         if (-not $crxFile) {
