@@ -339,7 +339,8 @@ function Get-PakResource {
             $data = New-Object byte[] $length
             [Array]::Copy($Pak.RawBytes, $startOffset, $data, 0, $length)
 
-            return $data
+            # Use comma to prevent PowerShell from unwrapping single-element arrays
+            return ,$data
         }
     }
 
@@ -1891,9 +1892,9 @@ function Initialize-PakModifications {
         $resource = $pak.Resources[$i]
         $resourceId = $resource.Id
 
-        # Get resource bytes
-        $resourceBytes = Get-PakResource -Pak $pak -ResourceId $resourceId
-        if ($null -eq $resourceBytes -or $resourceBytes.GetLength(0) -lt 2) { continue }
+        # Get resource bytes (use @() to ensure array even if single element)
+        $resourceBytes = @(Get-PakResource -Pak $pak -ResourceId $resourceId)
+        if ($null -eq $resourceBytes -or $resourceBytes.Count -lt 2) { continue }
 
         # Check if gzip compressed (magic bytes: 0x1f 0x8b)
         $isGzipped = ($resourceBytes[0] -eq 0x1f -and $resourceBytes[1] -eq 0x8b)
