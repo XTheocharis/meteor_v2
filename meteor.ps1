@@ -1956,27 +1956,24 @@ function Set-BrowserPreferences {
     }
 
     try {
-        $prefs = @{}
+        # CRITICAL: Only set HMAC-protected preferences on FIRST RUN.
+        # Chromium uses HMAC signatures in "Secure Preferences" to detect tampering.
+        # If we modify Preferences after the browser has run, the HMAC becomes invalid,
+        # which can cause crashes (especially when opening the browser menu).
+        # See: https://www.cse.chalmers.se/~andrei/cans20.pdf
+        $isFirstRun = -not (Test-Path $prefsPath)
 
-        # Load existing preferences if file exists
-        if (Test-Path $prefsPath) {
-            $content = Get-Content $prefsPath -Raw -ErrorAction SilentlyContinue
-            if ($content) {
-                try {
-                    $prefs = $content | ConvertFrom-Json -AsHashtable -ErrorAction Stop
-                }
-                catch {
-                    # PowerShell 5.1 doesn't support -AsHashtable
-                    $jsonObj = $content | ConvertFrom-Json -ErrorAction Stop
-                    $prefs = Convert-PSObjectToHashtable $jsonObj
-                }
-            }
+        if (-not $isFirstRun) {
+            Write-Status "Preferences already exist - skipping to avoid HMAC validation issues" -Type Detail
+            return $true
         }
 
-        # Deep merge critical settings
+        $prefs = @{}
+
+        # Deep merge critical settings (only on first run)
         $prefs = Merge-Hashtables -Base $prefs -Override $criticalSettings
 
-        # Write back
+        # Write preferences
         $json = $prefs | ConvertTo-Json -Depth 20 -Compress
         Set-Content -Path $prefsPath -Value $json -Encoding UTF8 -Force
 
