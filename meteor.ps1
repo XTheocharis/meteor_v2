@@ -374,11 +374,12 @@ function Set-PakResource {
             $startOffset = $Pak.Resources[$i].Offset
             $endOffset = $Pak.Resources[$i + 1].Offset
             $oldLength = $endOffset - $startOffset
-            $newLength = $NewData.Length
+            $newLength = [Array]::get_Length($NewData)
             $sizeDiff = $newLength - $oldLength
 
             # Create new byte array
-            $newBytes = New-Object byte[] ($Pak.RawBytes.Length + $sizeDiff)
+            $rawBytesLength = [Array]::get_Length($Pak.RawBytes)
+            $newBytes = New-Object byte[] ($rawBytesLength + $sizeDiff)
 
             # Copy everything before this resource
             [Array]::Copy($Pak.RawBytes, 0, $newBytes, 0, $startOffset)
@@ -387,7 +388,7 @@ function Set-PakResource {
             [Array]::Copy($NewData, 0, $newBytes, $startOffset, $newLength)
 
             # Copy everything after this resource
-            $afterLength = $Pak.RawBytes.Length - $endOffset
+            $afterLength = $rawBytesLength - $endOffset
             if ($afterLength -gt 0) {
                 [Array]::Copy($Pak.RawBytes, $endOffset, $newBytes, $startOffset + $newLength, $afterLength)
             }
@@ -670,12 +671,13 @@ function ConvertTo-SpkiBase64 {
     function Get-DerInteger {
         param([byte[]]$Value)
         $i = 0
-        while ($i -lt $Value.Length - 1 -and $Value[$i] -eq 0) { $i++ }
-        $Value = $Value[$i..($Value.Length - 1)]
+        $valueLen = [Array]::get_Length($Value)
+        while ($i -lt $valueLen - 1 -and $Value[$i] -eq 0) { $i++ }
+        $Value = $Value[$i..($valueLen - 1)]
         if ($Value[0] -band 0x80) {
             $Value = @([byte]0) + $Value
         }
-        $len = $Value.Length
+        $len = [Array]::get_Length($Value)
         if ($len -lt 128) {
             return @([byte]0x02, [byte]$len) + $Value
         }
@@ -689,7 +691,7 @@ function ConvertTo-SpkiBase64 {
 
     function Get-DerSequence {
         param([byte[]]$Content)
-        $len = $Content.Length
+        $len = [Array]::get_Length($Content)
         if ($len -lt 128) {
             return @([byte]0x30, [byte]$len) + $Content
         }
@@ -703,7 +705,7 @@ function ConvertTo-SpkiBase64 {
 
     function Get-DerBitString {
         param([byte[]]$Content)
-        $len = $Content.Length + 1
+        $len = [Array]::get_Length($Content) + 1
         if ($len -lt 128) {
             return @([byte]0x03, [byte]$len, [byte]0x00) + $Content
         }
@@ -920,7 +922,7 @@ function Export-CrxToDirectory {
     }
 
     # Extract ZIP portion
-    $zipLength = $bytes.Length - $zipOffset
+    $zipLength = [Array]::get_Length($bytes) - $zipOffset
     $zipBytes = New-Object byte[] $zipLength
     [Array]::Copy($bytes, $zipOffset, $zipBytes, 0, $zipLength)
 
@@ -1891,7 +1893,7 @@ function Initialize-PakModifications {
 
         # Get resource bytes
         $resourceBytes = Get-PakResource -Pak $pak -ResourceId $resourceId
-        if ($null -eq $resourceBytes -or $resourceBytes.Length -lt 2) { continue }
+        if ($null -eq $resourceBytes -or [Array]::get_Length($resourceBytes) -lt 2) { continue }
 
         # Check if gzip compressed (magic bytes: 0x1f 0x8b)
         $isGzipped = ($resourceBytes[0] -eq 0x1f -and $resourceBytes[1] -eq 0x8b)
@@ -1948,28 +1950,38 @@ function Initialize-PakModifications {
     # 4. Apply all modifications to PAK structure
     $modified = $false
     foreach ($resourceId in $modifiedResources.Keys) {
-        $entry = $modifiedResources[$resourceId]
-        $contentString = $entry['Content']
-        $wasGzipped = $entry['WasGzipped']
+        try {
+            Write-Verbose "[PAK] Processing resource $resourceId"
+            $entry = $modifiedResources[$resourceId]
+            $contentString = $entry['Content']
+            $wasGzipped = $entry['WasGzipped']
 
-        if ($null -eq $contentString) {
-            Write-Status "Content is null for resource $resourceId" -Type Error
-            continue
-        }
+            Write-Verbose "[PAK] Content type: $($contentString.GetType().FullName), WasGzipped: $wasGzipped"
 
-        [byte[]]$newBytes = [System.Text.Encoding]::UTF8.GetBytes($contentString)
+            if ($null -eq $contentString) {
+                Write-Status "Content is null for resource $resourceId" -Type Error
+                continue
+            }
 
-        if ($null -eq $newBytes) {
-            Write-Status "Failed to encode content for resource $resourceId" -Type Error
-            continue
-        }
+            Write-Verbose "[PAK] Encoding to UTF8..."
+            [byte[]]$newBytes = [System.Text.Encoding]::UTF8.GetBytes($contentString)
+            Write-Verbose "[PAK] Encoded bytes type: $($newBytes.GetType().FullName)"
 
-        # Re-compress if originally gzipped
-        if ($wasGzipped) {
-            try {
+            if ($null -eq $newBytes) {
+                Write-Status "Failed to encode content for resource $resourceId" -Type Error
+                continue
+            }
+
+            # Re-compress if originally gzipped
+            if ($wasGzipped) {
+                Write-Verbose "[PAK] Recompressing with gzip..."
                 $outMs = New-Object System.IO.MemoryStream
                 $gz = New-Object System.IO.Compression.GZipStream($outMs, [System.IO.Compression.CompressionLevel]::Optimal, $true)
-                $byteCount = $newBytes.Length
+
+                # Get length using .NET method to avoid PowerShell property resolution issues
+                $byteCount = [Array]::get_Length($newBytes)
+                Write-Verbose "[PAK] Writing $byteCount bytes to gzip stream..."
+
                 $gz.Write($newBytes, 0, $byteCount)
                 $gz.Flush()
                 $gz.Dispose()
@@ -1981,24 +1993,27 @@ function Initialize-PakModifications {
                     continue
                 }
                 $newBytes = [byte[]]$compressedBytes
+                Write-Verbose "[PAK] Compressed to $([Array]::get_Length($newBytes)) bytes"
             }
-            catch {
-                Write-Status "Failed to recompress resource $resourceId`: $_" -Type Error
-                continue
-            }
-        }
 
-        if ($DryRunMode) {
-            Write-Status "Would modify resource $resourceId$(if ($wasGzipped) { ' (gzipped)' })" -Type DryRun
-        }
-        else {
-            $success = Set-PakResource -Pak $pak -ResourceId $resourceId -NewData $newBytes
-            if ($success) {
-                $modified = $true
+            if ($DryRunMode) {
+                Write-Status "Would modify resource $resourceId$(if ($wasGzipped) { ' (gzipped)' })" -Type DryRun
             }
             else {
-                Write-Status "Failed to set resource $resourceId" -Type Error
+                Write-Verbose "[PAK] Calling Set-PakResource..."
+                $success = Set-PakResource -Pak $pak -ResourceId $resourceId -NewData $newBytes
+                if ($success) {
+                    $modified = $true
+                }
+                else {
+                    Write-Status "Failed to set resource $resourceId" -Type Error
+                }
             }
+        }
+        catch {
+            Write-Status "Error processing resource $resourceId`: $($_.Exception.Message)" -Type Error
+            Write-Status "  At: $($_.InvocationInfo.ScriptLineNumber)" -Type Error
+            continue
         }
     }
 
