@@ -19,8 +19,8 @@ LAYER 0: STATIC (PAK)     - Modified resources.pak with disabled telemetry defau
 LAYER 1: LAUNCH (FLAGS)   - Privacy-focused Chromium flags (155 disabled, 10 enabled features)
 LAYER 2: SOURCE (EXT)     - Modified perplexity extension with DNR rules
 LAYER 3: CONTENT (STUBS)  - SDK stubs injected before CDN scripts load
-LAYER 4: NETWORK (DNR)    - 16 declarative net request blocking rules
-LAYER 5: ADBLOCK (UBLOCK) - uBlock Origin MV2 with 41 filter lists
+LAYER 4: NETWORK (DNR)    - 15 declarative net request blocking rules
+LAYER 5: ADBLOCK          - uBlock Origin MV2 (41 filter lists) + AdGuard Extra (anti-adblock)
 LAYER 6: RUNTIME (PREFS)  - Preference enforcement via chrome.settingsPrivate
 LAYER 7: REDIRECT (URLs)  - Force remote perplexity.ai URLs instead of chrome-extension://
 ```
@@ -38,7 +38,7 @@ LAYER 7: REDIRECT (URLs)  - Force remote perplexity.ai URLs instead of chrome-ex
 # Just run Meteor - it handles everything automatically:
 # - Downloads Comet browser if not installed
 # - Extracts and patches extensions
-# - Downloads uBlock Origin
+# - Downloads uBlock Origin MV2 and AdGuard Extra from Chrome Web Store
 # - Launches browser with all enhancements
 .\meteor.ps1
 ```
@@ -48,7 +48,7 @@ That's it. Meteor automatically:
 2. Checks for updates
 3. Extracts CRX extensions from Comet's `default_apps/`
 4. Applies Meteor patches (DNR rules, content scripts, preferences)
-5. Downloads uBlock Origin MV2
+5. Downloads uBlock Origin MV2 and AdGuard Extra from Chrome Web Store
 6. Launches browser with 155 disabled Chromium features
 
 ### Options

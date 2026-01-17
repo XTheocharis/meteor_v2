@@ -1439,12 +1439,6 @@ function Get-UBlockOrigin {
             Write-Status "uBlock Origin installed successfully" -Type Success
         }
 
-        # Inject extension key for consistent ID (always run, even if download wasn't needed)
-        $ublockExtId = Add-ExtensionKey -ExtensionDir $OutputDir -ExtensionName "uBlock Origin"
-        if ($ublockExtId) {
-            Write-Status "uBlock Origin ID: $ublockExtId" -Type Detail
-        }
-
         # Apply defaults if configured - using auto-import approach (always run, even if not downloading)
         if ($UBlockConfig.defaults) {
             # Save settings file that auto-import.js will load
@@ -2022,20 +2016,8 @@ function Set-BrowserPreferences {
     # Critical settings that must be set before startup
     # These cannot be effectively set by meteor-prefs.js (runs too late)
 
-    # Compute uBlock Origin extension ID from the Meteor key
-    # This ensures the ID matches what we inject into uBlock's manifest
-    $ublockExtId = $null
-    if (Initialize-ExtensionKey) {
-        $pubKey = Get-PublicKeyBase64
-        if ($pubKey) {
-            $ublockExtId = Get-ExtensionIdFromKey $pubKey
-        }
-    }
-    # Fallback to a placeholder if key computation fails
-    if (-not $ublockExtId) {
-        Write-Status "Could not compute uBlock extension ID, pinning may not work" -Type Warning
-        $ublockExtId = "ublockorigin"  # Placeholder, won't match but won't crash
-    }
+    # uBlock Origin extension ID (fixed ID from Chrome Web Store)
+    $ublockExtId = "cjpalhdlnbpafiamejdnhcphjbkeiagm"
 
     # AdGuard Extra extension ID (fixed ID from Chrome Web Store)
     $adguardExtId = "gkeojjjcdcopjkbelgbcpckplegclfeg"
