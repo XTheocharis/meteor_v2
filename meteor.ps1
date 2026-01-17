@@ -44,7 +44,6 @@
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Scope = 'Function', Target = 'Update-FileHash')]
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Scope = 'Function', Target = 'Set-PakResource')]
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Scope = 'Function', Target = 'Update-Extension')]
-[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Scope = 'Function', Target = 'Set-BrowserFlags')]
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Scope = 'Function', Target = 'Set-BrowserPreferences')]
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Scope = 'Function', Target = 'Start-Browser')]
 # Script parameters are used in Main function via direct variable access
@@ -1965,84 +1964,6 @@ function Initialize-PakModifications {
 
 #region Preferences Pre-seeding
 
-function Set-BrowserFlags {
-    <#
-    .SYNOPSIS
-        Enable browser flags in Local State file.
-    .DESCRIPTION
-        Some flags (like --extensions-on-chrome-urls) must be enabled via the browser's
-        Local State file to take effect, not just via command line.
-    #>
-    param(
-        [switch]$DryRunMode
-    )
-
-    # Determine User Data path
-    $userDataPaths = @(
-        (Join-Path $env:LOCALAPPDATA "Perplexity\Comet\User Data"),
-        (Join-Path $env:LOCALAPPDATA "Comet\User Data")
-    )
-
-    $userDataPath = $userDataPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
-
-    if (-not $userDataPath) {
-        Write-Status "User Data directory not found, skipping flag setup" -Type Detail
-        return
-    }
-
-    $localStatePath = Join-Path $userDataPath "Local State"
-
-    # Flags to enable
-    $flagsToEnable = @(
-        "extensions-on-chrome-urls",
-        "extensions-on-extension-urls"
-    )
-
-    if (Test-Path $localStatePath) {
-        try {
-            $localState = Get-Content -Path $localStatePath -Raw | ConvertFrom-Json
-
-            # Initialize browser.enabled_labs_experiments if it doesn't exist
-            if (-not $localState.browser) {
-                $localState | Add-Member -NotePropertyName "browser" -NotePropertyValue @{} -Force
-            }
-            if (-not $localState.browser.enabled_labs_experiments) {
-                $localState.browser | Add-Member -NotePropertyName "enabled_labs_experiments" -NotePropertyValue @() -Force
-            }
-
-            # Add flags if not already present
-            $existingFlags = [System.Collections.ArrayList]@($localState.browser.enabled_labs_experiments)
-            $flagsAdded = $false
-
-            foreach ($flag in $flagsToEnable) {
-                if ($flag -notin $existingFlags) {
-                    $null = $existingFlags.Add($flag)
-                    $flagsAdded = $true
-                    Write-Status "Enabled flag: $flag" -Type Detail
-                }
-            }
-
-            if ($flagsAdded -and -not $DryRunMode) {
-                $localState.browser.enabled_labs_experiments = $existingFlags.ToArray()
-                $localState | ConvertTo-Json -Depth 20 | Set-Content -Path $localStatePath -Encoding UTF8
-                Write-Status "Browser flags enabled in Local State" -Type Success
-            }
-            elseif ($flagsAdded -and $DryRunMode) {
-                Write-Status "Would enable browser flags in Local State" -Type DryRun
-            }
-            else {
-                Write-Status "Browser flags already enabled" -Type Detail
-            }
-        }
-        catch {
-            Write-Status "Failed to update Local State: $_" -Type Warning
-        }
-    }
-    else {
-        Write-Status "Local State file not found - will be created on first browser launch" -Type Detail
-    }
-}
-
 function Set-BrowserPreferences {
     <#
     .SYNOPSIS
@@ -2732,10 +2653,6 @@ function Main {
             Write-Status "Comet stopped - will relaunch with privacy flags" -Type Success
         }
     }
-
-    # Enable browser flags in Local State
-    # This ensures --extensions-on-chrome-urls flag is properly enabled
-    $null = Set-BrowserFlags -DryRunMode:$DryRun
 
     # Pre-seed Preferences file with critical settings before launch
     # This ensures extensions.ui.developer_mode is set BEFORE extension loading
