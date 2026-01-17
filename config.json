@@ -264,7 +264,6 @@
   },
   "ublock": {
     "enabled": true,
-    "extension_id": "cjpalhdlnbpafiamejdnhcphjbkeiagm",
     "github_repo": "gorhill/uBlock",
     "defaults": {
       "userSettings": {
