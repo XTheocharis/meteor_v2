@@ -1440,19 +1440,26 @@ function Get-UBlockOrigin {
             Write-Status "uBlock Origin installed successfully" -Type Success
         }
 
-        # Apply defaults if configured - using auto-import approach (always run, even if not downloading)
-        if ($UBlockConfig.defaults) {
-            # Save settings file that auto-import.js will load
-            $settingsPath = Join-Path $OutputDir "ublock-settings.json"
-            $UBlockConfig.defaults | ConvertTo-Json -Depth 20 | Set-Content -Path $settingsPath -Encoding UTF8
-
-            # Get custom filter lists for the auto-import check
-            $customLists = $UBlockConfig.defaults.selectedFilterLists | Where-Object { $_ -match '^https?://' }
-            $customListsJson = $customLists | ConvertTo-Json -Compress
-
-            # Create auto-import.js that applies settings on first run
+        # Apply defaults if configured - using auto-import approach
+        # Only run if uBlock directory and js/ subdirectory exist (either just extracted or previously installed)
+        if ($UBlockConfig.defaults -and (Test-Path $OutputDir)) {
             $jsDir = Join-Path $OutputDir "js"
-            $autoImportPath = Join-Path $jsDir "auto-import.js"
+
+            # Ensure js/ directory exists before attempting configuration
+            if (-not (Test-Path $jsDir)) {
+                Write-Status "uBlock js/ directory not found, skipping auto-import configuration" -Type Warning
+            }
+            else {
+                # Save settings file that auto-import.js will load
+                $settingsPath = Join-Path $OutputDir "ublock-settings.json"
+                $UBlockConfig.defaults | ConvertTo-Json -Depth 20 | Set-Content -Path $settingsPath -Encoding UTF8
+
+                # Get custom filter lists for the auto-import check
+                $customLists = $UBlockConfig.defaults.selectedFilterLists | Where-Object { $_ -match '^https?://' }
+                $customListsJson = $customLists | ConvertTo-Json -Compress
+
+                # Create auto-import.js that applies settings on first run
+                $autoImportPath = Join-Path $jsDir "auto-import.js"
             $autoImportCode = @"
 /*******************************************************************************
 
@@ -1550,7 +1557,8 @@ setTimeout(checkAndImport, 3000);
                 }
             }
 
-            Write-Status "uBlock auto-import configured" -Type Detail
+                Write-Status "uBlock auto-import configured" -Type Detail
+            }
         }
 
         return $OutputDir
