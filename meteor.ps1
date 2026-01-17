@@ -1098,17 +1098,24 @@ function Update-Extension {
 function Get-ChromeExtensionVersion {
     <#
     .SYNOPSIS
-        Get the latest version of a Chrome Web Store extension.
+        Get the latest version of a Chrome Web Store extension using Chrome's update API.
+    .DESCRIPTION
+        Queries the same XML API that Chrome uses for extension updates.
+        This is more reliable than scraping the web store page.
     #>
     param([Parameter(Mandatory)][string]$ExtensionId)
 
     try {
-        $url = "https://chromewebstore.google.com/detail/$ExtensionId"
-        $response = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 30 -Headers @{
+        # Use Chrome's update XML API (same endpoint Chrome uses)
+        $updateUrl = "https://clients2.google.com/service/update2/crx?response=updatecheck&x=id%3D$ExtensionId%26installsource%3Dondemand%26uc"
+
+        $response = Invoke-WebRequest -Uri $updateUrl -UseBasicParsing -TimeoutSec 30 -Headers @{
             "User-Agent" = $script:UserAgent
         }
 
-        if ($response.Content -match '\\"version\\":\s*\\"([\d.]+)\\"') {
+        # Parse XML response for version
+        # Expected format: <updatecheck status="ok" version="1.68.0" ...>
+        if ($response.Content -match 'status="ok"\s+version="([\d.]+)"') {
             return $Matches[1]
         }
 
