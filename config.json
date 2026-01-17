@@ -227,7 +227,7 @@
               "all_frames": true
             },
             {
-              "matches": ["chrome://extensions/*"],
+              "matches": ["chrome://extensions/*", "comet://extensions/*"],
               "js": ["content/extensions-page.js"],
               "run_at": "document_idle"
             }

@@ -2215,6 +2215,13 @@ function Build-BrowserCommand {
         [void]$cmd.Add("--load-extension=$extList")
     }
 
+    # Add flag switches section (mimics comet://flags UI-enabled flags)
+    # These flags must be in this section to take effect
+    [void]$cmd.Add("--flag-switches-begin")
+    [void]$cmd.Add("--extensions-on-chrome-urls")
+    [void]$cmd.Add("--extensions-on-extension-urls")
+    [void]$cmd.Add("--flag-switches-end")
+
     return $cmd
 }
 
