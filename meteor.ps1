@@ -1954,7 +1954,14 @@ function Install-CometPortable {
         Downloads the Comet installer, extracts nested archives to get Chrome-bin,
         and places it in the specified directory. Requires 7-Zip for extraction.
 
-        Archive structure:
+        Supports two installer formats:
+
+        New format (mini_installer directly):
+        - comet_latest_intel.exe (mini_installer)
+          - chrome.7z
+            - Chrome-bin\
+
+        Old format (NSIS wrapper):
         - comet_latest_intel.exe (NSIS installer)
           - updater.7z
             - bin\Offline\{GUID1}\{GUID2}\mini_installer.exe
@@ -1995,63 +2002,68 @@ function Install-CometPortable {
         $webClient.Headers.Add("User-Agent", $script:UserAgent)
         $webClient.DownloadFile($DownloadUrl, $tempInstaller)
 
-        Write-Status "Extracting installer (step 1/4)..." -Type Detail
+        Write-Status "Extracting installer (step 1/2)..." -Type Detail
 
-        # Step 1: Extract NSIS installer
-        $extractDir1 = Join-Path $tempDir "nsis"
+        # Step 1: Extract installer (handles both mini_installer and NSIS formats)
+        $extractDir1 = Join-Path $tempDir "installer"
         & $sevenZip x $tempInstaller -o"$extractDir1" -y 2>&1 | Out-Null
         if ($LASTEXITCODE -ne 0) {
-            throw "Failed to extract NSIS installer"
+            throw "Failed to extract installer"
         }
 
-        # Step 2: Find and extract updater.7z
-        Write-Status "Extracting updater archive (step 2/4)..." -Type Detail
-        $updater7z = Join-Path $extractDir1 "updater.7z"
-        if (-not (Test-Path $updater7z)) {
-            throw "updater.7z not found in installer"
+        # Check which format we have
+        $chrome7z = Join-Path $extractDir1 "chrome.7z"
+        if (Test-Path $chrome7z) {
+            # New format: mini_installer directly contains chrome.7z
+            Write-Verbose "Detected mini_installer format (chrome.7z found directly)"
+        }
+        else {
+            # Old format: NSIS wrapper with updater.7z -> mini_installer -> chrome.7z
+            Write-Verbose "Detected NSIS wrapper format, extracting nested archives..."
+            $updater7z = Join-Path $extractDir1 "updater.7z"
+            if (-not (Test-Path $updater7z)) {
+                throw "Neither chrome.7z nor updater.7z found in installer - unknown format"
+            }
+
+            $extractDir2 = Join-Path $tempDir "updater"
+            & $sevenZip x $updater7z -o"$extractDir2" -y 2>&1 | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                throw "Failed to extract updater.7z"
+            }
+
+            # Find mini_installer.exe through the GUID directories
+            $offlineDir = Join-Path $extractDir2 "bin\Offline"
+            if (-not (Test-Path $offlineDir)) {
+                throw "bin\Offline directory not found in updater"
+            }
+
+            $miniInstaller = Get-ChildItem -Path $offlineDir -Recurse -Filter "mini_installer.exe" | Select-Object -First 1
+            if (-not $miniInstaller) {
+                throw "mini_installer.exe not found in Offline directory"
+            }
+
+            $extractDir3 = Join-Path $tempDir "mini_installer"
+            & $sevenZip x $miniInstaller.FullName -o"$extractDir3" -y 2>&1 | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                throw "Failed to extract mini_installer.exe"
+            }
+
+            $chrome7z = Join-Path $extractDir3 "chrome.7z"
+            if (-not (Test-Path $chrome7z)) {
+                throw "chrome.7z not found in mini_installer"
+            }
         }
 
-        $extractDir2 = Join-Path $tempDir "updater"
-        & $sevenZip x $updater7z -o"$extractDir2" -y 2>&1 | Out-Null
-        if ($LASTEXITCODE -ne 0) {
-            throw "Failed to extract updater.7z"
-        }
-
-        # Step 3: Navigate through GUIDs to find mini_installer.exe
-        Write-Status "Locating mini_installer (step 3/4)..." -Type Detail
-        $offlineDir = Join-Path $extractDir2 "bin\Offline"
-        if (-not (Test-Path $offlineDir)) {
-            throw "bin\Offline directory not found"
-        }
-
-        # Find mini_installer.exe through the GUID directories
-        $miniInstaller = Get-ChildItem -Path $offlineDir -Recurse -Filter "mini_installer.exe" | Select-Object -First 1
-        if (-not $miniInstaller) {
-            throw "mini_installer.exe not found in Offline directory"
-        }
-
-        # Step 4: Extract mini_installer.exe to get chrome.7z
-        $extractDir3 = Join-Path $tempDir "mini_installer"
-        & $sevenZip x $miniInstaller.FullName -o"$extractDir3" -y 2>&1 | Out-Null
-        if ($LASTEXITCODE -ne 0) {
-            throw "Failed to extract mini_installer.exe"
-        }
-
-        # Step 5: Find and extract chrome.7z
-        Write-Status "Extracting browser files (step 4/4)..." -Type Detail
-        $chrome7z = Join-Path $extractDir3 "chrome.7z"
-        if (-not (Test-Path $chrome7z)) {
-            throw "chrome.7z not found in mini_installer"
-        }
-
-        $extractDir4 = Join-Path $tempDir "chrome"
-        & $sevenZip x $chrome7z -o"$extractDir4" -y 2>&1 | Out-Null
+        # Step 2: Extract chrome.7z to get Chrome-bin
+        Write-Status "Extracting browser files (step 2/2)..." -Type Detail
+        $extractDirChrome = Join-Path $tempDir "chrome"
+        & $sevenZip x $chrome7z -o"$extractDirChrome" -y 2>&1 | Out-Null
         if ($LASTEXITCODE -ne 0) {
             throw "Failed to extract chrome.7z"
         }
 
         # Find Chrome-bin directory
-        $chromeBin = Join-Path $extractDir4 "Chrome-bin"
+        $chromeBin = Join-Path $extractDirChrome "Chrome-bin"
         if (-not (Test-Path $chromeBin)) {
             throw "Chrome-bin directory not found"
         }
