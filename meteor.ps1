@@ -1873,6 +1873,13 @@ function Initialize-PakModifications {
 
     Write-Status "Found resources.pak: $pakPath" -Type Detail
 
+    # 1.5. Restore from backup if -Force is used (ensures clean state)
+    $backupPath = "$pakPath.meteor-backup"
+    if ($Force -and (Test-Path $backupPath)) {
+        Write-Status "Restoring PAK from backup (Force mode)" -Type Detail
+        Copy-Item -Path $backupPath -Destination $pakPath -Force
+    }
+
     # 2. Read and parse PAK
     try {
         $pak = Read-PakFile -Path $pakPath
@@ -2064,6 +2071,9 @@ function Initialize-PakModifications {
         if (-not (Test-Path $backupPath)) {
             Copy-Item -Path $pakPath -Destination $backupPath -Force
             Write-Status "Created backup: $backupPath" -Type Detail
+        }
+        else {
+            Write-Verbose "[PAK] Backup already exists at: $backupPath"
         }
 
         try {
