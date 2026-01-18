@@ -3085,6 +3085,12 @@ function Main {
     # Check for existing installation (portable path first if in portable mode)
     $comet = Get-CometInstallation -DataPath $(if ($portableMode) { $meteorDataPath } else { $null })
 
+    # In portable mode, we need a portable installation - don't use system-wide fallback
+    if ($portableMode -and $comet -and -not $comet.Portable) {
+        Write-Status "Found system installation but portable mode is enabled - extracting portable version..." -Type Info
+        $comet = $null
+    }
+
     if (-not $comet) {
         if ($portableMode) {
             # Portable installation - extract directly
