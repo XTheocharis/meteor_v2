@@ -2122,39 +2122,39 @@ function Test-CometUpdate {
         Write-Verbose "Update check: Querying $DownloadUrl"
         Write-Verbose "Update check: Current version is $CurrentVersion"
 
-        # Make HEAD request to get final redirect URL or Content-Disposition
-        $response = Invoke-WebRequest -Uri $DownloadUrl -Method Head -UseBasicParsing -MaximumRedirection 5 -Headers @{
-            "User-Agent" = $script:UserAgent
+        # Use GET request with MaximumRedirection 0 to capture the redirect URL
+        # HEAD requests are blocked by Cloudflare, but GET with no redirect follow works
+        # The API returns a 307 redirect to the actual download URL which contains the version
+        $redirectUrl = $null
+        try {
+            $response = Invoke-WebRequest -Uri $DownloadUrl -Method Get -UseBasicParsing -MaximumRedirection 0 -Headers @{
+                "User-Agent" = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            }
+            Write-Verbose "Update check: Response status $($response.StatusCode)"
         }
-
-        Write-Verbose "Update check: Response status $($response.StatusCode)"
-
-        # Try to extract version from Content-Disposition header
-        $disposition = $response.Headers["Content-Disposition"]
-        Write-Verbose "Update check: Content-Disposition header: $(if ($disposition) { $disposition } else { '(not present)' })"
-        if ($disposition) {
-            # Look for version pattern in filename (e.g., comet-1.2.3.exe or CometSetup_1.2.3.exe)
-            if ($disposition -match '[\-_](\d+\.\d+\.\d+(?:\.\d+)?)') {
-                $latestVersion = $Matches[1]
-                $versionSource = "Content-Disposition header"
-                Write-Verbose "Update check: Extracted version $latestVersion from Content-Disposition"
+        catch [System.Net.WebException] {
+            # MaximumRedirection 0 causes an exception on redirect, but we can still get the Location header
+            $response = $_.Exception.Response
+            if ($response -and $response.StatusCode -eq [System.Net.HttpStatusCode]::TemporaryRedirect) {
+                $redirectUrl = $response.Headers["Location"]
+                Write-Verbose "Update check: Got 307 redirect"
             }
             else {
-                Write-Verbose "Update check: No version pattern found in Content-Disposition"
+                throw
             }
         }
 
-        # Also check the final URL for version info
-        $finalUrl = if ($response.BaseResponse.ResponseUri) { $response.BaseResponse.ResponseUri.ToString() } else { $null }
-        Write-Verbose "Update check: Final URL after redirects: $(if ($finalUrl) { $finalUrl } else { '(same as request)' })"
-        if (-not $latestVersion -and $finalUrl) {
-            if ($finalUrl -match '[\-_/](\d+\.\d+\.\d+(?:\.\d+)?)') {
+        # Try to extract version from redirect Location header
+        Write-Verbose "Update check: Redirect URL: $(if ($redirectUrl) { $redirectUrl } else { '(not present)' })"
+        if ($redirectUrl) {
+            # Version pattern in URL path like /143.2.7499.37654/comet_latest_intel.exe
+            if ($redirectUrl -match '/(\d+\.\d+\.\d+(?:\.\d+)?)/' -or $redirectUrl -match '[\-_](\d+\.\d+\.\d+(?:\.\d+)?)') {
                 $latestVersion = $Matches[1]
-                $versionSource = "final redirect URL"
-                Write-Verbose "Update check: Extracted version $latestVersion from final URL"
+                $versionSource = "redirect Location header"
+                Write-Verbose "Update check: Extracted version $latestVersion from redirect URL"
             }
             else {
-                Write-Verbose "Update check: No version pattern found in final URL"
+                Write-Verbose "Update check: No version pattern found in redirect URL"
             }
         }
 
