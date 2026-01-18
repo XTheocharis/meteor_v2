@@ -2849,7 +2849,7 @@ function Build-BrowserCommand {
 
     # Add user data directory if specified (for portable mode)
     if ($UserDataPath) {
-        [void]$cmd.Add("--user-data-dir=$UserDataPath")
+        [void]$cmd.Add("--user-data-dir=`"$UserDataPath`"")
     }
 
     # Add profile directory if specified
@@ -2896,7 +2896,9 @@ function Build-BrowserCommand {
     }
 
     if ($extensions.Count -gt 0) {
-        $extList = $extensions -join ","
+        # Quote each path to handle spaces in directory names
+        $quotedExtensions = $extensions | ForEach-Object { "`"$_`"" }
+        $extList = $quotedExtensions -join ","
         [void]$cmd.Add("--load-extension=$extList")
     }
 
