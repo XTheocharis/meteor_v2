@@ -2067,8 +2067,53 @@ function Initialize-PakModifications {
         }
 
         try {
+            # Calculate hash before write for verification
+            $beforeHash = (Get-FileHash -Path $pakPath -Algorithm SHA256).Hash
+            Write-Verbose "[PAK] Hash before write: $beforeHash"
+
             Write-PakFile -Pak $pak -Path $pakPath
-            Write-Status "Wrote modified PAK ($($modifiedResources.Count) resources, $appliedCount modifications)" -Type Success
+
+            # Verify write succeeded by comparing hashes
+            $afterHash = (Get-FileHash -Path $pakPath -Algorithm SHA256).Hash
+            Write-Verbose "[PAK] Hash after write: $afterHash"
+
+            if ($beforeHash -eq $afterHash) {
+                Write-Status "PAK file unchanged after write - modifications may not have been applied!" -Type Warning
+            }
+            else {
+                Write-Status "Wrote modified PAK ($($modifiedResources.Count) resources, $appliedCount modifications)" -Type Success
+                Write-Verbose "[PAK] File modified successfully (hash changed)"
+
+                # Re-read and verify one of our modifications (resource 21192 - shouldHide)
+                $verifyPak = Read-PakFile -Path $pakPath
+                if ($verifyPak) {
+                    $verifyBytes = Get-PakResource -Pak $verifyPak -ResourceId 21192
+                    if ($verifyBytes) {
+                        [byte[]]$verifyBytes = $verifyBytes
+                        # Decompress if gzipped
+                        if ($verifyBytes[0] -eq 0x1f -and $verifyBytes[1] -eq 0x8b) {
+                            $ms = New-Object System.IO.MemoryStream($verifyBytes, $false)
+                            $gz = New-Object System.IO.Compression.GZipStream($ms, [System.IO.Compression.CompressionMode]::Decompress)
+                            $outMs = New-Object System.IO.MemoryStream
+                            $gz.CopyTo($outMs)
+                            $gz.Close()
+                            $ms.Close()
+                            $verifyBytes = $outMs.ToArray()
+                            $outMs.Close()
+                        }
+                        $verifyContent = [System.Text.Encoding]::UTF8.GetString($verifyBytes)
+                        if ($verifyContent -match 'return false;\s*//\s*Meteor|shouldHidePerplexityServiceWorker.*return false;') {
+                            Write-Verbose "[PAK] Verification: inspect modification confirmed in written file"
+                        }
+                        elseif ($verifyContent -notmatch 'return !isPerplexityInternalUser') {
+                            Write-Verbose "[PAK] Verification: original pattern NOT found (modification likely applied)"
+                        }
+                        else {
+                            Write-Status "PAK verification failed: original pattern still present in resource 21192" -Type Warning
+                        }
+                    }
+                }
+            }
         }
         catch {
             Write-Status "Failed to write PAK: $_" -Type Error
