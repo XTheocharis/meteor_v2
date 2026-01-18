@@ -2931,6 +2931,11 @@ function Start-Browser {
     $exe = $Command[0]
     $processArgs = $Command[1..($Command.Count - 1)]
 
+    # Show full command line in verbose mode
+    $fullCommandLine = "`"$exe`" $($processArgs -join ' ')"
+    Write-Verbose "Launching browser with command line:"
+    Write-Verbose $fullCommandLine
+
     $process = Start-Process -FilePath $exe -ArgumentList $processArgs -PassThru
     return $process
 }
