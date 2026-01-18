@@ -3353,14 +3353,15 @@ function Main {
         # This ensures extension incognito settings are written correctly
         $prefsPathsToCheck = @()
 
-        # Add portable mode path
         if ($portableMode) {
+            # Portable mode: only use portable path
             $prefsPathsToCheck += $userDataPath
         }
-
-        # Add system paths (for non-portable or mixed scenarios)
-        $prefsPathsToCheck += (Join-Path $env:LOCALAPPDATA "Perplexity\Comet\User Data")
-        $prefsPathsToCheck += (Join-Path $env:LOCALAPPDATA "Comet\User Data")
+        else {
+            # System mode: use system paths
+            $prefsPathsToCheck += (Join-Path $env:LOCALAPPDATA "Perplexity\Comet\User Data")
+            $prefsPathsToCheck += (Join-Path $env:LOCALAPPDATA "Comet\User Data")
+        }
 
         foreach ($udPath in $prefsPathsToCheck) {
             if (Test-Path $udPath) {
@@ -3618,14 +3619,16 @@ function Main {
 
             # Clear Comet's CRX caches to ensure it loads our patched extensions
             $cachePaths = @()
-            # Add portable mode cache paths
             if ($portableMode -and $userDataPath) {
+                # Portable mode: only use portable path
                 $cachePaths += (Join-Path $userDataPath "extensions_crx_cache")
                 $cachePaths += (Join-Path $userDataPath "component_crx_cache")
             }
-            # Add system paths (for non-portable or mixed scenarios)
-            $cachePaths += (Join-Path $env:LOCALAPPDATA "Perplexity\Comet\User Data\extensions_crx_cache")
-            $cachePaths += (Join-Path $env:LOCALAPPDATA "Perplexity\Comet\User Data\component_crx_cache")
+            else {
+                # System mode: use system paths
+                $cachePaths += (Join-Path $env:LOCALAPPDATA "Perplexity\Comet\User Data\extensions_crx_cache")
+                $cachePaths += (Join-Path $env:LOCALAPPDATA "Perplexity\Comet\User Data\component_crx_cache")
+            }
 
             foreach ($crxCachePath in $cachePaths) {
                 if (Test-Path $crxCachePath) {
