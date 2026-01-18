@@ -317,9 +317,10 @@
     "extension_id": "gkeojjjcdcopjkbelgbcpckplegclfeg"
   },
   "paths": {
-    "patched_extensions": "./patched_extensions",
-    "ublock": "./patched_extensions/ublock-origin",
-    "adguard_extra": "./patched_extensions/adguard-extra",
+    "patched_extensions": "./.meteor/patched_extensions",
+    "ublock": "./.meteor/patched_extensions/ublock-origin",
+    "adguard_extra": "./.meteor/patched_extensions/adguard-extra",
+    "patched_resources": "./.meteor/patched_resources",
     "state_file": "./.meteor/state.json",
     "patches": "./patches"
   }

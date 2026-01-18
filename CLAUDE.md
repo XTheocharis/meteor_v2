@@ -80,6 +80,8 @@ When you run `.\meteor.ps1`, it performs these steps automatically:
 | `.meteor/state.json` | Runtime state (file hashes, versions) - auto-generated |
 | `.meteor/comet/` | Portable Comet browser (extracted, no install) |
 | `.meteor/User Data/` | Browser profile data (bookmarks, cache, extensions) |
+| `.meteor/patched_extensions/` | Extracted and patched browser extensions |
+| `.meteor/patched_resources/` | Extracted PAK resources (editable text/binary files + manifest.json) |
 | `patches/perplexity/telemetry.json` | 15 DNR rules for telemetry blocking |
 | `patches/perplexity/meteor-prefs.js` | Service worker preference enforcement |
 | `patches/perplexity/content-script.js` | SDK stubs + feature flag interception |

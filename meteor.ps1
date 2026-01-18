@@ -527,6 +527,256 @@ function Write-PakFile {
     [System.IO.File]::WriteAllBytes($Path, [byte[]]$output.ToArray())
 }
 
+function Export-PakResources {
+    <#
+    .SYNOPSIS
+        Export all resources from a PAK file to a directory structure.
+    .DESCRIPTION
+        Extracts all resources from resources.pak to individual files in a directory.
+        Text resources are saved as .txt files (decompressed if gzipped).
+        Binary resources are saved as .bin files.
+        Creates a manifest.json with metadata about all resources.
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [hashtable]$Pak,
+        [Parameter(Mandatory)]
+        [string]$OutputDir
+    )
+
+    # Create output directory
+    if (-not (Test-Path $OutputDir)) {
+        New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
+    }
+
+    $manifest = @{
+        version     = $Pak.Version
+        encoding    = $Pak.Encoding
+        exportedAt  = (Get-Date -Format "o")
+        resources   = @{}
+    }
+
+    $textCount = 0
+    $binaryCount = 0
+    $gzipCount = 0
+
+    # Iterate through all resources (skip sentinel at end)
+    for ($i = 0; $i -lt $Pak.Resources.Count - 1; $i++) {
+        $resource = $Pak.Resources[$i]
+        $resourceId = $resource.Id
+
+        # Get resource bytes
+        $resourceBytes = Get-PakResource -Pak $Pak -ResourceId $resourceId
+        if ($null -eq $resourceBytes) { continue }
+
+        [byte[]]$resourceBytes = $resourceBytes
+        if ($resourceBytes.Length -lt 2) { continue }
+
+        # Check if gzip compressed
+        $isGzipped = ($resourceBytes[0] -eq 0x1f -and $resourceBytes[1] -eq 0x8b)
+        $contentBytes = $resourceBytes
+        $wasDecompressed = $false
+
+        if ($isGzipped) {
+            $gzipCount++
+            try {
+                $ms = New-Object System.IO.MemoryStream($resourceBytes, $false)
+                $gz = New-Object System.IO.Compression.GZipStream($ms, [System.IO.Compression.CompressionMode]::Decompress)
+                $outMs = New-Object System.IO.MemoryStream
+                $gz.CopyTo($outMs)
+                $gz.Close()
+                $ms.Close()
+                $contentBytes = $outMs.ToArray()
+                $outMs.Close()
+                $wasDecompressed = $true
+            }
+            catch {
+                # Failed to decompress, keep original
+                $contentBytes = $resourceBytes
+                $wasDecompressed = $false
+            }
+        }
+
+        # Determine if text or binary
+        $isText = $false
+        $content = $null
+        try {
+            $content = [System.Text.Encoding]::UTF8.GetString($contentBytes)
+            # Check for binary indicators (null bytes or control chars except newlines/tabs)
+            if ($content -notmatch '[\x00-\x08\x0E-\x1F]') {
+                $isText = $true
+            }
+        }
+        catch {
+            $isText = $false
+        }
+
+        # Save resource
+        $resourceInfo = @{
+            originalSize = $resourceBytes.Length
+            gzipped      = $isGzipped
+            decompressed = $wasDecompressed
+        }
+
+        if ($isText) {
+            $textCount++
+            $fileName = "$resourceId.txt"
+            $filePath = Join-Path $OutputDir $fileName
+            [System.IO.File]::WriteAllText($filePath, $content, [System.Text.UTF8Encoding]::new($false))
+            $resourceInfo.type = "text"
+            $resourceInfo.file = $fileName
+            $resourceInfo.contentSize = $contentBytes.Length
+        }
+        else {
+            $binaryCount++
+            $fileName = "$resourceId.bin"
+            $filePath = Join-Path $OutputDir $fileName
+            [System.IO.File]::WriteAllBytes($filePath, $contentBytes)
+            $resourceInfo.type = "binary"
+            $resourceInfo.file = $fileName
+            $resourceInfo.contentSize = $contentBytes.Length
+        }
+
+        $manifest.resources["$resourceId"] = $resourceInfo
+    }
+
+    # Handle aliases
+    if ($Pak.Aliases -and $Pak.Aliases.Count -gt 0) {
+        $manifest.aliases = @{}
+        foreach ($alias in $Pak.Aliases) {
+            $manifest.aliases["$($alias.Id)"] = $alias.ResourceIndex
+        }
+    }
+
+    # Save manifest
+    $manifestPath = Join-Path $OutputDir "manifest.json"
+    $manifest | ConvertTo-Json -Depth 10 | Set-Content -Path $manifestPath -Encoding UTF8
+
+    return @{
+        TextResources   = $textCount
+        BinaryResources = $binaryCount
+        GzippedCount    = $gzipCount
+        TotalResources  = $textCount + $binaryCount
+        ManifestPath    = $manifestPath
+    }
+}
+
+function Import-PakResources {
+    <#
+    .SYNOPSIS
+        Rebuild a PAK file from an exported resource directory.
+    .DESCRIPTION
+        Reads the manifest.json and resource files from an export directory
+        and rebuilds a complete PAK file. Resources marked as gzipped in the
+        manifest will be re-compressed.
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [string]$InputDir,
+        [Parameter(Mandatory)]
+        [string]$OutputPath
+    )
+
+    $manifestPath = Join-Path $InputDir "manifest.json"
+    if (-not (Test-Path $manifestPath)) {
+        throw "manifest.json not found in $InputDir"
+    }
+
+    $manifest = Get-Content -Path $manifestPath -Raw | ConvertFrom-Json
+
+    # Create PAK structure
+    $pak = @{
+        Version   = $manifest.version
+        Encoding  = $manifest.encoding
+        Resources = [System.Collections.ArrayList]@()
+        Aliases   = [System.Collections.ArrayList]@()
+        RawBytes  = $null
+    }
+
+    # Collect all resource data
+    $resourceData = @{}
+    $sortedIds = $manifest.resources.PSObject.Properties.Name | ForEach-Object { [int]$_ } | Sort-Object
+
+    foreach ($idStr in $manifest.resources.PSObject.Properties.Name) {
+        $resourceId = [int]$idStr
+        $resourceInfo = $manifest.resources.$idStr
+        $filePath = Join-Path $InputDir $resourceInfo.file
+
+        if (-not (Test-Path $filePath)) {
+            Write-Warning "Resource file not found: $filePath"
+            continue
+        }
+
+        # Read content
+        if ($resourceInfo.type -eq "text") {
+            $content = [System.IO.File]::ReadAllText($filePath)
+            $contentBytes = [System.Text.Encoding]::UTF8.GetBytes($content)
+        }
+        else {
+            $contentBytes = [System.IO.File]::ReadAllBytes($filePath)
+        }
+
+        # Re-compress if originally gzipped
+        if ($resourceInfo.gzipped -and $resourceInfo.decompressed) {
+            $ms = New-Object System.IO.MemoryStream
+            $gz = New-Object System.IO.Compression.GZipStream($ms, [System.IO.Compression.CompressionMode]::Compress)
+            $gz.Write($contentBytes, 0, $contentBytes.Length)
+            $gz.Close()
+            $contentBytes = $ms.ToArray()
+            $ms.Close()
+        }
+
+        $resourceData[$resourceId] = $contentBytes
+    }
+
+    # Build resource entries in order
+    $currentOffset = 0
+    # Calculate header size
+    if ($manifest.version -eq 4) {
+        # version(4) + encoding(1) + num_resources(4) + entries(6 each) + sentinel(6)
+        $headerSize = 4 + 1 + 4 + (($sortedIds.Count + 1) * 6)
+    }
+    else {
+        # version(4) + encoding(1) + padding(3) + num_resources(2) + num_aliases(2) + entries(6 each) + sentinel(6) + aliases(4 each)
+        $aliasCount = if ($manifest.aliases) { $manifest.aliases.PSObject.Properties.Count } else { 0 }
+        $headerSize = 4 + 1 + 3 + 2 + 2 + (($sortedIds.Count + 1) * 6) + ($aliasCount * 4)
+    }
+    $currentOffset = $headerSize
+
+    foreach ($resourceId in $sortedIds) {
+        [void]$pak.Resources.Add(@{
+            Id     = $resourceId
+            Offset = $currentOffset
+            Data   = $resourceData[$resourceId]
+        })
+        $currentOffset += $resourceData[$resourceId].Length
+    }
+
+    # Add sentinel entry
+    [void]$pak.Resources.Add(@{
+        Id     = 0
+        Offset = $currentOffset
+    })
+
+    # Add aliases if present
+    if ($manifest.aliases) {
+        foreach ($aliasIdStr in $manifest.aliases.PSObject.Properties.Name) {
+            [void]$pak.Aliases.Add(@{
+                Id            = [int]$aliasIdStr
+                ResourceIndex = $manifest.aliases.$aliasIdStr
+            })
+        }
+    }
+
+    # Write the PAK file
+    Write-PakFile -Pak $pak -Path $OutputPath
+
+    return @{
+        ResourceCount = $sortedIds.Count
+        OutputPath    = $OutputPath
+    }
+}
+
 function Test-PakModifications {
     <#
     .SYNOPSIS
@@ -2326,10 +2576,12 @@ function Initialize-PakModifications {
     .SYNOPSIS
         Apply content-based modifications to resources.pak.
         Searches all text resources for matching patterns and applies replacements.
+        Also exports all resources to PatchedResourcesPath for manual editing.
     #>
     param(
         [string]$CometDir,
         [object]$PakConfig,
+        [string]$PatchedResourcesPath,
         [switch]$DryRunMode
     )
 
@@ -2374,6 +2626,19 @@ function Initialize-PakModifications {
     catch {
         Write-Status "Failed to parse PAK: $_" -Type Error
         return $false
+    }
+
+    # 2.5. Export resources to patched_resources directory (for manual editing)
+    if ($PatchedResourcesPath -and -not $DryRunMode) {
+        try {
+            $exportResult = Export-PakResources -Pak $pak -OutputDir $PatchedResourcesPath
+            Write-Status "Exported $($exportResult.TotalResources) resources to: $PatchedResourcesPath" -Type Detail
+            Write-Verbose "[PAK] Export: $($exportResult.TextResources) text, $($exportResult.BinaryResources) binary, $($exportResult.GzippedCount) were gzipped"
+        }
+        catch {
+            Write-Status "Failed to export PAK resources: $_" -Type Warning
+            # Non-fatal - continue with modifications
+        }
     }
 
     # 3. Search all resources and apply modifications
@@ -3011,6 +3276,7 @@ function Main {
     $patchedExtPath = Resolve-MeteorPath -BasePath $baseDir -RelativePath $config.paths.patched_extensions
     $ublockPath = Resolve-MeteorPath -BasePath $baseDir -RelativePath $config.paths.ublock
     $adguardExtraPath = Resolve-MeteorPath -BasePath $baseDir -RelativePath $config.paths.adguard_extra
+    $patchedResourcesPath = Resolve-MeteorPath -BasePath $baseDir -RelativePath $config.paths.patched_resources
     $statePath = Resolve-MeteorPath -BasePath $baseDir -RelativePath $config.paths.state_file
     $patchesPath = Resolve-MeteorPath -BasePath $baseDir -RelativePath $config.paths.patches
 
@@ -3353,7 +3619,7 @@ function Main {
 
         # PAK modifications (if enabled)
         if ($config.pak_modifications.enabled) {
-            Initialize-PakModifications -CometDir $comet.Directory -PakConfig $config.pak_modifications -DryRunMode:$DryRun
+            Initialize-PakModifications -CometDir $comet.Directory -PakConfig $config.pak_modifications -PatchedResourcesPath $patchedResourcesPath -DryRunMode:$DryRun
         }
     }
     else {
