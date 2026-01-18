@@ -1474,24 +1474,72 @@ function Get-CrxManifest {
     <#
     .SYNOPSIS
         Read manifest.json from a CRX file without full extraction.
+    .DESCRIPTION
+        Extracts only manifest.json from the CRX's ZIP payload using .NET ZipArchive,
+        avoiding the overhead of extracting all files.
     #>
     param([string]$CrxPath)
 
-    $tempDir = Join-Path $env:TEMP "meteor_manifest_$(Get-Random)"
-
     try {
-        Export-CrxToDirectory -CrxPath $CrxPath -OutputDir $tempDir
-        $manifestPath = Join-Path $tempDir "manifest.json"
+        Add-Type -AssemblyName System.IO.Compression -ErrorAction SilentlyContinue
 
-        if (Test-Path $manifestPath) {
-            $content = Get-Content -Path $manifestPath -Raw -Encoding UTF8
-            return $content | ConvertFrom-Json
+        $bytes = [System.IO.File]::ReadAllBytes($CrxPath)
+
+        # Check magic header "Cr24"
+        $magic = [System.Text.Encoding]::ASCII.GetString($bytes, 0, 4)
+        if ($magic -ne "Cr24") {
+            Write-Verbose "Invalid CRX file: missing Cr24 magic header"
+            return $null
+        }
+
+        # Get version and calculate ZIP offset
+        $version = ConvertTo-LittleEndianUInt32 -Bytes $bytes -Offset 4
+        $zipOffset = 0
+
+        if ($version -eq 2) {
+            $pubkeyLen = ConvertTo-LittleEndianUInt32 -Bytes $bytes -Offset 8
+            $sigLen = ConvertTo-LittleEndianUInt32 -Bytes $bytes -Offset 12
+            $zipOffset = 16 + $pubkeyLen + $sigLen
+        }
+        elseif ($version -eq 3) {
+            $headerLen = ConvertTo-LittleEndianUInt32 -Bytes $bytes -Offset 8
+            $zipOffset = 12 + $headerLen
+        }
+        else {
+            Write-Verbose "Unsupported CRX version: $version"
+            return $null
+        }
+
+        # Create memory stream from ZIP portion and read manifest.json directly
+        $zipLength = $bytes.Length - $zipOffset
+        $memStream = New-Object System.IO.MemoryStream($bytes, $zipOffset, $zipLength)
+
+        try {
+            $archive = New-Object System.IO.Compression.ZipArchive($memStream, [System.IO.Compression.ZipArchiveMode]::Read)
+
+            try {
+                $manifestEntry = $archive.GetEntry("manifest.json")
+                if ($manifestEntry) {
+                    $reader = New-Object System.IO.StreamReader($manifestEntry.Open())
+                    try {
+                        $content = $reader.ReadToEnd()
+                        return $content | ConvertFrom-Json
+                    }
+                    finally {
+                        $reader.Dispose()
+                    }
+                }
+            }
+            finally {
+                $archive.Dispose()
+            }
+        }
+        finally {
+            $memStream.Dispose()
         }
     }
-    finally {
-        if (Test-Path $tempDir) {
-            Remove-Item -Path $tempDir -Recurse -Force
-        }
+    catch {
+        Write-Verbose "Failed to read CRX manifest: $_"
     }
 
     return $null
