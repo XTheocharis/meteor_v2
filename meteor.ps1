@@ -31,6 +31,11 @@
     Path to a specific resources.pak file to verify. Used with -VerifyPak.
     If not specified, auto-detects from Comet installation.
 
+.PARAMETER DataPath
+    Path to store Comet browser data (user profile, cache, etc.) and the portable browser.
+    Defaults to .meteor subdirectory in the script's directory.
+    This enables fully portable operation - no system-wide installation required.
+
 .PARAMETER Verbose
     Enable verbose output for debugging.
 
@@ -53,6 +58,10 @@
 .EXAMPLE
     .\Meteor.ps1 -VerifyPak -PakPath "C:\Path\To\resources.pak"
     Verify PAK patches in a specific file.
+
+.EXAMPLE
+    .\Meteor.ps1 -DataPath "D:\PortableApps\Comet"
+    Run with custom data directory for portable operation.
 #>
 
 # Suppress PSScriptAnalyzer warnings for internal helper functions
@@ -69,6 +78,7 @@
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'NoLaunch', Justification = 'Used in Main function')]
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'VerifyPak', Justification = 'Used in Main function')]
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'PakPath', Justification = 'Used in Main function')]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'DataPath', Justification = 'Used in Main function')]
 [CmdletBinding()]
 param(
     [Parameter()]
@@ -87,7 +97,10 @@ param(
     [switch]$VerifyPak,
 
     [Parameter()]
-    [string]$PakPath
+    [string]$PakPath,
+
+    [Parameter()]
+    [string]$DataPath
 )
 
 Set-StrictMode -Version Latest
@@ -1463,8 +1476,48 @@ function Get-CometInstallation {
     <#
     .SYNOPSIS
         Find existing Comet installation or return null.
+    .DESCRIPTION
+        Checks for Comet in the following order:
+        1. Portable installation in DataPath/comet
+        2. System-wide installations in common locations
+        3. PATH search via where.exe
     #>
+    param(
+        [string]$DataPath
+    )
 
+    # Check portable installation first
+    if ($DataPath) {
+        $portableBrowserDir = Join-Path $DataPath "comet"
+        if (Test-Path $portableBrowserDir) {
+            # Check for comet.exe directly in comet directory
+            $directExe = Join-Path $portableBrowserDir "comet.exe"
+            if (Test-Path $directExe) {
+                return @{
+                    Executable = $directExe
+                    Directory  = $portableBrowserDir
+                    Portable   = $true
+                }
+            }
+
+            # Check for comet.exe in version subdirectory (e.g., browser\137.0.7151.87\comet.exe)
+            $versionDir = Get-ChildItem -Path $portableBrowserDir -Directory -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -match '^\d+\.\d+\.\d+' } |
+                Select-Object -First 1
+            if ($versionDir) {
+                $versionExe = Join-Path $versionDir.FullName "comet.exe"
+                if (Test-Path $versionExe) {
+                    return @{
+                        Executable = $versionExe
+                        Directory  = $versionDir.FullName
+                        Portable   = $true
+                    }
+                }
+            }
+        }
+    }
+
+    # Check system-wide installations
     $searchPaths = @(
         (Join-Path $env:LOCALAPPDATA "Perplexity\Comet\Application\comet.exe"),
         (Join-Path $env:LOCALAPPDATA "Comet\Application\comet.exe"),
@@ -1477,6 +1530,7 @@ function Get-CometInstallation {
             return @{
                 Executable = $path
                 Directory  = Split-Path -Parent $path
+                Portable   = $false
             }
         }
     }
@@ -1489,6 +1543,7 @@ function Get-CometInstallation {
             return @{
                 Executable = $exe
                 Directory  = Split-Path -Parent $exe
+                Portable   = $false
             }
         }
     }
@@ -1560,6 +1615,192 @@ function Install-Comet {
     finally {
         if (Test-Path $tempInstaller) {
             Remove-Item -Path $tempInstaller -Force
+        }
+    }
+}
+
+function Get-7ZipPath {
+    <#
+    .SYNOPSIS
+        Find 7-Zip executable or return null if not found.
+    #>
+    $searchPaths = @(
+        (Join-Path $env:ProgramFiles "7-Zip\7z.exe"),
+        (Join-Path ${env:ProgramFiles(x86)} "7-Zip\7z.exe"),
+        (Join-Path $env:LOCALAPPDATA "Programs\7-Zip\7z.exe")
+    )
+
+    foreach ($path in $searchPaths) {
+        if ($path -and (Test-Path $path)) {
+            return $path
+        }
+    }
+
+    # Try PATH
+    try {
+        $whereResult = & where.exe 7z.exe 2>$null
+        if ($whereResult) {
+            return ($whereResult -split "`n")[0].Trim()
+        }
+    }
+    catch {
+        $null = $_.Exception
+    }
+
+    return $null
+}
+
+function Install-CometPortable {
+    <#
+    .SYNOPSIS
+        Download and extract Comet browser for portable operation (no system installation).
+    .DESCRIPTION
+        Downloads the Comet installer, extracts nested archives to get Chrome-bin,
+        and places it in the specified directory. Requires 7-Zip for extraction.
+
+        Archive structure:
+        - comet_latest_intel.exe (NSIS installer)
+          - updater.7z
+            - bin\Offline\{GUID1}\{GUID2}\mini_installer.exe
+              - chrome.7z
+                - Chrome-bin\
+    #>
+    param(
+        [string]$DownloadUrl,
+        [string]$TargetDir,
+        [switch]$DryRunMode
+    )
+
+    Write-Status "Installing Comet in portable mode..." -Type Info
+
+    # Check for 7-Zip
+    $sevenZip = Get-7ZipPath
+    if (-not $sevenZip) {
+        Write-Status "7-Zip is required for portable installation. Please install 7-Zip from https://7-zip.org" -Type Error
+        return $null
+    }
+
+    if ($DryRunMode) {
+        Write-Status "Would download from: $DownloadUrl" -Type Detail
+        Write-Status "Would extract to: $TargetDir" -Type Detail
+        return $null
+    }
+
+    $tempDir = Join-Path $env:TEMP "meteor_comet_$(Get-Random)"
+    $tempInstaller = Join-Path $tempDir "comet_installer.exe"
+
+    try {
+        # Create temp directory
+        New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+
+        # Download installer
+        Write-Status "Downloading from: $DownloadUrl" -Type Detail
+        $webClient = New-Object System.Net.WebClient
+        $webClient.Headers.Add("User-Agent", $script:UserAgent)
+        $webClient.DownloadFile($DownloadUrl, $tempInstaller)
+
+        Write-Status "Extracting installer (step 1/4)..." -Type Detail
+
+        # Step 1: Extract NSIS installer
+        $extractDir1 = Join-Path $tempDir "nsis"
+        & $sevenZip x $tempInstaller -o"$extractDir1" -y 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to extract NSIS installer"
+        }
+
+        # Step 2: Find and extract updater.7z
+        Write-Status "Extracting updater archive (step 2/4)..." -Type Detail
+        $updater7z = Join-Path $extractDir1 "updater.7z"
+        if (-not (Test-Path $updater7z)) {
+            throw "updater.7z not found in installer"
+        }
+
+        $extractDir2 = Join-Path $tempDir "updater"
+        & $sevenZip x $updater7z -o"$extractDir2" -y 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to extract updater.7z"
+        }
+
+        # Step 3: Navigate through GUIDs to find mini_installer.exe
+        Write-Status "Locating mini_installer (step 3/4)..." -Type Detail
+        $offlineDir = Join-Path $extractDir2 "bin\Offline"
+        if (-not (Test-Path $offlineDir)) {
+            throw "bin\Offline directory not found"
+        }
+
+        # Find mini_installer.exe through the GUID directories
+        $miniInstaller = Get-ChildItem -Path $offlineDir -Recurse -Filter "mini_installer.exe" | Select-Object -First 1
+        if (-not $miniInstaller) {
+            throw "mini_installer.exe not found in Offline directory"
+        }
+
+        # Step 4: Extract mini_installer.exe to get chrome.7z
+        $extractDir3 = Join-Path $tempDir "mini_installer"
+        & $sevenZip x $miniInstaller.FullName -o"$extractDir3" -y 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to extract mini_installer.exe"
+        }
+
+        # Step 5: Find and extract chrome.7z
+        Write-Status "Extracting browser files (step 4/4)..." -Type Detail
+        $chrome7z = Join-Path $extractDir3 "chrome.7z"
+        if (-not (Test-Path $chrome7z)) {
+            throw "chrome.7z not found in mini_installer"
+        }
+
+        $extractDir4 = Join-Path $tempDir "chrome"
+        & $sevenZip x $chrome7z -o"$extractDir4" -y 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to extract chrome.7z"
+        }
+
+        # Find Chrome-bin directory
+        $chromeBin = Join-Path $extractDir4 "Chrome-bin"
+        if (-not (Test-Path $chromeBin)) {
+            throw "Chrome-bin directory not found"
+        }
+
+        # Create target directory
+        $cometDir = Join-Path $TargetDir "comet"
+        if (Test-Path $cometDir) {
+            Write-Status "Removing existing comet directory..." -Type Detail
+            Remove-Item -Path $cometDir -Recurse -Force
+        }
+
+        # Move Chrome-bin to target
+        Write-Status "Installing to: $cometDir" -Type Detail
+        Move-Item -Path $chromeBin -Destination $cometDir -Force
+
+        # Find the executable
+        $cometExe = Join-Path $cometDir "comet.exe"
+        if (-not (Test-Path $cometExe)) {
+            # Try to find it in a version subdirectory
+            $versionDir = Get-ChildItem -Path $cometDir -Directory | Where-Object { $_.Name -match '^\d+\.\d+\.\d+' } | Select-Object -First 1
+            if ($versionDir) {
+                $cometExe = Join-Path $versionDir.FullName "comet.exe"
+            }
+        }
+
+        if (-not (Test-Path $cometExe)) {
+            throw "comet.exe not found in extracted files"
+        }
+
+        Write-Status "Portable installation complete" -Type Success
+
+        return @{
+            Executable = $cometExe
+            Directory  = Split-Path -Parent $cometExe
+            Portable   = $true
+        }
+    }
+    catch {
+        Write-Status "Failed to install Comet portable: $_" -Type Error
+        return $null
+    }
+    finally {
+        # Cleanup temp directory
+        if (Test-Path $tempDir) {
+            Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
 }
@@ -1959,17 +2200,17 @@ function Initialize-PatchedExtensions {
         New-Item -Path $OutputDir -ItemType Directory -Force | Out-Null
     }
 
-    # Find and process CRX files (prefer active .crx over .crx.disabled)
+    # Find and process CRX files (prefer active .crx over .crx.meteor-backup)
     $crxSources = @{}
 
-    # First collect .crx.disabled files
-    $disabledFiles = Get-ChildItem -Path $defaultAppsDir -Filter "*.crx.disabled" -ErrorAction SilentlyContinue
-    foreach ($file in $disabledFiles) {
-        $baseName = $file.Name -replace '\.crx\.disabled$', ''
+    # First collect .crx.meteor-backup files
+    $backupFiles = Get-ChildItem -Path $defaultAppsDir -Filter "*.crx.meteor-backup" -ErrorAction SilentlyContinue
+    foreach ($file in $backupFiles) {
+        $baseName = $file.Name -replace '\.crx\.meteor-backup$', ''
         $crxSources[$baseName] = $file
     }
 
-    # Then collect active .crx files (these override .disabled versions)
+    # Then collect active .crx files (these override .meteor-backup versions)
     $activeFiles = Get-ChildItem -Path $defaultAppsDir -Filter "*.crx" -ErrorAction SilentlyContinue
     foreach ($file in $activeFiles) {
         $baseName = $file.Name -replace '\.crx$', ''
@@ -2404,29 +2645,41 @@ function Set-BrowserPreferences {
     #>
     param(
         [string]$ProfileName = "Default",
+        [string]$UserDataPath,
         [switch]$DryRunMode
     )
 
     # Determine User Data path
-    $userDataPaths = @(
-        (Join-Path $env:LOCALAPPDATA "Perplexity\Comet\User Data"),
-        (Join-Path $env:LOCALAPPDATA "Comet\User Data")
-    )
-
     $userDataPath = $null
-    foreach ($path in $userDataPaths) {
-        if (Test-Path $path) {
-            $userDataPath = $path
-            break
+
+    # Use provided path if specified (portable mode)
+    if ($UserDataPath) {
+        $userDataPath = $UserDataPath
+        if (-not $DryRunMode -and -not (Test-Path $userDataPath)) {
+            $null = New-Item -ItemType Directory -Path $userDataPath -Force
         }
     }
+    else {
+        # Fall back to system paths
+        $systemPaths = @(
+            (Join-Path $env:LOCALAPPDATA "Perplexity\Comet\User Data"),
+            (Join-Path $env:LOCALAPPDATA "Comet\User Data")
+        )
 
-    if (-not $userDataPath) {
-        # User Data doesn't exist yet - will be created on first run
-        # Create it now so we can pre-seed Preferences
-        $userDataPath = $userDataPaths[0]
-        if (-not $DryRunMode) {
-            $null = New-Item -ItemType Directory -Path $userDataPath -Force
+        foreach ($path in $systemPaths) {
+            if (Test-Path $path) {
+                $userDataPath = $path
+                break
+            }
+        }
+
+        if (-not $userDataPath) {
+            # User Data doesn't exist yet - will be created on first run
+            # Create it now so we can pre-seed Preferences
+            $userDataPath = $systemPaths[0]
+            if (-not $DryRunMode) {
+                $null = New-Item -ItemType Directory -Path $userDataPath -Force
+            }
         }
     }
 
@@ -2585,13 +2838,19 @@ function Build-BrowserCommand {
         [string]$BrowserExe,
         [string]$ExtPath,
         [string]$UBlockPath,
-        [string]$AdGuardExtraPath
+        [string]$AdGuardExtraPath,
+        [string]$UserDataPath
     )
 
     $cmd = [System.Collections.ArrayList]@()
     [void]$cmd.Add($BrowserExe)
 
     $browserConfig = $Config.browser
+
+    # Add user data directory if specified (for portable mode)
+    if ($UserDataPath) {
+        [void]$cmd.Add("--user-data-dir=$UserDataPath")
+    }
 
     # Add profile directory if specified
     if ($browserConfig.profile) {
@@ -2692,9 +2951,35 @@ function Main {
     $scriptDir = Split-Path -Parent $PSCommandPath
     $baseDir = $scriptDir
 
+    # Set up DataPath (for portable installation and user data)
+    $meteorDataPath = if ($DataPath) {
+        # Use provided path
+        if ([System.IO.Path]::IsPathRooted($DataPath)) {
+            $DataPath
+        }
+        else {
+            Join-Path $baseDir $DataPath
+        }
+    }
+    else {
+        # Default to .meteor in script directory
+        Join-Path $baseDir ".meteor"
+    }
+
+    # Ensure data directory exists
+    if (-not (Test-Path $meteorDataPath)) {
+        $null = New-Item -ItemType Directory -Path $meteorDataPath -Force
+    }
+
+    # User data path for browser profile (inside meteorDataPath)
+    $userDataPath = Join-Path $meteorDataPath "User Data"
+
     # Load config
     $configPath = if ($Config) { $Config } else { Join-Path $baseDir "config.json" }
     $config = Get-MeteorConfig -ConfigPath $configPath
+
+    # Determine if portable mode is enabled
+    $portableMode = $config.comet.portable -eq $true
 
     # Handle -VerifyPak mode (verify and exit)
     if ($VerifyPak) {
@@ -2747,15 +3032,21 @@ function Main {
 
         # Delete Preferences files to force fresh settings on next launch
         # This ensures extension incognito settings are written correctly
-        $userDataPaths = @(
-            (Join-Path $env:LOCALAPPDATA "Perplexity\Comet\User Data"),
-            (Join-Path $env:LOCALAPPDATA "Comet\User Data")
-        )
+        $prefsPathsToCheck = @()
 
-        foreach ($userDataPath in $userDataPaths) {
-            if (Test-Path $userDataPath) {
+        # Add portable mode path
+        if ($portableMode) {
+            $prefsPathsToCheck += $userDataPath
+        }
+
+        # Add system paths (for non-portable or mixed scenarios)
+        $prefsPathsToCheck += (Join-Path $env:LOCALAPPDATA "Perplexity\Comet\User Data")
+        $prefsPathsToCheck += (Join-Path $env:LOCALAPPDATA "Comet\User Data")
+
+        foreach ($udPath in $prefsPathsToCheck) {
+            if (Test-Path $udPath) {
                 $profileName = if ($config.browser.profile) { $config.browser.profile } else { "Default" }
-                $profilePath = Join-Path $userDataPath $profileName
+                $profilePath = Join-Path $udPath $profileName
                 $prefsPath = Join-Path $profilePath "Preferences"
                 $securePrefsPath = Join-Path $profilePath "Secure Preferences"
 
@@ -2787,10 +3078,22 @@ function Main {
     # ═══════════════════════════════════════════════════════════════
     Write-Status "Step 0: Checking Comet Installation" -Type Step
 
-    $comet = Get-CometInstallation
+    if ($portableMode) {
+        Write-Status "Portable mode enabled - data path: $meteorDataPath" -Type Detail
+    }
+
+    # Check for existing installation (portable path first if in portable mode)
+    $comet = Get-CometInstallation -DataPath $(if ($portableMode) { $meteorDataPath } else { $null })
 
     if (-not $comet) {
-        $comet = Install-Comet -DownloadUrl $config.comet.download_url -DryRunMode:$DryRun
+        if ($portableMode) {
+            # Portable installation - extract directly
+            $comet = Install-CometPortable -DownloadUrl $config.comet.download_url -TargetDir $meteorDataPath -DryRunMode:$DryRun
+        }
+        else {
+            # System installation - use installer
+            $comet = Install-Comet -DownloadUrl $config.comet.download_url -DryRunMode:$DryRun
+        }
     }
 
     if (-not $comet -and -not $DryRun) {
@@ -2800,6 +3103,9 @@ function Main {
 
     if ($comet) {
         Write-Status "Comet found: $($comet.Executable)" -Type Success
+        if ($comet.Portable) {
+            Write-Status "Mode: Portable" -Type Detail
+        }
         $cometVersion = Get-CometVersion -ExePath $comet.Executable
         Write-Status "Version: $cometVersion" -Type Detail
     }
@@ -2816,7 +3122,12 @@ function Main {
             Write-Status "Update available: $($updateInfo.Version) (current: $cometVersion)" -Type Warning
             if (-not $DryRun) {
                 Write-Status "Downloading Comet update..." -Type Info
-                $newComet = Install-Comet -DownloadUrl $config.comet.download_url -DryRunMode:$DryRun
+                if ($portableMode) {
+                    $newComet = Install-CometPortable -DownloadUrl $config.comet.download_url -TargetDir $meteorDataPath -DryRunMode:$DryRun
+                }
+                else {
+                    $newComet = Install-Comet -DownloadUrl $config.comet.download_url -DryRunMode:$DryRun
+                }
                 if ($newComet) {
                     $comet = $newComet
                     $cometVersion = Get-CometVersion -ExePath $comet.Executable
@@ -2911,7 +3222,7 @@ function Main {
     $needsSetup = $Force -or $extensionsUpdated -or -not (Test-Path $patchedExtPath)
 
     if (-not $needsSetup -and $comet) {
-        # Check if source files have changed (both .crx and .crx.disabled)
+        # Check if source files have changed (both .crx and .crx.meteor-backup)
         $defaultAppsDir = Join-Path $comet.Directory "default_apps"
         if (Test-Path $defaultAppsDir) {
             # Check active CRX files
@@ -2922,9 +3233,9 @@ function Main {
                     $needsSetup = $true
                 }
             }
-            # Check disabled CRX files
-            $disabledFiles = Get-ChildItem -Path $defaultAppsDir -Filter "*.crx.disabled" -ErrorAction SilentlyContinue
-            foreach ($crx in $disabledFiles) {
+            # Check backed-up CRX files
+            $backupFiles = Get-ChildItem -Path $defaultAppsDir -Filter "*.crx.meteor-backup" -ErrorAction SilentlyContinue
+            foreach ($crx in $backupFiles) {
                 if (Test-FileChanged -FilePath $crx.FullName -State $state) {
                     Write-Status "Changed: $($crx.Name)" -Type Detail
                     $needsSetup = $true
@@ -2956,7 +3267,7 @@ function Main {
         if ($setupResult) {
             Write-Status "Extensions patched successfully" -Type Success
 
-            # Update state with new hashes (track both .crx and .crx.disabled)
+            # Update state with new hashes (track both .crx and .crx.meteor-backup)
             if (-not $DryRun) {
                 $defaultAppsDir = Join-Path $comet.Directory "default_apps"
                 if (Test-Path $defaultAppsDir) {
@@ -2964,8 +3275,8 @@ function Main {
                     foreach ($crx in $crxFiles) {
                         Update-FileHash -FilePath $crx.FullName -State $state
                     }
-                    $disabledFiles = Get-ChildItem -Path $defaultAppsDir -Filter "*.crx.disabled" -ErrorAction SilentlyContinue
-                    foreach ($crx in $disabledFiles) {
+                    $backupFiles = Get-ChildItem -Path $defaultAppsDir -Filter "*.crx.meteor-backup" -ErrorAction SilentlyContinue
+                    foreach ($crx in $backupFiles) {
                         Update-FileHash -FilePath $crx.FullName -State $state
                     }
                 }
@@ -3007,17 +3318,17 @@ function Main {
                     }
                 }
 
-                # Rename .crx files to .crx.disabled
-                $crxFilesToDisable = Get-ChildItem -Path $defaultAppsDir -Filter "*.crx" -ErrorAction SilentlyContinue
-                foreach ($crx in $crxFilesToDisable) {
-                    $disabledPath = "$($crx.FullName).disabled"
-                    if (-not (Test-Path $disabledPath)) {
+                # Backup .crx files to .crx.meteor-backup
+                $crxFilesToBackup = Get-ChildItem -Path $defaultAppsDir -Filter "*.crx" -ErrorAction SilentlyContinue
+                foreach ($crx in $crxFilesToBackup) {
+                    $backupPath = "$($crx.FullName).meteor-backup"
+                    if (-not (Test-Path $backupPath)) {
                         if ($DryRun) {
-                            Write-Status "Would disable: $($crx.Name)" -Type Detail
+                            Write-Status "Would backup: $($crx.Name)" -Type Detail
                         }
                         else {
-                            Move-Item -Path $crx.FullName -Destination $disabledPath -Force
-                            Write-Status "Disabled: $($crx.Name)" -Type Detail
+                            Move-Item -Path $crx.FullName -Destination $backupPath -Force
+                            Write-Status "Backed up: $($crx.Name)" -Type Detail
                         }
                     }
                 }
@@ -3109,11 +3420,13 @@ function Main {
     # Pre-seed Preferences file with critical settings before launch
     # This ensures extensions.ui.developer_mode is set BEFORE extension loading
     $profileName = if ($config.browser.profile) { $config.browser.profile } else { "Default" }
-    $null = Set-BrowserPreferences -ProfileName $profileName -DryRunMode:$DryRun
+    $prefsUserDataPath = if ($portableMode) { $userDataPath } else { $null }
+    $null = Set-BrowserPreferences -ProfileName $profileName -UserDataPath $prefsUserDataPath -DryRunMode:$DryRun
 
     if ($comet -or $DryRun) {
         $browserExe = if ($comet) { $comet.Executable } else { "comet.exe" }
-        $cmd = Build-BrowserCommand -Config $config -BrowserExe $browserExe -ExtPath $patchedExtPath -UBlockPath $ublockPath -AdGuardExtraPath $adguardExtraPath
+        $browserUserDataPath = if ($portableMode) { $userDataPath } else { $null }
+        $cmd = Build-BrowserCommand -Config $config -BrowserExe $browserExe -ExtPath $patchedExtPath -UBlockPath $ublockPath -AdGuardExtraPath $adguardExtraPath -UserDataPath $browserUserDataPath
 
         $proc = Start-Browser -Command $cmd -DryRunMode:$DryRun
 
@@ -3121,6 +3434,9 @@ function Main {
             Write-Host ""
             Write-Status "Browser launched (PID: $($proc.Id))" -Type Success
             Write-Status "Meteor v2 active - privacy protections enabled" -Type Info
+            if ($portableMode) {
+                Write-Status "User data: $userDataPath" -Type Detail
+            }
         }
     }
 }

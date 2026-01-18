@@ -1,9 +1,11 @@
 {
   "_comment": "Meteor v2 Configuration - Privacy-focused Comet browser enhancement system",
   "comet": {
-    "download_url": "https://www.perplexity.ai/rest/browser/download?platform=win_x64&channel=stable",
+    "download_url": "https://www.perplexity.ai/rest/browser/download?platform=win_x64&channel=dev",
     "install_path": "",
-    "auto_update": true
+    "auto_update": true,
+    "portable": true,
+    "_comment_portable": "When portable=true, browser is extracted directly (no installer) and user data is stored in DataPath"
   },
   "browser": {
     "profile": "Default",

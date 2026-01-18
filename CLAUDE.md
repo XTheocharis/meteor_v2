@@ -12,11 +12,12 @@ Meteor v2 is a privacy-focused enhancement system for the Comet browser (Chromiu
 
 ### Running Meteor
 ```powershell
-.\meteor.ps1                  # Full automated workflow: setup, patch, launch
+.\meteor.ps1                  # Full automated workflow: setup, patch, launch (portable mode by default)
 .\meteor.ps1 -DryRun          # Show what would be done without making changes
 .\meteor.ps1 -Force           # Force re-setup (stops Comet, deletes Preferences, clears CRX caches)
 .\meteor.ps1 -NoLaunch        # Run setup only, don't launch browser
 .\meteor.ps1 -Config path.json # Use alternate configuration file
+.\meteor.ps1 -DataPath "D:\MyComet"  # Use custom directory for browser + user data
 .\meteor.ps1 -VerifyPak       # Verify PAK patches are applied (auto-detects PAK location)
 .\meteor.ps1 -VerifyPak -PakPath "C:\path\to\resources.pak"  # Verify specific PAK file
 .\meteor.ps1 -Verbose         # Enable verbose output (PowerShell common parameter)
@@ -61,14 +62,14 @@ The system uses 8 layers (0-7), all managed by `meteor.ps1` and configured in `c
 
 When you run `.\meteor.ps1`, it performs these steps automatically:
 
-1. **Step 0: Comet Installation** - Downloads and installs Comet if not found
+1. **Step 0: Comet Installation** - Downloads and extracts Comet in portable mode (no system installation required)
 2. **Step 1: Comet Update Check** - Checks for and downloads browser updates
 3. **Step 2: Extension Update Check** - Queries extension update URLs and downloads newer versions
 4. **Step 3: Change Detection** - Compares file hashes to detect if re-patching is needed
 5. **Step 4: Extract & Patch** - Extracts CRX files and applies Meteor modifications
 6. **Step 5: uBlock Origin** - Downloads uBlock Origin MV2 from Chrome Web Store if not present
 7. **Step 5.5: AdGuard Extra** - Downloads AdGuard Extra from Chrome Web Store if not present
-8. **Step 6: Launch Browser** - Starts Comet with all privacy enhancements
+8. **Step 6: Launch Browser** - Starts Comet with all privacy enhancements and `--user-data-dir` pointing to the data directory
 
 ### Key Files
 
@@ -77,19 +78,42 @@ When you run `.\meteor.ps1`, it performs these steps automatically:
 | `meteor.ps1` | Main script - handles entire workflow |
 | `config.json` | All configuration (browser flags, patches, uBlock) |
 | `.meteor/state.json` | Runtime state (file hashes, versions) - auto-generated |
+| `.meteor/comet/` | Portable Comet browser (extracted, no install) |
+| `.meteor/User Data/` | Browser profile data (bookmarks, cache, extensions) |
 | `patches/perplexity/telemetry.json` | 15 DNR rules for telemetry blocking |
 | `patches/perplexity/meteor-prefs.js` | Service worker preference enforcement |
 | `patches/perplexity/content-script.js` | SDK stubs + feature flag interception |
 
+### Portable Mode
+
+By default, Meteor runs in **portable mode** (`config.json: comet.portable = true`):
+
+- **No system installation**: Browser is extracted directly to `.meteor/comet/` using 7-Zip
+- **Isolated user data**: All browser data stored in `.meteor/User Data/` via `--user-data-dir`
+- **Fully portable**: Copy the entire directory to a USB drive or another machine
+- **Custom data path**: Use `-DataPath "D:\CustomPath"` to specify an alternate location
+
+**Requirements for portable mode:**
+- 7-Zip must be installed (download from https://7-zip.org)
+- Uses the dev channel from Perplexity's download API
+
+**Extraction process** (nested archives):
+1. Downloads `comet_latest_intel.exe` (NSIS installer)
+2. Extracts `updater.7z` from the installer
+3. Navigates `bin\Offline\{GUID}\{GUID}\mini_installer.exe` (GUIDs vary)
+4. Extracts `chrome.7z` from mini_installer
+5. Copies `Chrome-bin\` contents to `.meteor/comet/`
+
 ### Key Components
 
 **meteor.ps1**: Consolidated PowerShell script that:
-- Auto-detects or downloads Comet browser
-- Extracts and patches CRX extensions (handles both `.crx` and `.crx.disabled` files)
+- Downloads and extracts Comet browser for portable operation (requires 7-Zip)
+- Extracts and patches CRX extensions (handles both `.crx` and `.crx.meteor-backup` files)
 - Reads/writes Chromium PAK files (v4/v5 format)
 - Downloads uBlock Origin MV2 and AdGuard Extra from Chrome Web Store
 - Preserves original extension public keys and update URLs for Chrome Web Store updates
 - Builds command line with 155 disabled features and 10 enabled features
+- Uses `--user-data-dir` to redirect all browser data to the data directory
 - Tracks file changes via SHA256 hashes
 - Clears Comet's CRX caches during re-patching to ensure changes take effect
 - Stops running Comet processes when `-Force` is used
@@ -112,6 +136,8 @@ When you run `.\meteor.ps1`, it performs these steps automatically:
 ## Configuration
 
 All settings are in `config.json`. Key sections:
+- `comet.download_url`: Download URL for Comet browser (dev channel by default)
+- `comet.portable`: Enable portable mode - extract browser directly instead of running installer (default: `true`)
 - `browser.flags/enable_features/disable_features`: Chromium launch configuration (21 flags, 10 enabled features, 155 disabled features)
 - `extensions.sources`: Extensions to patch (`perplexity`, `comet_web_resources`, `agents`)
 - `extensions.patch_config.perplexity`: Patching rules for the perplexity extension
@@ -182,3 +208,4 @@ The `pak_modifications.modifications` array is currently **empty**. The infrastr
    - `ExtensionManifestV2Disabled`
    - `ExtensionManifestV2Unsupported`
 5. **UTF-8 BOM Required**: `meteor.ps1` must have a UTF-8 BOM (byte order mark). PowerShell 5.1 reads files without BOM as ANSI, which corrupts the µ character in embedded uBlock JavaScript and causes parse errors. PSScriptAnalyzer warns via `PSUseBOMForUnicodeEncodedFile` if missing.
+6. **7-Zip Required**: Portable mode requires 7-Zip to be installed for extracting nested archives. The script checks standard installation paths and PATH.
