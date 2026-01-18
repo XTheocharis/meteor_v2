@@ -1,7 +1,7 @@
 {
   "_comment": "Meteor v2 Configuration - Privacy-focused Comet browser enhancement system",
   "comet": {
-    "download_url": "https://www.perplexity.ai/rest/browser/download?platform=win_x64&channel=dev",
+    "download_url": "https://www.perplexity.ai/rest/browser/download?platform=win_x64&channel=stable",
     "install_path": "",
     "auto_update": true,
     "portable": true,
