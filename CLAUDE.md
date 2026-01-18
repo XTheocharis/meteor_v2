@@ -17,6 +17,8 @@ Meteor v2 is a privacy-focused enhancement system for the Comet browser (Chromiu
 .\meteor.ps1 -Force           # Force re-setup (stops Comet, deletes Preferences, clears CRX caches)
 .\meteor.ps1 -NoLaunch        # Run setup only, don't launch browser
 .\meteor.ps1 -Config path.json # Use alternate configuration file
+.\meteor.ps1 -VerifyPak       # Verify PAK patches are applied (auto-detects PAK location)
+.\meteor.ps1 -VerifyPak -PakPath "C:\path\to\resources.pak"  # Verify specific PAK file
 .\meteor.ps1 -Verbose         # Enable verbose output (PowerShell common parameter)
 ```
 
@@ -113,9 +115,59 @@ All settings are in `config.json`. Key sections:
 - `browser.flags/enable_features/disable_features`: Chromium launch configuration (21 flags, 10 enabled features, 155 disabled features)
 - `extensions.sources`: Extensions to patch (`perplexity`, `comet_web_resources`, `agents`)
 - `extensions.patch_config.perplexity`: Patching rules for the perplexity extension
-- `pak_modifications`: Regex replacements for resources.pak
+- `pak_modifications`: Regex replacements for resources.pak (currently empty, infrastructure ready)
 - `ublock.extension_id` & `ublock.defaults`: Chrome Web Store ID (cjpalhdlnbpafiamejdnhcphjbkeiagm) and filter lists (41 lists + custom telemetry rules)
 - `adguard_extra.extension_id`: Chrome Web Store ID (gkeojjjcdcopjkbelgbcpckplegclfeg) for anti-adblock circumvention
+
+## PAK Modifications (Layer 0)
+
+The PAK patching infrastructure allows binary-level modifications to `resources.pak` before the browser loads. This is the most fundamental layer - patches here cannot be circumvented by JavaScript.
+
+### Current Status
+The `pak_modifications.modifications` array is currently **empty**. The infrastructure is fully functional and ready to use.
+
+### How to Add PAK Patches
+
+1. **Find the target string** in resources.pak using the browser's DevTools or by extracting the PAK
+2. **Create a regex pattern** that uniquely matches the target (escape special regex chars with `\\`)
+3. **Define the replacement** - must be the same byte length or the PAK will be rebuilt
+4. **Add to config.json**:
+
+```json
+"pak_modifications": {
+  "enabled": true,
+  "modifications": [
+    {
+      "pattern": "\\[BooleanFlags\\.EXAMPLE\\]:\\s*true",
+      "replacement": "[BooleanFlags.EXAMPLE]: false",
+      "description": "Human-readable description of what this does"
+    }
+  ]
+}
+```
+
+### Patch Entry Fields
+| Field | Required | Description |
+|-------|----------|-------------|
+| `pattern` | Yes | Regex pattern to find in PAK resources (use `\\` to escape) |
+| `replacement` | Yes | Literal string to replace matches with |
+| `description` | Yes | Human-readable description (shown in logs and verification) |
+
+### Verification
+```powershell
+# Verify patches are applied to the installed browser
+.\meteor.ps1 -VerifyPak
+
+# Verify a specific PAK file
+.\meteor.ps1 -VerifyPak -PakPath "C:\path\to\resources.pak"
+```
+
+### Technical Details
+- Supports PAK format v4 and v5 (little-endian)
+- Automatically handles gzip-compressed resources within the PAK
+- Creates `.meteor-backup` of original PAK before modification
+- Restores from backup when `-Force` is used to ensure clean state
+- Patterns are applied to UTF-8 text resources only (binary resources are skipped)
 
 ## Critical Rules for Changes
 

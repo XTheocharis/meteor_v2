@@ -239,28 +239,7 @@
   },
   "pak_modifications": {
     "enabled": true,
-    "modifications": [
-      {
-        "pattern": "\\[BooleanFlags\\.REPORT_OMNIBOX_TEXT\\]:\\s*true",
-        "replacement": "[BooleanFlags.REPORT_OMNIBOX_TEXT]: false",
-        "description": "Disable omnibox text reporting"
-      },
-      {
-        "pattern": "\\[NumericFlags\\.SEND_VISITED_URLS_EVENT_INTERVAL_MINS\\]:\\s*\\d+",
-        "replacement": "[NumericFlags.SEND_VISITED_URLS_EVENT_INTERVAL_MINS]: 0",
-        "description": "Disable URL visit reporting"
-      },
-      {
-        "pattern": "https://www\\.perplexity\\.ai/rest/event/analytics",
-        "replacement": "https://localhost:1/blocked",
-        "description": "Redirect analytics endpoint to localhost"
-      },
-      {
-        "pattern": "window\\.PERPLEXITY_JS_SENTRY_DSN\\s*\\?\\?\\s*\"\"",
-        "replacement": "\"\" ?? \"\"",
-        "description": "Empty Sentry DSN"
-      }
-    ]
+    "modifications": []
   },
   "ublock": {
     "enabled": true,
