@@ -2131,13 +2131,18 @@ function Test-CometUpdate {
                 "User-Agent" = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
             }
             Write-Verbose "Update check: Response status $($response.StatusCode)"
+            # PowerShell 5.1 may return 307 directly without throwing - check for Location header
+            if ($response.StatusCode -eq 307) {
+                $redirectUrl = $response.Headers["Location"]
+                Write-Verbose "Update check: Got 307 redirect (no exception)"
+            }
         }
         catch [System.Net.WebException] {
-            # MaximumRedirection 0 causes an exception on redirect, but we can still get the Location header
-            $response = $_.Exception.Response
-            if ($response -and $response.StatusCode -eq [System.Net.HttpStatusCode]::TemporaryRedirect) {
-                $redirectUrl = $response.Headers["Location"]
-                Write-Verbose "Update check: Got 307 redirect"
+            # Some PowerShell versions throw on redirect with MaximumRedirection 0
+            $webResponse = $_.Exception.Response
+            if ($webResponse -and $webResponse.StatusCode -eq [System.Net.HttpStatusCode]::TemporaryRedirect) {
+                $redirectUrl = $webResponse.Headers["Location"]
+                Write-Verbose "Update check: Got 307 redirect (from exception)"
             }
             else {
                 throw
