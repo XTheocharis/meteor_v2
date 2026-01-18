@@ -24,9 +24,12 @@
     Perform all setup steps but don't launch the browser.
 
 .PARAMETER VerifyPak
-    Verify that PAK modifications have been applied to resources.pak.
-    Optionally specify a path to a specific PAK file to verify.
-    If no path is given, auto-detects from Comet installation.
+    Verify that PAK modifications have been applied to resources.pak and exit.
+    Use with -PakPath to specify a custom PAK file, otherwise auto-detects.
+
+.PARAMETER PakPath
+    Path to a specific resources.pak file to verify. Used with -VerifyPak.
+    If not specified, auto-detects from Comet installation.
 
 .PARAMETER Verbose
     Enable verbose output for debugging.
@@ -48,7 +51,7 @@
     Verify PAK patches are applied (auto-detects PAK location).
 
 .EXAMPLE
-    .\Meteor.ps1 -VerifyPak "C:\Path\To\resources.pak"
+    .\Meteor.ps1 -VerifyPak -PakPath "C:\Path\To\resources.pak"
     Verify PAK patches in a specific file.
 #>
 
@@ -65,6 +68,7 @@
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'Force', Justification = 'Used in Main function')]
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'NoLaunch', Justification = 'Used in Main function')]
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'VerifyPak', Justification = 'Used in Main function')]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'PakPath', Justification = 'Used in Main function')]
 [CmdletBinding()]
 param(
     [Parameter()]
@@ -80,7 +84,10 @@ param(
     [switch]$NoLaunch,
 
     [Parameter()]
-    [string]$VerifyPak
+    [switch]$VerifyPak,
+
+    [Parameter()]
+    [string]$PakPath
 )
 
 Set-StrictMode -Version Latest
@@ -2690,8 +2697,8 @@ function Main {
     $config = Get-MeteorConfig -ConfigPath $configPath
 
     # Handle -VerifyPak mode (verify and exit)
-    if ($PSBoundParameters.ContainsKey('VerifyPak')) {
-        $pakPathArg = if ($VerifyPak) { $VerifyPak } else { $null }
+    if ($VerifyPak) {
+        $pakPathArg = if ($PakPath) { $PakPath } else { $null }
         $result = Test-PakModifications -PakPath $pakPathArg -ConfigPath $configPath -Detailed
         if ($null -eq $result) {
             exit 1
