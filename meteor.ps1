@@ -1821,6 +1821,52 @@ function Get-CometVersion {
     }
 }
 
+function Set-CometRegistryValues {
+    <#
+    .SYNOPSIS
+        Set registry values required for Comet update system.
+    .DESCRIPTION
+        Creates/updates registry keys at HKCU:\SOFTWARE\Perplexity\Update\Clients\{GUID}
+        with name, lang, and pv (product version) values.
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [string]$Version,
+        [string]$Name = "Comet Dev",
+        [string]$Lang = "en",
+        [string]$ClientGuid = "0c18db21-6aaf-49d0-a339-5d135ad4c8e2",
+        [switch]$DryRunMode
+    )
+
+    $regPath = "HKCU:\SOFTWARE\Perplexity\Update\Clients\$ClientGuid"
+
+    if ($DryRunMode) {
+        Write-Status "Would set registry values at: $regPath" -Type Detail
+        Write-Verbose "[Registry] name=$Name, lang=$Lang, pv=$Version"
+        return $true
+    }
+
+    try {
+        # Create the registry path if it doesn't exist
+        if (-not (Test-Path $regPath)) {
+            New-Item -Path $regPath -Force | Out-Null
+            Write-Verbose "[Registry] Created path: $regPath"
+        }
+
+        # Set the values
+        Set-ItemProperty -Path $regPath -Name "name" -Value $Name -Type String
+        Set-ItemProperty -Path $regPath -Name "lang" -Value $Lang -Type String
+        Set-ItemProperty -Path $regPath -Name "pv" -Value $Version -Type String
+
+        Write-Status "Set registry values (pv=$Version)" -Type Detail
+        return $true
+    }
+    catch {
+        Write-Status "Failed to set registry values: $_" -Type Warning
+        return $false
+    }
+}
+
 function Install-Comet {
     <#
     .SYNOPSIS
@@ -3387,6 +3433,11 @@ function Main {
         }
         $cometVersion = Get-CometVersion -ExePath $comet.Executable
         Write-Status "Version: $cometVersion" -Type Detail
+
+        # Set registry values for Comet update system
+        if ($cometVersion) {
+            Set-CometRegistryValues -Version $cometVersion -DryRunMode:$DryRun
+        }
     }
 
     # ═══════════════════════════════════════════════════════════════
@@ -3411,6 +3462,10 @@ function Main {
                     $comet = $newComet
                     $cometVersion = Get-CometVersion -ExePath $comet.Executable
                     Write-Status "Updated to version: $cometVersion" -Type Success
+                    # Update registry with new version
+                    if ($cometVersion) {
+                        Set-CometRegistryValues -Version $cometVersion -DryRunMode:$DryRun
+                    }
                 }
             }
             else {
