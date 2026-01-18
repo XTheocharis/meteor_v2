@@ -23,6 +23,11 @@
 .PARAMETER NoLaunch
     Perform all setup steps but don't launch the browser.
 
+.PARAMETER VerifyPak
+    Verify that PAK modifications have been applied to resources.pak.
+    Optionally specify a path to a specific PAK file to verify.
+    If no path is given, auto-detects from Comet installation.
+
 .PARAMETER Verbose
     Enable verbose output for debugging.
 
@@ -37,6 +42,14 @@
 .EXAMPLE
     .\Meteor.ps1 -Force
     Force re-setup even if files haven't changed.
+
+.EXAMPLE
+    .\Meteor.ps1 -VerifyPak
+    Verify PAK patches are applied (auto-detects PAK location).
+
+.EXAMPLE
+    .\Meteor.ps1 -VerifyPak "C:\Path\To\resources.pak"
+    Verify PAK patches in a specific file.
 #>
 
 # Suppress PSScriptAnalyzer warnings for internal helper functions
@@ -51,6 +64,7 @@
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'DryRun', Justification = 'Used in Main function')]
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'Force', Justification = 'Used in Main function')]
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'NoLaunch', Justification = 'Used in Main function')]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'VerifyPak', Justification = 'Used in Main function')]
 [CmdletBinding()]
 param(
     [Parameter()]
@@ -63,7 +77,10 @@ param(
     [switch]$Force,
 
     [Parameter()]
-    [switch]$NoLaunch
+    [switch]$NoLaunch,
+
+    [Parameter()]
+    [string]$VerifyPak
 )
 
 Set-StrictMode -Version Latest
@@ -488,6 +505,227 @@ function Write-PakFile {
 
     # Write to file
     [System.IO.File]::WriteAllBytes($Path, [byte[]]$output.ToArray())
+}
+
+function Test-PakModifications {
+    <#
+    .SYNOPSIS
+        Verify that Meteor PAK modifications exist in a target resources.pak file.
+    .DESCRIPTION
+        Scans a resources.pak file to check if the expected replacement values from
+        config.json pak_modifications are present. This confirms that patches have
+        been successfully applied.
+    .PARAMETER PakPath
+        Path to the resources.pak file to verify. If not specified, auto-detects
+        from the Comet installation directory.
+    .PARAMETER ConfigPath
+        Path to the configuration file. Defaults to ./config.json.
+    .PARAMETER Detailed
+        Show detailed output including resource IDs where patches were found.
+    .OUTPUTS
+        PSCustomObject with verification results:
+        - Verified: Array of modification descriptions that were found
+        - Missing: Array of modification descriptions that were not found
+        - AllPatched: Boolean indicating if all modifications are present
+    .EXAMPLE
+        Test-PakModifications
+        # Auto-detects PAK location and verifies all patches
+    .EXAMPLE
+        Test-PakModifications -PakPath "C:\Program Files\Comet\resources.pak" -Detailed
+        # Verifies specific PAK file with detailed output
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Position = 0)]
+        [string]$PakPath,
+
+        [string]$ConfigPath = ".\config.json",
+
+        [switch]$Detailed
+    )
+
+    # Load configuration
+    if (-not (Test-Path $ConfigPath)) {
+        Write-Error "Configuration file not found: $ConfigPath"
+        return $null
+    }
+
+    try {
+        $config = Get-Content -Path $ConfigPath -Raw | ConvertFrom-Json
+    }
+    catch {
+        Write-Error "Failed to parse configuration: $_"
+        return $null
+    }
+
+    if (-not $config.pak_modifications -or -not $config.pak_modifications.modifications) {
+        Write-Error "No pak_modifications found in configuration"
+        return $null
+    }
+
+    # Auto-detect PAK path if not specified
+    if (-not $PakPath) {
+        $comet = Get-CometInstallation
+        if ($comet) {
+            $PakPath = Join-Path $comet.Directory "resources.pak"
+            if (-not (Test-Path $PakPath)) {
+                # Try version subdirectories
+                $versionDirs = Get-ChildItem -Path $comet.Directory -Directory -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Name -match '^\d+\.\d+\.\d+' }
+                foreach ($dir in $versionDirs) {
+                    $testPath = Join-Path $dir.FullName "resources.pak"
+                    if (Test-Path $testPath) {
+                        $PakPath = $testPath
+                        break
+                    }
+                }
+            }
+        }
+    }
+
+    if (-not $PakPath -or -not (Test-Path $PakPath)) {
+        Write-Error "resources.pak not found. Specify -PakPath or ensure Comet is installed."
+        return $null
+    }
+
+    Write-Status "Verifying PAK modifications in: $PakPath" -Type Info
+
+    # Read and parse PAK file
+    try {
+        $pak = Read-PakFile -Path $PakPath
+        Write-Status "Parsed PAK v$($pak.Version) with $($pak.Resources.Count - 1) resources" -Type Detail
+    }
+    catch {
+        Write-Error "Failed to parse PAK file: $_"
+        return $null
+    }
+
+    # Initialize results
+    $results = @{
+        Verified = [System.Collections.ArrayList]@()
+        Missing  = [System.Collections.ArrayList]@()
+        Details  = [System.Collections.ArrayList]@()
+    }
+
+    # Build verification patterns from replacement values
+    # We look for the replacement text (what should exist after patching)
+    $verificationPatterns = @()
+    foreach ($mod in $config.pak_modifications.modifications) {
+        $verificationPatterns += @{
+            Description = $mod.description
+            Replacement = $mod.replacement
+            Pattern     = $mod.pattern
+            Found       = $false
+            ResourceIds = [System.Collections.ArrayList]@()
+        }
+    }
+
+    # Scan all text resources
+    $scannedCount = 0
+    for ($i = 0; $i -lt $pak.Resources.Count - 1; $i++) {
+        $resource = $pak.Resources[$i]
+        $resourceId = $resource.Id
+
+        $resourceBytes = Get-PakResource -Pak $pak -ResourceId $resourceId
+        if ($null -eq $resourceBytes) { continue }
+
+        [byte[]]$resourceBytes = $resourceBytes
+        if ($resourceBytes.Length -lt 2) { continue }
+
+        $scannedCount++
+
+        # Check if gzip compressed
+        $isGzipped = ($resourceBytes[0] -eq 0x1f -and $resourceBytes[1] -eq 0x8b)
+        $contentBytes = $resourceBytes
+
+        if ($isGzipped) {
+            try {
+                $ms = New-Object System.IO.MemoryStream($resourceBytes, $false)
+                $gz = New-Object System.IO.Compression.GZipStream($ms, [System.IO.Compression.CompressionMode]::Decompress)
+                $outMs = New-Object System.IO.MemoryStream
+                $gz.CopyTo($outMs)
+                $gz.Close()
+                $ms.Close()
+                $contentBytes = $outMs.ToArray()
+                $outMs.Close()
+            }
+            catch {
+                continue
+            }
+        }
+
+        # Try to decode as UTF-8 text
+        try {
+            $content = [System.Text.Encoding]::UTF8.GetString($contentBytes)
+            if ($content -match '[\x00-\x08\x0E-\x1F]') { continue }
+        }
+        catch {
+            continue
+        }
+
+        # Check each verification pattern (look for replacement values)
+        foreach ($pattern in $verificationPatterns) {
+            # Use literal string matching for the replacement value
+            if ($content.Contains($pattern.Replacement)) {
+                $pattern.Found = $true
+                [void]$pattern.ResourceIds.Add($resourceId)
+            }
+        }
+    }
+
+    # Compile results
+    foreach ($pattern in $verificationPatterns) {
+        if ($pattern.Found) {
+            [void]$results.Verified.Add($pattern.Description)
+            if ($Detailed) {
+                [void]$results.Details.Add(@{
+                    Description = $pattern.Description
+                    Status      = "Found"
+                    ResourceIds = $pattern.ResourceIds.ToArray()
+                    Replacement = $pattern.Replacement
+                })
+            }
+            Write-Status "  [OK] $($pattern.Description)" -Type Detail
+        }
+        else {
+            [void]$results.Missing.Add($pattern.Description)
+            if ($Detailed) {
+                [void]$results.Details.Add(@{
+                    Description = $pattern.Description
+                    Status      = "Missing"
+                    ResourceIds = @()
+                    Replacement = $pattern.Replacement
+                })
+            }
+            Write-Status "  [MISSING] $($pattern.Description)" -Type Warning
+        }
+    }
+
+    $allPatched = ($results.Missing.Count -eq 0)
+
+    # Summary
+    Write-Status "" -Type Info
+    if ($allPatched) {
+        Write-Status "All $($results.Verified.Count) PAK modifications verified" -Type Info
+    }
+    else {
+        Write-Status "$($results.Verified.Count)/$($verificationPatterns.Count) PAK modifications verified, $($results.Missing.Count) missing" -Type Warning
+    }
+
+    # Return results object
+    $output = [PSCustomObject]@{
+        PakPath    = $PakPath
+        Verified   = $results.Verified.ToArray()
+        Missing    = $results.Missing.ToArray()
+        AllPatched = $allPatched
+        Scanned    = $scannedCount
+    }
+
+    if ($Detailed) {
+        $output | Add-Member -NotePropertyName "Details" -NotePropertyValue $results.Details.ToArray()
+    }
+
+    return $output
 }
 
 #endregion
@@ -2450,6 +2688,25 @@ function Main {
     # Load config
     $configPath = if ($Config) { $Config } else { Join-Path $baseDir "config.json" }
     $config = Get-MeteorConfig -ConfigPath $configPath
+
+    # Handle -VerifyPak mode (verify and exit)
+    if ($PSBoundParameters.ContainsKey('VerifyPak')) {
+        $pakPathArg = if ($VerifyPak) { $VerifyPak } else { $null }
+        $result = Test-PakModifications -PakPath $pakPathArg -ConfigPath $configPath -Detailed
+        if ($null -eq $result) {
+            exit 1
+        }
+        if ($result.AllPatched) {
+            Write-Host ""
+            Write-Host "PAK verification passed." -ForegroundColor Green
+            exit 0
+        }
+        else {
+            Write-Host ""
+            Write-Host "PAK verification failed - some patches are missing." -ForegroundColor Red
+            exit 1
+        }
+    }
 
     # Resolve paths
     $patchedExtPath = Resolve-MeteorPath -BasePath $baseDir -RelativePath $config.paths.patched_extensions
