@@ -2117,37 +2117,64 @@ function Test-CometUpdate {
 
     try {
         $latestVersion = $null
+        $versionSource = $null
+
+        Write-Verbose "Update check: Querying $DownloadUrl"
+        Write-Verbose "Update check: Current version is $CurrentVersion"
 
         # Make HEAD request to get final redirect URL or Content-Disposition
         $response = Invoke-WebRequest -Uri $DownloadUrl -Method Head -UseBasicParsing -MaximumRedirection 5 -Headers @{
             "User-Agent" = $script:UserAgent
         }
 
+        Write-Verbose "Update check: Response status $($response.StatusCode)"
+
         # Try to extract version from Content-Disposition header
         $disposition = $response.Headers["Content-Disposition"]
+        Write-Verbose "Update check: Content-Disposition header: $(if ($disposition) { $disposition } else { '(not present)' })"
         if ($disposition) {
             # Look for version pattern in filename (e.g., comet-1.2.3.exe or CometSetup_1.2.3.exe)
             if ($disposition -match '[\-_](\d+\.\d+\.\d+(?:\.\d+)?)') {
                 $latestVersion = $Matches[1]
+                $versionSource = "Content-Disposition header"
+                Write-Verbose "Update check: Extracted version $latestVersion from Content-Disposition"
+            }
+            else {
+                Write-Verbose "Update check: No version pattern found in Content-Disposition"
             }
         }
 
         # Also check the final URL for version info
-        if (-not $latestVersion -and $response.BaseResponse.ResponseUri) {
-            $finalUrl = $response.BaseResponse.ResponseUri.ToString()
+        $finalUrl = if ($response.BaseResponse.ResponseUri) { $response.BaseResponse.ResponseUri.ToString() } else { $null }
+        Write-Verbose "Update check: Final URL after redirects: $(if ($finalUrl) { $finalUrl } else { '(same as request)' })"
+        if (-not $latestVersion -and $finalUrl) {
             if ($finalUrl -match '[\-_/](\d+\.\d+\.\d+(?:\.\d+)?)') {
                 $latestVersion = $Matches[1]
+                $versionSource = "final redirect URL"
+                Write-Verbose "Update check: Extracted version $latestVersion from final URL"
+            }
+            else {
+                Write-Verbose "Update check: No version pattern found in final URL"
             }
         }
 
         if ($latestVersion) {
+            Write-Verbose "Update check: Latest version $latestVersion found via $versionSource"
             $comparison = Compare-Versions -Version1 $latestVersion -Version2 $CurrentVersion
+            Write-Verbose "Update check: Version comparison result: $comparison (positive = update available)"
             if ($comparison -gt 0) {
+                Write-Verbose "Update check: Update available ($CurrentVersion -> $latestVersion)"
                 return @{
                     Version     = $latestVersion
                     DownloadUrl = $DownloadUrl
                 }
             }
+            else {
+                Write-Verbose "Update check: Already up to date"
+            }
+        }
+        else {
+            Write-Verbose "Update check: Could not determine latest version from response"
         }
     }
     catch {
