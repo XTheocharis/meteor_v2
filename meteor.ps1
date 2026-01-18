@@ -2271,7 +2271,8 @@ function Get-UBlockOrigin {
     param(
         [string]$OutputDir,
         [object]$UBlockConfig,
-        [switch]$DryRunMode
+        [switch]$DryRunMode,
+        [switch]$ForceDownload
     )
 
     $extensionId = $UBlockConfig.extension_id
@@ -2282,7 +2283,12 @@ function Get-UBlockOrigin {
     if ((Test-Path $OutputDir) -and (Test-Path $manifestPath)) {
         $manifest = Get-Content -Path $manifestPath -Raw | ConvertFrom-Json
         $currentVersion = $manifest.version
-        Write-Status "uBlock Origin $currentVersion installed, checking for updates..." -Type Info
+        if ($ForceDownload) {
+            Write-Status "uBlock Origin $currentVersion installed, forcing re-download..." -Type Info
+        }
+        else {
+            Write-Status "uBlock Origin $currentVersion installed, checking for updates..." -Type Info
+        }
     }
     else {
         Write-Status "uBlock Origin not found, downloading..." -Type Info
@@ -2301,10 +2307,11 @@ function Get-UBlockOrigin {
             return $null
         }
 
-        # Download CRX (will skip if up to date)
+        # Download CRX (will skip if up to date, unless ForceDownload)
         $tempDir = Join-Path $env:TEMP "ublock_$(Get-Random)"
         $null = New-Item -ItemType Directory -Path $tempDir -Force
-        $crxFile = Get-ChromeExtensionCrx -ExtensionId $extensionId -CurrentVersion $currentVersion -OutPath $tempDir
+        $versionToCheck = if ($ForceDownload) { $null } else { $currentVersion }
+        $crxFile = Get-ChromeExtensionCrx -ExtensionId $extensionId -CurrentVersion $versionToCheck -OutPath $tempDir
 
         if (-not $crxFile) {
             # Either up to date or download failed
@@ -2480,7 +2487,8 @@ function Get-AdGuardExtra {
     param(
         [string]$OutputDir,
         [object]$AdGuardConfig,
-        [switch]$DryRunMode
+        [switch]$DryRunMode,
+        [switch]$ForceDownload
     )
 
     $extensionId = $AdGuardConfig.extension_id
@@ -2491,7 +2499,12 @@ function Get-AdGuardExtra {
     if ((Test-Path $OutputDir) -and (Test-Path $manifestPath)) {
         $manifest = Get-Content -Path $manifestPath -Raw | ConvertFrom-Json
         $currentVersion = $manifest.version
-        Write-Status "AdGuard Extra $currentVersion installed, checking for updates..." -Type Info
+        if ($ForceDownload) {
+            Write-Status "AdGuard Extra $currentVersion installed, forcing re-download..." -Type Info
+        }
+        else {
+            Write-Status "AdGuard Extra $currentVersion installed, checking for updates..." -Type Info
+        }
     }
     else {
         Write-Status "AdGuard Extra not found, downloading..." -Type Info
@@ -2509,10 +2522,11 @@ function Get-AdGuardExtra {
             return $null
         }
 
-        # Download CRX (will skip if up to date)
+        # Download CRX (will skip if up to date, unless ForceDownload)
         $tempDir = Join-Path $env:TEMP "adguard_extra_$(Get-Random)"
         $null = New-Item -ItemType Directory -Path $tempDir -Force
-        $crxFile = Get-ChromeExtensionCrx -ExtensionId $extensionId -CurrentVersion $currentVersion -OutPath $tempDir
+        $versionToCheck = if ($ForceDownload) { $null } else { $currentVersion }
+        $crxFile = Get-ChromeExtensionCrx -ExtensionId $extensionId -CurrentVersion $versionToCheck -OutPath $tempDir
 
         if (-not $crxFile) {
             # Either up to date or download failed
@@ -3510,6 +3524,12 @@ function Main {
         $comet = $null
     }
 
+    # Force re-download/extract in portable mode when -Force is used
+    if ($Force -and $portableMode -and $comet) {
+        Write-Status "Force mode - re-downloading Comet browser..." -Type Info
+        $comet = $null
+    }
+
     if (-not $comet) {
         if ($portableMode) {
             # Portable installation - extract directly
@@ -3795,7 +3815,7 @@ function Main {
     Write-Status "Step 5: Checking uBlock Origin" -Type Step
 
     if ($config.ublock.enabled) {
-        $null = Get-UBlockOrigin -OutputDir $ublockPath -UBlockConfig $config.ublock -DryRunMode:$DryRun
+        $null = Get-UBlockOrigin -OutputDir $ublockPath -UBlockConfig $config.ublock -DryRunMode:$DryRun -ForceDownload:$Force
     }
     else {
         Write-Status "uBlock Origin disabled in config" -Type Detail
@@ -3808,7 +3828,7 @@ function Main {
     Write-Status "Step 5.5: Checking AdGuard Extra" -Type Step
 
     if ($config.adguard_extra.enabled) {
-        $null = Get-AdGuardExtra -OutputDir $adguardExtraPath -AdGuardConfig $config.adguard_extra -DryRunMode:$DryRun
+        $null = Get-AdGuardExtra -OutputDir $adguardExtraPath -AdGuardConfig $config.adguard_extra -DryRunMode:$DryRun -ForceDownload:$Force
     }
     else {
         Write-Status "AdGuard Extra disabled in config" -Type Detail
