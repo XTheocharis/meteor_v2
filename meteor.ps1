@@ -3617,10 +3617,16 @@ function Main {
             }
 
             # Clear Comet's CRX caches to ensure it loads our patched extensions
-            $cachePaths = @(
-                (Join-Path $env:LOCALAPPDATA "Perplexity\Comet\User Data\extensions_crx_cache"),
-                (Join-Path $env:LOCALAPPDATA "Perplexity\Comet\User Data\component_crx_cache")
-            )
+            $cachePaths = @()
+            # Add portable mode cache paths
+            if ($portableMode -and $userDataPath) {
+                $cachePaths += (Join-Path $userDataPath "extensions_crx_cache")
+                $cachePaths += (Join-Path $userDataPath "component_crx_cache")
+            }
+            # Add system paths (for non-portable or mixed scenarios)
+            $cachePaths += (Join-Path $env:LOCALAPPDATA "Perplexity\Comet\User Data\extensions_crx_cache")
+            $cachePaths += (Join-Path $env:LOCALAPPDATA "Perplexity\Comet\User Data\component_crx_cache")
+
             foreach ($crxCachePath in $cachePaths) {
                 if (Test-Path $crxCachePath) {
                     if ($DryRun) {
