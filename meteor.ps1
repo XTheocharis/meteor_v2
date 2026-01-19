@@ -2866,7 +2866,7 @@ function Initialize-PakModifications {
 
             # Extra logging for shouldHide functions
             if ($content -match 'shouldHide\w*Perplexity|shouldHidePerplexity|hidePerplexity') {
-                Write-Status "  [DEBUG] Resource $resourceId contains Perplexity hide function" -Type Detail
+                Write-Verbose "[PAK] Resource $resourceId contains Perplexity hide function"
                 # Find and show the function
                 if ($content -match '(function\s+shouldHide\w*[^}]+\})') {
                     Write-Verbose "[PAK] Hide function: $($Matches[1] -replace '[\r\n]+', ' ')"
