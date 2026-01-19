@@ -3730,19 +3730,19 @@ function Convert-PSObjectToHashtable {
     .SYNOPSIS
         Convert PSCustomObject to hashtable (for PS 5.1 compatibility).
     #>
-    param([object]$Object)
+    param([object]$InputObject)
 
-    if ($null -eq $Object) { return @{} }
-    if ($Object -is [hashtable]) { return $Object }
-    if ($Object -is [array]) { return @($Object | ForEach-Object { Convert-PSObjectToHashtable $_ }) }
-    if ($Object -is [PSCustomObject]) {
+    if ($null -eq $InputObject) { return @{} }
+    if ($InputObject -is [hashtable]) { return $InputObject }
+    if ($InputObject -is [array]) { return @($InputObject | ForEach-Object { Convert-PSObjectToHashtable -InputObject $_ }) }
+    if ($InputObject -is [PSCustomObject]) {
         $hash = @{}
-        foreach ($prop in $Object.PSObject.Properties) {
-            $hash[$prop.Name] = Convert-PSObjectToHashtable $prop.Value
+        foreach ($prop in $InputObject.PSObject.Properties) {
+            $hash[$prop.Name] = Convert-PSObjectToHashtable -InputObject $prop.Value
         }
         return $hash
     }
-    return $Object
+    return $InputObject
 }
 
 function Merge-Hashtables {
