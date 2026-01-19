@@ -3476,29 +3476,59 @@ function Update-TrackedPreferences {
             }
         }
 
-        # Check Local State -> os_crypt.encrypted_key (alternative)
+        # Check Local State -> os_crypt.encrypted_key (DPAPI encrypted)
+        $seedBytes = $null
         if (-not $seedBase64 -and $localState.PSObject.Properties.Name -contains 'os_crypt') {
             if ($localState.os_crypt.PSObject.Properties.Name -contains 'encrypted_key') {
-                Write-Verbose "[Secure Prefs] Found os_crypt.encrypted_key - seed may be encrypted"
+                Write-Verbose "[Secure Prefs] Found os_crypt.encrypted_key - attempting DPAPI decryption"
+                try {
+                    Add-Type -AssemblyName System.Security
+                    $encryptedKeyBase64 = $localState.os_crypt.encrypted_key
+                    $encryptedKeyBytes = [Convert]::FromBase64String($encryptedKeyBase64)
+
+                    # Check for DPAPI marker (first 5 bytes = "DPAPI")
+                    $marker = [System.Text.Encoding]::ASCII.GetString($encryptedKeyBytes[0..4])
+                    if ($marker -eq "DPAPI") {
+                        # Remove DPAPI marker, decrypt remaining bytes
+                        $ciphertext = $encryptedKeyBytes[5..($encryptedKeyBytes.Length - 1)]
+                        $seedBytes = [System.Security.Cryptography.ProtectedData]::Unprotect(
+                            $ciphertext,
+                            $null,
+                            [System.Security.Cryptography.DataProtectionScope]::CurrentUser
+                        )
+                        Write-Verbose "[Secure Prefs] Decrypted os_crypt key ($($seedBytes.Length) bytes)"
+                    }
+                    else {
+                        Write-Verbose "[Secure Prefs] os_crypt.encrypted_key doesn't have DPAPI marker: $marker"
+                    }
+                }
+                catch {
+                    Write-Verbose "[Secure Prefs] Failed to decrypt os_crypt.encrypted_key: $_"
+                }
             }
         }
 
         # Check Secure Preferences -> protection.seed (some versions store it here)
-        if (-not $seedBase64 -and $securePrefs.PSObject.Properties.Name -contains 'protection') {
+        if (-not $seedBase64 -and -not $seedBytes -and $securePrefs.PSObject.Properties.Name -contains 'protection') {
             if ($securePrefs.protection.PSObject.Properties.Name -contains 'seed') {
                 $seedBase64 = $securePrefs.protection.seed
                 Write-Verbose "[Secure Prefs] Found seed in Secure Preferences -> protection.seed"
             }
         }
 
-        if (-not $seedBase64) {
+        # Convert base64 seed to bytes if we found one
+        if ($seedBase64 -and -not $seedBytes) {
+            $seedBytes = [Convert]::FromBase64String($seedBase64)
+        }
+
+        if (-not $seedBytes) {
             Write-Verbose "[Secure Prefs] No HMAC seed found - checking Local State keys..."
             $localStateKeys = $localState.PSObject.Properties.Name -join ", "
             Write-Verbose "[Secure Prefs] Local State top-level keys: $localStateKeys"
             Write-Verbose "[Secure Prefs] Cannot modify tracked preferences without seed"
             return $false
         }
-        $seedBytes = [Convert]::FromBase64String($seedBase64)
+
         $seedHex = ([BitConverter]::ToString($seedBytes) -replace '-', '').ToLower()
 
         Write-Verbose "[Secure Prefs] Found Chromium seed: $($seedHex.Substring(0, 16))..."
