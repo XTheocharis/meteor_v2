@@ -3299,6 +3299,89 @@ function Get-PreferenceHmac {
 # This is different from the 64-byte seed in resources.pak used for Secure Preferences file MACs
 $script:RegistryHashSeed = "ChromeRegistryHashStoreValidationSeed"
 
+function Get-PreferenceHmacSeedFromPak {
+    <#
+    .SYNOPSIS
+        Extract the 64-byte HMAC seed from resources.pak.
+    .DESCRIPTION
+        Chromium embeds a 64-byte preference HMAC seed in resources.pak at resource ID
+        IDR_PREF_HASH_SEED_BIN. This function finds the first resource that is exactly
+        64 bytes long and returns it as the seed.
+
+        Reference: https://www.adlice.com/google-chrome-secure-preferences/
+        "All you need to do is to look for the first resource with a length of 64."
+    .PARAMETER CometDir
+        Path to the Comet installation directory containing resources.pak.
+    .OUTPUTS
+        Hashtable with:
+        - seedHex: The 64-byte seed as lowercase hex string (128 chars)
+        - seedBytes: The raw 64 bytes
+        - resourceId: The PAK resource ID where seed was found
+        Returns $null if seed cannot be found.
+    #>
+    param(
+        [string]$CometDir
+    )
+
+    # Find resources.pak
+    $pakPath = Join-Path $CometDir "resources.pak"
+    if (-not (Test-Path $pakPath)) {
+        # Try versioned subdirectory
+        $versionDirs = Get-ChildItem -Path $CometDir -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '^\d+\.' } |
+            Sort-Object Name -Descending
+        foreach ($dir in $versionDirs) {
+            $testPath = Join-Path $dir.FullName "resources.pak"
+            if (Test-Path $testPath) {
+                $pakPath = $testPath
+                break
+            }
+        }
+    }
+
+    if (-not (Test-Path $pakPath)) {
+        Write-Verbose "[PAK Seed] resources.pak not found in $CometDir"
+        return $null
+    }
+
+    Write-Verbose "[PAK Seed] Reading resources.pak from: $pakPath"
+
+    try {
+        $pak = Read-PakFile -Path $pakPath
+
+        # Search for the first resource that is exactly 64 bytes
+        for ($i = 0; $i -lt $pak.Resources.Count - 1; $i++) {
+            $startOffset = $pak.Resources[$i].Offset
+            $endOffset = $pak.Resources[$i + 1].Offset
+            $length = $endOffset - $startOffset
+
+            if ($length -eq 64) {
+                $resourceId = $pak.Resources[$i].Id
+                $seedBytes = New-Object byte[] 64
+                [Array]::Copy($pak.RawBytes, $startOffset, $seedBytes, 0, 64)
+                $seedHex = ([BitConverter]::ToString($seedBytes) -replace '-', '').ToLower()
+
+                Write-Verbose "[PAK Seed] Found 64-byte seed at resource ID $resourceId"
+                Write-Verbose "[PAK Seed] Seed: $($seedHex.Substring(0, 32))..."
+
+                return @{
+                    seedHex    = $seedHex
+                    seedBytes  = $seedBytes
+                    resourceId = $resourceId
+                    pakPath    = $pakPath
+                }
+            }
+        }
+
+        Write-Verbose "[PAK Seed] No 64-byte resource found in PAK file"
+        return $null
+    }
+    catch {
+        Write-Verbose "[PAK Seed] Failed to read PAK file: $_"
+        return $null
+    }
+}
+
 function Get-RegistryPreferenceHmac {
     <#
     .SYNOPSIS
@@ -3451,12 +3534,13 @@ function Set-BrowserPreferences {
         Write initial Secure Preferences file (untracked prefs only).
     .DESCRIPTION
         Writes only untracked preferences on first run. Tracked preferences
-        require HMAC protection which needs an existing Chromium seed.
+        require HMAC protection which needs the 64-byte seed from resources.pak.
     #>
     param(
         [string]$BrowserPath,
         [string]$UserDataPath,
         [string]$ProfileName = "Default",
+        [string]$CometDir,
         [switch]$DryRunMode
     )
 
@@ -3494,11 +3578,11 @@ function Set-BrowserPreferences {
     # If Secure Preferences exists AND Local State exists, update tracked preferences
     # Uses dual MAC synchronization: Secure Preferences file + Windows Registry
     # Both stores use DIFFERENT HMAC seeds:
-    #   - File: 64-byte seed from Local State (protection.seed) or resources.pak
+    #   - File: 64-byte seed from resources.pak (NOT os_crypt.encrypted_key!)
     #   - Registry: Literal ASCII string "ChromeRegistryHashStoreValidationSeed"
     if ((Test-Path $securePrefsPath) -and (Test-Path $localStatePath)) {
         Write-Verbose "[Secure Prefs] Existing profile found - updating tracked prefs with dual MAC sync"
-        $result = Update-TrackedPreferences -SecurePrefsPath $securePrefsPath -LocalStatePath $localStatePath
+        $result = Update-TrackedPreferences -SecurePrefsPath $securePrefsPath -LocalStatePath $localStatePath -CometDir $CometDir
         return $result
     }
 
@@ -3545,12 +3629,16 @@ function Update-TrackedPreferences {
     .SYNOPSIS
         Modify tracked preferences in existing Secure Preferences file.
     .DESCRIPTION
-        Uses Chromium's existing seed to calculate valid HMACs for modified values.
-        This only works AFTER Chromium has created the Local State file with its seed.
+        Uses the 64-byte HMAC seed from resources.pak to calculate valid HMACs for
+        tracked preferences. This seed is embedded in the browser binary and is
+        different from os_crypt.encrypted_key (which is for cookie encryption).
+
+        Reference: https://www.adlice.com/google-chrome-secure-preferences/
     #>
     param(
         [string]$SecurePrefsPath,
-        [string]$LocalStatePath
+        [string]$LocalStatePath,
+        [string]$CometDir
     )
 
     try {
@@ -3584,73 +3672,23 @@ function Update-TrackedPreferences {
             Write-Verbose "[Secure Prefs] JSON preview: $preview"
         }
 
-        # Find Chromium's seed - check multiple possible locations
-        $seedBase64 = $null
-
-        # Check Local State -> protection.seed (standard Chromium location)
-        if ($localState.PSObject.Properties.Name -contains 'protection') {
-            if ($localState.protection.PSObject.Properties.Name -contains 'seed') {
-                $seedBase64 = $localState.protection.seed
-                Write-Verbose "[Secure Prefs] Found seed in Local State -> protection.seed"
-            }
-        }
-
-        # Check Local State -> os_crypt.encrypted_key (DPAPI encrypted)
-        $seedBytes = $null
-        if (-not $seedBase64 -and $localState.PSObject.Properties.Name -contains 'os_crypt') {
-            if ($localState.os_crypt.PSObject.Properties.Name -contains 'encrypted_key') {
-                Write-Verbose "[Secure Prefs] Found os_crypt.encrypted_key - attempting DPAPI decryption"
-                try {
-                    Add-Type -AssemblyName System.Security
-                    $encryptedKeyBase64 = $localState.os_crypt.encrypted_key
-                    $encryptedKeyBytes = [Convert]::FromBase64String($encryptedKeyBase64)
-
-                    # Check for DPAPI marker (first 5 bytes = "DPAPI")
-                    $marker = [System.Text.Encoding]::ASCII.GetString($encryptedKeyBytes[0..4])
-                    if ($marker -eq "DPAPI") {
-                        # Remove DPAPI marker, decrypt remaining bytes
-                        $ciphertext = $encryptedKeyBytes[5..($encryptedKeyBytes.Length - 1)]
-                        $seedBytes = [System.Security.Cryptography.ProtectedData]::Unprotect(
-                            $ciphertext,
-                            $null,
-                            [System.Security.Cryptography.DataProtectionScope]::CurrentUser
-                        )
-                        Write-Verbose "[Secure Prefs] Decrypted os_crypt key ($($seedBytes.Length) bytes)"
-                    }
-                    else {
-                        Write-Verbose "[Secure Prefs] os_crypt.encrypted_key doesn't have DPAPI marker: $marker"
-                    }
-                }
-                catch {
-                    Write-Verbose "[Secure Prefs] Failed to decrypt os_crypt.encrypted_key: $_"
-                }
-            }
-        }
-
-        # Check Secure Preferences -> protection.seed (some versions store it here)
-        if (-not $seedBase64 -and -not $seedBytes -and $securePrefs.PSObject.Properties.Name -contains 'protection') {
-            if ($securePrefs.protection.PSObject.Properties.Name -contains 'seed') {
-                $seedBase64 = $securePrefs.protection.seed
-                Write-Verbose "[Secure Prefs] Found seed in Secure Preferences -> protection.seed"
-            }
-        }
-
-        # Convert base64 seed to bytes if we found one
-        if ($seedBase64 -and -not $seedBytes) {
-            $seedBytes = [Convert]::FromBase64String($seedBase64)
-        }
-
-        if (-not $seedBytes) {
-            Write-Verbose "[Secure Prefs] No HMAC seed found - checking Local State keys..."
-            $localStateKeys = $localState.PSObject.Properties.Name -join ", "
-            Write-Verbose "[Secure Prefs] Local State top-level keys: $localStateKeys"
-            Write-Verbose "[Secure Prefs] Cannot modify tracked preferences without seed"
+        # Extract HMAC seed from resources.pak
+        # The seed is a 64-byte value embedded in the PAK file, NOT in Local State
+        # os_crypt.encrypted_key is for cookie encryption, NOT preference MACs
+        if (-not $CometDir) {
+            Write-Verbose "[Secure Prefs] CometDir not provided - cannot extract PAK seed"
             return $false
         }
 
-        $seedHex = ([BitConverter]::ToString($seedBytes) -replace '-', '').ToLower()
+        $pakSeed = Get-PreferenceHmacSeedFromPak -CometDir $CometDir
+        if (-not $pakSeed) {
+            Write-Verbose "[Secure Prefs] Failed to extract HMAC seed from resources.pak"
+            return $false
+        }
 
-        Write-Verbose "[Secure Prefs] Found Chromium seed: $($seedHex.Substring(0, 16))..."
+        $seedHex = $pakSeed.seedHex
+        Write-Verbose "[Secure Prefs] Extracted 64-byte seed from PAK resource ID $($pakSeed.resourceId)"
+        Write-Verbose "[Secure Prefs] Seed: $($seedHex.Substring(0, 32))..."
 
         # Get device ID
         $rawSid = Get-WindowsSidWithoutRid
@@ -3818,6 +3856,20 @@ function Update-TrackedPreferences {
         $securePrefsHash['protection']['super_mac'] = $superMac
 
         Write-Verbose "[Secure Prefs] Calculated super_mac from $($allMacs.Count) MACs: $($superMac.Substring(0, 16))..."
+
+        # CRITICAL: Clear prefs.tracked_preferences_reset if it exists
+        # When browser detects invalid MACs, it populates this array with reset preference names
+        # If this array is non-empty, subsequent runs may crash
+        if ($securePrefsHash.ContainsKey('prefs')) {
+            $prefsSection = $securePrefsHash['prefs']
+            if ($prefsSection -is [hashtable] -and $prefsSection.ContainsKey('tracked_preferences_reset')) {
+                $resetArray = $prefsSection['tracked_preferences_reset']
+                if ($resetArray -and $resetArray.Count -gt 0) {
+                    Write-Verbose "[Secure Prefs] Clearing tracked_preferences_reset array (had $($resetArray.Count) entries)"
+                    $prefsSection['tracked_preferences_reset'] = @()
+                }
+            }
+        }
 
         # Write modified Secure Preferences
         $json = $securePrefsHash | ConvertTo-Json -Depth 30
@@ -4581,7 +4633,8 @@ function Main {
 
         # Write Secure Preferences with valid HMACs
         # This ensures developer mode, toolbar pin, and home button are set without HMAC validation failures
-        $null = Set-BrowserPreferences -BrowserPath $browserExe -UserDataPath $browserUserDataPath -ProfileName $profileName -DryRunMode:$DryRun
+        $cometDir = if ($comet) { $comet.Directory } else { $null }
+        $null = Set-BrowserPreferences -BrowserPath $browserExe -UserDataPath $browserUserDataPath -ProfileName $profileName -CometDir $cometDir -DryRunMode:$DryRun
 
         $cmd = Build-BrowserCommand -Config $config -BrowserExe $browserExe -ExtPath $patchedExtPath -UBlockPath $ublockPath -AdGuardExtraPath $adguardExtraPath -UserDataPath $browserUserDataPath
 
