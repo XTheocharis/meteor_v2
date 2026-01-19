@@ -3400,10 +3400,14 @@ function Set-BrowserPreferences {
         return $true
     }
 
-    # If Secure Preferences exists AND Local State exists, try to modify tracked prefs
+    # If Secure Preferences exists AND Local State exists, skip tracked prefs modification
+    # IMPORTANT: Comet stores authoritative MACs in Windows Registry at:
+    #   HKCU:\SOFTWARE\Perplexity\Comet\PreferenceMACs\Default
+    # Modifying Secure Preferences without matching registry MACs causes browser crash.
+    # TODO: Implement registry-based MAC synchronization instead.
     if ((Test-Path $securePrefsPath) -and (Test-Path $localStatePath)) {
-        Write-Verbose "[Secure Prefs] Existing profile found - attempting to modify tracked preferences"
-        return Update-TrackedPreferences -SecurePrefsPath $securePrefsPath -LocalStatePath $localStatePath
+        Write-Verbose "[Secure Prefs] Existing profile found - skipping tracked prefs (registry MACs not yet supported)"
+        return $true
     }
 
     # First run - just write untracked preferences
