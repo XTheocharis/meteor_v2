@@ -3769,6 +3769,46 @@ function Update-TrackedPreferences {
             Write-Verbose "[Secure Prefs] $path = $(ConvertTo-JsonForHmac $value) → $($mac.Substring(0, 16))..."
         }
 
+        # CRITICAL: Also update account_values MACs if user is signed in
+        # When signed in, Comet stores MACs in BOTH:
+        #   protection.macs.{path} AND protection.macs.account_values.{path}
+        # If only regular MACs are updated, browser crashes on settings page
+        $hasAccountValues = $macs.ContainsKey('account_values')
+        if ($hasAccountValues) {
+            Write-Verbose "[Secure Prefs] Found account_values section - updating account-specific MACs"
+            $accountMacs = $macs['account_values']
+            if ($accountMacs -isnot [hashtable]) {
+                $accountMacs = @{}
+                $macs['account_values'] = $accountMacs
+            }
+
+            foreach ($path in $prefsToModify.Keys) {
+                $value = $prefsToModify[$path]
+                # account_values MACs use the FULL prefixed path for HMAC calculation
+                # e.g., "account_values.extensions.ui.developer_mode" (not just the base path)
+                # This matches registry behavior where the full path produces different MACs
+                $accountPath = "account_values.$path"
+                $mac = Get-PreferenceHmac -SeedHex $seedHex -DeviceId $deviceId -Path $accountPath -Value $value
+
+                # Set MAC in nested structure under account_values
+                $parts = $path -split '\.'
+                $current = $accountMacs
+                for ($i = 0; $i -lt $parts.Count - 1; $i++) {
+                    $part = $parts[$i]
+                    if (-not $current.ContainsKey($part)) {
+                        $current[$part] = @{}
+                    }
+                    elseif ($current[$part] -isnot [hashtable]) {
+                        $current[$part] = @{}
+                    }
+                    $current = $current[$part]
+                }
+                $current[$parts[-1]] = $mac
+
+                Write-Verbose "[Secure Prefs] account_values.$path → $($mac.Substring(0, 16))..."
+            }
+        }
+
         # Flatten all MACs for super_mac calculation
         $allMacs = @{}
         Get-FlattenedMacs -Node $macs -Path "" -Result $allMacs
@@ -3788,9 +3828,24 @@ function Update-TrackedPreferences {
         # CRITICAL: Also update Windows Registry MACs
         # Comet stores duplicate MACs in registry using a DIFFERENT seed ("ChromeRegistryHashStoreValidationSeed")
         # If registry MACs don't match, browser crashes on startup
-        $registryResult = Set-RegistryPreferenceMacs -DeviceId $deviceId -PreferencesToSet $prefsToModify
+        # Registry stores BOTH regular paths AND account_values.* prefixed paths when user is signed in
+        $registryPrefs = @{}
+        foreach ($path in $prefsToModify.Keys) {
+            $registryPrefs[$path] = $prefsToModify[$path]
+        }
+
+        # If account_values exists, also add account_values.* prefixed registry MACs
+        if ($hasAccountValues) {
+            foreach ($path in $prefsToModify.Keys) {
+                $accountPath = "account_values.$path"
+                $registryPrefs[$accountPath] = $prefsToModify[$path]
+            }
+            Write-Verbose "[Registry MAC] Including account_values.* paths for registry MACs"
+        }
+
+        $registryResult = Set-RegistryPreferenceMacs -DeviceId $deviceId -PreferencesToSet $registryPrefs
         if ($registryResult) {
-            Write-Verbose "[Registry MAC] Registry MACs synchronized successfully"
+            Write-Verbose "[Registry MAC] Registry MACs synchronized successfully ($($registryPrefs.Count) entries)"
         }
         else {
             Write-Verbose "[Registry MAC] WARNING: Failed to update registry MACs - browser may crash"
