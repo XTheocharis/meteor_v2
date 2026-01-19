@@ -3131,28 +3131,23 @@ function Get-WindowsSidWithoutRid {
 function Get-ChromiumDeviceId {
     <#
     .SYNOPSIS
-        Compute Chromium device ID from raw machine ID.
+        Get device ID for Chromium preference HMAC calculation.
     .DESCRIPTION
-        From GenerateDeviceIdLikePrefMetricsServiceDid() in pref_hash_calculator.cc:
-        1. If raw_id is empty, return empty
-        2. Otherwise: HMAC-SHA256(key=raw_id, message=raw_id+"PrefMetricsService")
-        3. Return lowercase hex
+        According to Chromium source (services/preferences/tracked/device_id_win.cc),
+        the device ID is the raw machine SID used DIRECTLY without any transformation.
+
+        The old GenerateDeviceIdLikePrefMetricsServiceDid() function exists in the codebase
+        but is NOT used for preference protection. The PrefHashStoreImpl constructor
+        passes GenerateDeviceId() directly to PrefHashCalculator:
+          prefs_hash_calculator_(seed, GenerateDeviceId())
+
+        See: https://chromium.googlesource.com/chromium/src/+/main/services/preferences/tracked/device_id_win.cc
+        See: https://chromium.googlesource.com/chromium/src/+/main/services/preferences/tracked/pref_hash_store_impl.cc
     #>
     param([string]$RawMachineId)
 
-    if ([string]::IsNullOrEmpty($RawMachineId)) {
-        return ""
-    }
-
-    $keyBytes = [System.Text.Encoding]::UTF8.GetBytes($RawMachineId)
-    $messageBytes = [System.Text.Encoding]::UTF8.GetBytes($RawMachineId + "PrefMetricsService")
-
-    $hmac = New-Object System.Security.Cryptography.HMACSHA256
-    $hmac.Key = $keyBytes
-    $hash = $hmac.ComputeHash($messageBytes)
-
-    # Return as lowercase hex
-    return ([BitConverter]::ToString($hash) -replace '-', '').ToLower()
+    # Device ID is the raw machine SID used directly - no transformation
+    return $RawMachineId
 }
 
 function Get-HmacSeedFromLocalState {
@@ -3673,7 +3668,7 @@ function Update-TrackedPreferences {
         $rawSid = Get-WindowsSidWithoutRid
         $deviceId = Get-ChromiumDeviceId -RawMachineId $rawSid
 
-        Write-Verbose "[Secure Prefs] Device ID: $($deviceId.Substring(0, 32))..."
+        Write-Verbose "[Secure Prefs] Device ID (raw SID): $deviceId"
 
         # Debug: Check original securePrefs BEFORE conversion
         Write-Verbose "[Secure Prefs] Original securePrefs type: $($securePrefs.GetType().FullName)"
