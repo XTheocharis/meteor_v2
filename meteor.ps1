@@ -3238,7 +3238,7 @@ function ConvertTo-JsonForHmac {
         return "null"
     }
     if ($Value -is [bool]) {
-        return if ($Value) { "true" } else { "false" }
+        if ($Value) { return "true" } else { return "false" }
     }
     if ($Value -is [int] -or $Value -is [long] -or $Value -is [double]) {
         return $Value.ToString()
