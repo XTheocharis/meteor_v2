@@ -3229,6 +3229,45 @@ function Get-HmacSeedFromLocalState {
     }
 }
 
+function ConvertTo-SortedObject {
+    <#
+    .SYNOPSIS
+        Recursively sort all keys in a hashtable/object alphabetically.
+    .DESCRIPTION
+        Chromium's JSONWriter sorts keys alphabetically. PowerShell's ConvertTo-Json
+        does NOT sort keys, so we must sort them first to match Chromium's output.
+    #>
+    param([object]$Value)
+
+    if ($null -eq $Value) {
+        return $null
+    }
+
+    if ($Value -is [hashtable]) {
+        $sorted = [ordered]@{}
+        foreach ($key in ($Value.Keys | Sort-Object)) {
+            $sorted[$key] = ConvertTo-SortedObject -Value $Value[$key]
+        }
+        return $sorted
+    }
+
+    if ($Value -is [PSCustomObject]) {
+        $sorted = [ordered]@{}
+        foreach ($prop in ($Value.PSObject.Properties | Sort-Object Name)) {
+            $sorted[$prop.Name] = ConvertTo-SortedObject -Value $prop.Value
+        }
+        return $sorted
+    }
+
+    if ($Value -is [array]) {
+        # Arrays maintain order, but sort nested objects
+        return @($Value | ForEach-Object { ConvertTo-SortedObject -Value $_ })
+    }
+
+    # Primitives pass through unchanged
+    return $Value
+}
+
 function ConvertTo-JsonForHmac {
     <#
     .SYNOPSIS
@@ -3238,7 +3277,11 @@ function ConvertTo-JsonForHmac {
         - Booleans: "true"/"false" (lowercase, no quotes)
         - Numbers: String representation
         - Strings: JSON-quoted
-        - Objects/Arrays: JSON with sorted keys, compact
+        - Objects/Arrays: JSON with SORTED keys, compact
+
+        CRITICAL: Chromium's JSONWriter sorts keys alphabetically.
+        PowerShell's ConvertTo-Json does NOT sort keys, so we must
+        sort them first to produce matching output.
     #>
     param([object]$Value)
 
@@ -3256,8 +3299,9 @@ function ConvertTo-JsonForHmac {
         return ($Value | ConvertTo-Json -Compress)
     }
     if ($Value -is [array] -or $Value -is [hashtable] -or $Value -is [PSCustomObject]) {
-        # Convert to JSON with sorted keys
-        return ($Value | ConvertTo-Json -Compress -Depth 20)
+        # CRITICAL: Sort keys alphabetically to match Chromium's JSONWriter
+        $sorted = ConvertTo-SortedObject -Value $Value
+        return ($sorted | ConvertTo-Json -Compress -Depth 20)
     }
 
     return ($Value | ConvertTo-Json -Compress)
