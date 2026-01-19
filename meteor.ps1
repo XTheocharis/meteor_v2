@@ -3459,11 +3459,34 @@ function Update-TrackedPreferences {
 
     try {
         # Read existing files
+        Write-Verbose "[Secure Prefs] Reading Local State from: $LocalStatePath"
+        Write-Verbose "[Secure Prefs] Reading Secure Prefs from: $SecurePrefsPath"
+
         $localStateJson = Get-Content -Path $LocalStatePath -Raw -ErrorAction Stop
         $localState = $localStateJson | ConvertFrom-Json -ErrorAction Stop
 
+        # Debug: Show Local State structure
+        $localStateKeys = $localState.PSObject.Properties.Name -join ", "
+        Write-Verbose "[Secure Prefs] Local State keys: $localStateKeys"
+
         $securePrefsJson = Get-Content -Path $SecurePrefsPath -Raw -ErrorAction Stop
         $securePrefs = $securePrefsJson | ConvertFrom-Json -ErrorAction Stop
+
+        # Debug: Show raw JSON structure to understand what Comet stores
+        Write-Verbose "[Secure Prefs] Raw Secure Preferences file length: $($securePrefsJson.Length) chars"
+        # Check if 'protection' exists in raw JSON
+        if ($securePrefsJson -match '"protection"') {
+            Write-Verbose "[Secure Prefs] Raw JSON CONTAINS 'protection' key"
+            # Extract a sample of the protection section
+            if ($securePrefsJson -match '"protection"\s*:\s*\{[^}]{0,200}') {
+                Write-Verbose "[Secure Prefs] Protection section sample: $($Matches[0])..."
+            }
+        } else {
+            Write-Verbose "[Secure Prefs] Raw JSON does NOT contain 'protection' key!"
+            # Show first 500 chars of the file to see its structure
+            $preview = $securePrefsJson.Substring(0, [Math]::Min(500, $securePrefsJson.Length))
+            Write-Verbose "[Secure Prefs] JSON preview: $preview"
+        }
 
         # Find Chromium's seed - check multiple possible locations
         $seedBase64 = $null
