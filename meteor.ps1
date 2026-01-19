@@ -3268,8 +3268,20 @@ function Get-PreferenceHmac {
     .SYNOPSIS
         Calculate HMAC for a single preference (file-based).
     .DESCRIPTION
-        HMAC-SHA256(key=seed, message=device_id+path+value_json)
+        HMAC-SHA256(key=seed, message=device_id + JSON({path: value}))
         Returns uppercase hex string.
+
+        Per Chromium pref_hash_calculator.cc:
+        ```cpp
+        base::Value::Dict dict;
+        dict.Set(path, value ? value->Clone() : base::Value());
+        std::string message;
+        base::JSONWriter::Write(dict, &message);
+        return GetDigestString(device_id_ + message);
+        ```
+
+        The value is wrapped in a JSON object with the path as the key,
+        NOT simple concatenation of path + value.
 
         For Google Chrome: seed is 64-byte value from IDR_PREF_HASH_SEED_BIN
         For non-Chrome builds (Comet): seed is empty string, resulting in empty key
@@ -3293,8 +3305,10 @@ function Get-PreferenceHmac {
         }
     }
 
+    # Build message per Chromium format: device_id + JSON({path: value})
     $valueJson = ConvertTo-JsonForHmac -Value $Value
-    $message = $DeviceId + $Path + $valueJson
+    $jsonMessage = '{"' + $Path + '":' + $valueJson + '}'
+    $message = $DeviceId + $jsonMessage
     $messageBytes = [System.Text.Encoding]::UTF8.GetBytes($message)
 
     return Get-HmacSha256 -Key $seedBytes -Message $messageBytes
@@ -3354,12 +3368,24 @@ function Get-RegistryPreferenceHmac {
     .SYNOPSIS
         Calculate registry MAC for a single preference.
     .DESCRIPTION
-        HMAC-SHA256(key=ASCII("ChromeRegistryHashStoreValidationSeed"), message=device_id+path+value_json)
+        HMAC-SHA256(key=ASCII("ChromeRegistryHashStoreValidationSeed"), message=device_id + JSON({path: value}))
         Returns uppercase hex string.
+
+        Per Chromium pref_hash_calculator.cc:
+        ```cpp
+        base::Value::Dict dict;
+        dict.Set(path, value ? value->Clone() : base::Value());
+        std::string message;
+        base::JSONWriter::Write(dict, &message);
+        return GetDigestString(device_id_ + message);
+        ```
+
+        The value is wrapped in a JSON object with the path as the key,
+        NOT simple concatenation of path + value.
 
         The registry uses a different HMAC key than the Secure Preferences file:
         - Registry: Literal ASCII string "ChromeRegistryHashStoreValidationSeed" (35 bytes)
-        - File: 64-byte seed from resources.pak
+        - File: Empty seed for non-Chrome builds (Comet)
     #>
     param(
         [string]$DeviceId,
@@ -3370,8 +3396,10 @@ function Get-RegistryPreferenceHmac {
     # Use literal ASCII bytes of the seed string
     $seedBytes = [System.Text.Encoding]::ASCII.GetBytes($script:RegistryHashSeed)
 
+    # Build message per Chromium format: device_id + JSON({path: value})
     $valueJson = ConvertTo-JsonForHmac -Value $Value
-    $message = $DeviceId + $Path + $valueJson
+    $jsonMessage = '{"' + $Path + '":' + $valueJson + '}'
+    $message = $DeviceId + $jsonMessage
     $messageBytes = [System.Text.Encoding]::UTF8.GetBytes($message)
 
     return Get-HmacSha256 -Key $seedBytes -Message $messageBytes
