@@ -3539,8 +3539,22 @@ function Update-TrackedPreferences {
 
         Write-Verbose "[Secure Prefs] Device ID: $($deviceId.Substring(0, 32))..."
 
+        # Debug: Check original securePrefs BEFORE conversion
+        Write-Verbose "[Secure Prefs] Original securePrefs type: $($securePrefs.GetType().FullName)"
+        $origProps = $securePrefs.PSObject.Properties.Name -join ", "
+        Write-Verbose "[Secure Prefs] Original securePrefs properties: $origProps"
+        if ($securePrefs.PSObject.Properties.Name -contains 'protection') {
+            Write-Verbose "[Secure Prefs] Original HAS 'protection' property!"
+        } else {
+            Write-Verbose "[Secure Prefs] Original MISSING 'protection' property!"
+        }
+
         # Convert to hashtable for modification
         $securePrefsHash = Convert-PSObjectToHashtable -InputObject $securePrefs
+
+        # Debug: Check AFTER conversion
+        $hashKeys = $securePrefsHash.Keys -join ", "
+        Write-Verbose "[Secure Prefs] After conversion - hashtable keys: $hashKeys"
 
         # Preferences to modify
         $prefsToModify = @{
