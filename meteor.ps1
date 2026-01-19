@@ -3579,6 +3579,16 @@ function Update-TrackedPreferences {
 
         $macs = $securePrefsHash['protection']['macs']
 
+        # Debug: Show existing MAC structure
+        $existingMacKeys = $macs.Keys -join ", "
+        Write-Verbose "[Secure Prefs] Existing MAC top-level keys: $existingMacKeys"
+        Write-Verbose "[Secure Prefs] MAC structure type: $($macs.GetType().FullName)"
+
+        # Flatten existing MACs first to count them
+        $existingMacs = @{}
+        Get-FlattenedMacs -Node $macs -Path "" -Result $existingMacs
+        Write-Verbose "[Secure Prefs] Found $($existingMacs.Count) existing MACs before modification"
+
         # Calculate new MACs for modified preferences
         foreach ($path in $prefsToModify.Keys) {
             $value = $prefsToModify[$path]
