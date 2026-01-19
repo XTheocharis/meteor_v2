@@ -3268,20 +3268,17 @@ function Get-PreferenceHmac {
     .SYNOPSIS
         Calculate HMAC for a single preference (file-based).
     .DESCRIPTION
-        HMAC-SHA256(key=seed, message=device_id + JSON({path: value}))
+        HMAC-SHA256(key=seed, message=device_id + path + value_json)
         Returns uppercase hex string.
 
-        Per Chromium pref_hash_calculator.cc:
-        ```cpp
-        base::Value::Dict dict;
-        dict.Set(path, value ? value->Clone() : base::Value());
-        std::string message;
-        base::JSONWriter::Write(dict, &message);
-        return GetDigestString(device_id_ + message);
-        ```
+        The message format is simple concatenation:
+          message = device_id + path + value_json
 
-        The value is wrapped in a JSON object with the path as the key,
-        NOT simple concatenation of path + value.
+        Where value_json is the JSON representation of the value:
+          - Booleans: "true" or "false" (lowercase, no quotes)
+          - Numbers: string representation
+          - Strings: JSON-quoted
+          - Objects/Arrays: compact JSON
 
         For Google Chrome: seed is 64-byte value from IDR_PREF_HASH_SEED_BIN
         For non-Chrome builds (Comet): seed is empty string, resulting in empty key
@@ -3305,10 +3302,9 @@ function Get-PreferenceHmac {
         }
     }
 
-    # Build message per Chromium format: device_id + JSON({path: value})
+    # Build message: device_id + path + value_json (simple concatenation)
     $valueJson = ConvertTo-JsonForHmac -Value $Value
-    $jsonMessage = '{"' + $Path + '":' + $valueJson + '}'
-    $message = $DeviceId + $jsonMessage
+    $message = $DeviceId + $Path + $valueJson
     $messageBytes = [System.Text.Encoding]::UTF8.GetBytes($message)
 
     return Get-HmacSha256 -Key $seedBytes -Message $messageBytes
@@ -3368,23 +3364,20 @@ function Get-RegistryPreferenceHmac {
     .SYNOPSIS
         Calculate registry MAC for a single preference.
     .DESCRIPTION
-        HMAC-SHA256(key=ASCII("ChromeRegistryHashStoreValidationSeed"), message=device_id + JSON({path: value}))
+        HMAC-SHA256(key=ASCII("ChromeRegistryHashStoreValidationSeed"), message=device_id + path + value_json)
         Returns uppercase hex string.
 
-        Per Chromium pref_hash_calculator.cc:
-        ```cpp
-        base::Value::Dict dict;
-        dict.Set(path, value ? value->Clone() : base::Value());
-        std::string message;
-        base::JSONWriter::Write(dict, &message);
-        return GetDigestString(device_id_ + message);
-        ```
+        The message format is simple concatenation:
+          message = device_id + path + value_json
 
-        The value is wrapped in a JSON object with the path as the key,
-        NOT simple concatenation of path + value.
+        Where value_json is the JSON representation of the value:
+          - Booleans: "true" or "false" (lowercase, no quotes)
+          - Numbers: string representation
+          - Strings: JSON-quoted
+          - Objects/Arrays: compact JSON
 
         The registry uses a different HMAC key than the Secure Preferences file:
-        - Registry: Literal ASCII string "ChromeRegistryHashStoreValidationSeed" (35 bytes)
+        - Registry: Literal ASCII string "ChromeRegistryHashStoreValidationSeed" (37 bytes)
         - File: Empty seed for non-Chrome builds (Comet)
     #>
     param(
@@ -3396,10 +3389,9 @@ function Get-RegistryPreferenceHmac {
     # Use literal ASCII bytes of the seed string
     $seedBytes = [System.Text.Encoding]::ASCII.GetBytes($script:RegistryHashSeed)
 
-    # Build message per Chromium format: device_id + JSON({path: value})
+    # Build message: device_id + path + value_json (simple concatenation)
     $valueJson = ConvertTo-JsonForHmac -Value $Value
-    $jsonMessage = '{"' + $Path + '":' + $valueJson + '}'
-    $message = $DeviceId + $jsonMessage
+    $message = $DeviceId + $Path + $valueJson
     $messageBytes = [System.Text.Encoding]::UTF8.GetBytes($message)
 
     return Get-HmacSha256 -Key $seedBytes -Message $messageBytes
@@ -3786,67 +3778,24 @@ function Update-TrackedPreferences {
         Get-FlattenedMacs -Node $macs -Path "" -Result $existingMacs
         Write-Verbose "[Secure Prefs] Found $($existingMacs.Count) existing MACs before modification"
 
-        # Calculate new MACs for modified preferences
+        # CRITICAL: Recalculate ALL existing MACs, not just our target preferences
+        # When Meteor patches extensions or other data changes, the existing MACs
+        # become invalid because they were calculated for the old values.
+        # This ensures ALL MACs are valid for current preference values.
+        $recalcResult = Update-AllMacs -Macs $macs -Preferences $securePrefsHash -SeedHex $seedHex -DeviceId $deviceId
+
+        Write-Verbose "[Secure Prefs] Recalculated $($recalcResult.recalculated) MACs, skipped $($recalcResult.skipped)"
+
+        # Log our specific target preferences
         foreach ($path in $prefsToModify.Keys) {
             $value = $prefsToModify[$path]
-            $mac = Get-PreferenceHmac -SeedHex $seedHex -DeviceId $deviceId -Path $path -Value $value
-
-            # Set MAC in nested structure
-            $parts = $path -split '\.'
-            $current = $macs
-            for ($i = 0; $i -lt $parts.Count - 1; $i++) {
-                $part = $parts[$i]
-                if (-not $current.ContainsKey($part)) {
-                    $current[$part] = @{}
-                }
-                elseif ($current[$part] -isnot [hashtable]) {
-                    $current[$part] = @{}
-                }
-                $current = $current[$part]
-            }
-            $current[$parts[-1]] = $mac
-
-            Write-Verbose "[Secure Prefs] $path = $(ConvertTo-JsonForHmac $value) → $($mac.Substring(0, 16))..."
+            Write-Verbose "[Secure Prefs] Target pref: $path = $(ConvertTo-JsonForHmac $value)"
         }
 
-        # CRITICAL: Also update account_values MACs if user is signed in
-        # When signed in, Comet stores MACs in BOTH:
-        #   protection.macs.{path} AND protection.macs.account_values.{path}
-        # If only regular MACs are updated, browser crashes on settings page
+        # Check for account_values (signed-in users)
         $hasAccountValues = $macs.ContainsKey('account_values')
         if ($hasAccountValues) {
-            Write-Verbose "[Secure Prefs] Found account_values section - updating account-specific MACs"
-            $accountMacs = $macs['account_values']
-            if ($accountMacs -isnot [hashtable]) {
-                $accountMacs = @{}
-                $macs['account_values'] = $accountMacs
-            }
-
-            foreach ($path in $prefsToModify.Keys) {
-                $value = $prefsToModify[$path]
-                # account_values MACs use the FULL prefixed path for HMAC calculation
-                # e.g., "account_values.extensions.ui.developer_mode" (not just the base path)
-                # This matches registry behavior where the full path produces different MACs
-                $accountPath = "account_values.$path"
-                $mac = Get-PreferenceHmac -SeedHex $seedHex -DeviceId $deviceId -Path $accountPath -Value $value
-
-                # Set MAC in nested structure under account_values
-                $parts = $path -split '\.'
-                $current = $accountMacs
-                for ($i = 0; $i -lt $parts.Count - 1; $i++) {
-                    $part = $parts[$i]
-                    if (-not $current.ContainsKey($part)) {
-                        $current[$part] = @{}
-                    }
-                    elseif ($current[$part] -isnot [hashtable]) {
-                        $current[$part] = @{}
-                    }
-                    $current = $current[$part]
-                }
-                $current[$parts[-1]] = $mac
-
-                Write-Verbose "[Secure Prefs] account_values.$path → $($mac.Substring(0, 16))..."
-            }
+            Write-Verbose "[Secure Prefs] Found account_values section - MACs were included in recalculation"
         }
 
         # Flatten all MACs for super_mac calculation
@@ -3879,23 +3828,24 @@ function Update-TrackedPreferences {
 
         Write-Verbose "[Secure Prefs] File updated successfully"
 
-        # CRITICAL: Also update Windows Registry MACs
+        # CRITICAL: Also update Windows Registry MACs for ALL recalculated paths
         # Comet stores duplicate MACs in registry using a DIFFERENT seed ("ChromeRegistryHashStoreValidationSeed")
         # If registry MACs don't match, browser crashes on startup
-        # Registry stores BOTH regular paths AND account_values.* prefixed paths when user is signed in
+        # We must update registry MACs for ALL preferences that have file MACs
         $registryPrefs = @{}
-        foreach ($path in $prefsToModify.Keys) {
-            $registryPrefs[$path] = $prefsToModify[$path]
+        foreach ($path in $recalcResult.paths) {
+            # Look up the value for this path
+            $lookupPath = $path
+            if ($path -like "account_values.*") {
+                $lookupPath = $path -replace "^account_values\.", ""
+            }
+            $value = Get-PreferenceValue -Preferences $securePrefsHash -Path $lookupPath
+            if ($null -ne $value) {
+                $registryPrefs[$path] = $value
+            }
         }
 
-        # If account_values exists, also add account_values.* prefixed registry MACs
-        if ($hasAccountValues) {
-            foreach ($path in $prefsToModify.Keys) {
-                $accountPath = "account_values.$path"
-                $registryPrefs[$accountPath] = $prefsToModify[$path]
-            }
-            Write-Verbose "[Registry MAC] Including account_values.* paths for registry MACs"
-        }
+        Write-Verbose "[Registry MAC] Updating registry MACs for $($registryPrefs.Count) paths"
 
         $registryResult = Set-RegistryPreferenceMacs -DeviceId $deviceId -PreferencesToSet $registryPrefs
         if ($registryResult) {
@@ -3905,7 +3855,7 @@ function Update-TrackedPreferences {
             Write-Verbose "[Registry MAC] WARNING: Failed to update registry MACs - browser may crash"
         }
 
-        Write-Status "Tracked preferences updated with valid HMACs (file + registry)" -Type Success
+        Write-Status "Tracked preferences updated with valid HMACs (file: $($recalcResult.recalculated), registry: $($registryPrefs.Count))" -Type Success
         return $true
     }
     catch {
@@ -3989,6 +3939,139 @@ function Merge-Hashtables {
     }
 
     return $result
+}
+
+function Get-PreferenceValue {
+    <#
+    .SYNOPSIS
+        Get a preference value from a nested hashtable using a dotted path.
+    .DESCRIPTION
+        Given a path like "extensions.ui.developer_mode", navigates the hashtable
+        and returns the value at that path, or $null if not found.
+    #>
+    param(
+        [hashtable]$Preferences,
+        [string]$Path
+    )
+
+    $parts = $Path -split '\.'
+    $current = $Preferences
+
+    foreach ($part in $parts) {
+        if ($null -eq $current) {
+            return $null
+        }
+        if ($current -is [hashtable] -and $current.ContainsKey($part)) {
+            $current = $current[$part]
+        }
+        elseif ($current -is [PSCustomObject]) {
+            $prop = $current.PSObject.Properties[$part]
+            if ($prop) {
+                $current = $prop.Value
+            }
+            else {
+                return $null
+            }
+        }
+        else {
+            return $null
+        }
+    }
+
+    return $current
+}
+
+function Update-AllMacs {
+    <#
+    .SYNOPSIS
+        Recalculate MACs for ALL preferences that have existing MACs.
+    .DESCRIPTION
+        When Meteor patches extensions or other data changes, the existing MACs
+        become invalid because they were calculated for the old values.
+
+        This function:
+        1. Gets all existing MAC paths from the MACs structure
+        2. For each path, looks up the ACTUAL current value in the preferences
+        3. Recalculates the MAC using the correct formula
+        4. Updates the MAC in the structure
+
+        This ensures ALL MACs match their current values, preventing
+        "tracked_preferences_reset" entries for ANY preference.
+    .PARAMETER Macs
+        The existing MACs hashtable structure (nested, e.g., protection.macs).
+    .PARAMETER Preferences
+        The preferences hashtable (to look up actual values).
+    .PARAMETER SeedHex
+        The HMAC seed (empty for non-Chrome builds).
+    .PARAMETER DeviceId
+        The device ID (raw Windows SID).
+    .OUTPUTS
+        Hashtable with:
+        - recalculated: Count of MACs that were recalculated
+        - skipped: Count of MACs skipped (value not found)
+        - paths: Array of paths that were recalculated
+    #>
+    param(
+        [hashtable]$Macs,
+        [hashtable]$Preferences,
+        [string]$SeedHex,
+        [string]$DeviceId
+    )
+
+    # Flatten existing MACs to get all paths
+    $existingMacs = @{}
+    Get-FlattenedMacs -Node $Macs -Path "" -Result $existingMacs
+
+    $recalculated = 0
+    $skipped = 0
+    $recalculatedPaths = @()
+
+    foreach ($path in $existingMacs.Keys) {
+        # Skip account_values entries - they use a different path for HMAC
+        # but reference the same value as the non-prefixed version
+        $lookupPath = $path
+        $hmacPath = $path
+        if ($path -like "account_values.*") {
+            # For account_values.foo.bar, lookup foo.bar but use full path for HMAC
+            $lookupPath = $path -replace "^account_values\.", ""
+        }
+
+        # Look up the actual value
+        $value = Get-PreferenceValue -Preferences $Preferences -Path $lookupPath
+
+        if ($null -eq $value) {
+            # Value not found - might be a complex type or removed preference
+            # Keep the existing MAC
+            Write-Verbose "[Update MACs] Skipped $path - value not found at $lookupPath"
+            $skipped++
+            continue
+        }
+
+        # Recalculate MAC using correct format
+        $newMac = Get-PreferenceHmac -SeedHex $SeedHex -DeviceId $DeviceId -Path $hmacPath -Value $value
+
+        # Update MAC in nested structure
+        $parts = $path -split '\.'
+        $current = $Macs
+        for ($i = 0; $i -lt $parts.Count - 1; $i++) {
+            $part = $parts[$i]
+            if (-not $current.ContainsKey($part)) {
+                $current[$part] = @{}
+            }
+            $current = $current[$part]
+        }
+        $current[$parts[-1]] = $newMac
+
+        $recalculated++
+        $recalculatedPaths += $path
+        Write-Verbose "[Update MACs] $path = $($newMac.Substring(0, 16))..."
+    }
+
+    return @{
+        recalculated = $recalculated
+        skipped      = $skipped
+        paths        = $recalculatedPaths
+    }
 }
 
 #endregion
