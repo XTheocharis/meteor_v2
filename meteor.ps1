@@ -3074,13 +3074,15 @@ function Set-BrowserPreferences {
     )
 
     # Determine User Data path
-    $userDataPath = $null
+    # IMPORTANT: Use different variable name to avoid shadowing the $UserDataPath parameter
+    # (PowerShell is case-insensitive, so $userDataPath and $UserDataPath are the same!)
+    $effectiveUserDataPath = $null
 
     # Use provided path if specified (portable mode)
     if ($UserDataPath) {
-        $userDataPath = $UserDataPath
-        if (-not $DryRunMode -and -not (Test-Path $userDataPath)) {
-            $null = New-Item -ItemType Directory -Path $userDataPath -Force
+        $effectiveUserDataPath = $UserDataPath
+        if (-not $DryRunMode -and -not (Test-Path $effectiveUserDataPath)) {
+            $null = New-Item -ItemType Directory -Path $effectiveUserDataPath -Force
         }
     }
     else {
@@ -3092,24 +3094,24 @@ function Set-BrowserPreferences {
 
         foreach ($path in $systemPaths) {
             if (Test-Path $path) {
-                $userDataPath = $path
+                $effectiveUserDataPath = $path
                 break
             }
         }
 
-        if (-not $userDataPath) {
+        if (-not $effectiveUserDataPath) {
             # User Data doesn't exist yet - will be created on first run
             # Create it now so we can pre-seed Preferences
-            $userDataPath = $systemPaths[0]
+            $effectiveUserDataPath = $systemPaths[0]
             if (-not $DryRunMode) {
-                $null = New-Item -ItemType Directory -Path $userDataPath -Force
+                $null = New-Item -ItemType Directory -Path $effectiveUserDataPath -Force
             }
         }
     }
 
-    $profilePath = Join-Path $userDataPath $ProfileName
+    $profilePath = Join-Path $effectiveUserDataPath $ProfileName
     $prefsPath = Join-Path $profilePath "Preferences"
-    $firstRunPath = Join-Path $userDataPath "First Run"
+    $firstRunPath = Join-Path $effectiveUserDataPath "First Run"
 
     if ($DryRunMode) {
         Write-Status "Would pre-seed Preferences at: $prefsPath" -Type DryRun
