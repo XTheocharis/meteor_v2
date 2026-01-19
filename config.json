@@ -26,13 +26,14 @@
       "--enable-experimental-extension-apis",
       "--webtransport-developer-mode",
       "--show-component-extension-options",
-      "--perplexity-enable-bundle-extension-unpacked-loading"
+      "--perplexity-enable-bundle-extension-unpacked-loading",
+      "--disable-search-engine-choice-screen",
+      "--propagate-iph-for-testing"
     ],
     "flag_switches": [
       "--disable-quic",
       "--extensions-on-chrome-urls",
       "--extensions-on-extension-urls",
-      "--wallet-service-use-sandbox=0",
       "--webtransport-developer-mode"
     ],
     "enable_features": [
