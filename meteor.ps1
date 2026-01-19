@@ -3569,20 +3569,44 @@ function Update-TrackedPreferences {
             $current[$parts[-1]] = $value
         }
 
-        # Get existing MACs structure
+        # Get existing MACs structure - debug what we have BEFORE any modification
+        Write-Verbose "[Secure Prefs] securePrefsHash has 'protection' key: $($securePrefsHash.ContainsKey('protection'))"
+        if ($securePrefsHash.ContainsKey('protection')) {
+            $prot = $securePrefsHash['protection']
+            Write-Verbose "[Secure Prefs] protection type: $($prot.GetType().FullName)"
+            if ($prot -is [hashtable]) {
+                $protKeys = $prot.Keys -join ", "
+                Write-Verbose "[Secure Prefs] protection keys: $protKeys"
+                if ($prot.ContainsKey('macs')) {
+                    $macsObj = $prot['macs']
+                    Write-Verbose "[Secure Prefs] macs type: $($macsObj.GetType().FullName)"
+                    if ($macsObj -is [hashtable]) {
+                        $macsKeys = $macsObj.Keys -join ", "
+                        Write-Verbose "[Secure Prefs] macs keys: $macsKeys"
+                    }
+                }
+            }
+        }
+
+        # Only create structures if they don't exist - DON'T replace existing ones
         if (-not $securePrefsHash.ContainsKey('protection')) {
+            Write-Verbose "[Secure Prefs] Creating new protection structure"
             $securePrefsHash['protection'] = @{ macs = @{} }
         }
+        if (-not ($securePrefsHash['protection'] -is [hashtable])) {
+            Write-Verbose "[Secure Prefs] ERROR: protection is not a hashtable after conversion!"
+            return $false
+        }
         if (-not $securePrefsHash['protection'].ContainsKey('macs')) {
+            Write-Verbose "[Secure Prefs] Creating new macs structure (this will LOSE existing MACs!)"
             $securePrefsHash['protection']['macs'] = @{}
         }
 
         $macs = $securePrefsHash['protection']['macs']
 
-        # Debug: Show existing MAC structure
+        # Debug: Show existing MAC structure after getting reference
         $existingMacKeys = $macs.Keys -join ", "
-        Write-Verbose "[Secure Prefs] Existing MAC top-level keys: $existingMacKeys"
-        Write-Verbose "[Secure Prefs] MAC structure type: $($macs.GetType().FullName)"
+        Write-Verbose "[Secure Prefs] After getting macs - top-level keys: $existingMacKeys"
 
         # Flatten existing MACs first to count them
         $existingMacs = @{}
