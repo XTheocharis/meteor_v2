@@ -3465,13 +3465,39 @@ function Update-TrackedPreferences {
         $securePrefsJson = Get-Content -Path $SecurePrefsPath -Raw -ErrorAction Stop
         $securePrefs = $securePrefsJson | ConvertFrom-Json -ErrorAction Stop
 
-        # Get Chromium's seed
-        if (-not $localState.protection -or -not $localState.protection.seed) {
-            Write-Verbose "[Secure Prefs] No seed found in Local State - cannot modify tracked preferences"
-            return $false
+        # Find Chromium's seed - check multiple possible locations
+        $seedBase64 = $null
+
+        # Check Local State -> protection.seed (standard Chromium location)
+        if ($localState.PSObject.Properties.Name -contains 'protection') {
+            if ($localState.protection.PSObject.Properties.Name -contains 'seed') {
+                $seedBase64 = $localState.protection.seed
+                Write-Verbose "[Secure Prefs] Found seed in Local State -> protection.seed"
+            }
         }
 
-        $seedBase64 = $localState.protection.seed
+        # Check Local State -> os_crypt.encrypted_key (alternative)
+        if (-not $seedBase64 -and $localState.PSObject.Properties.Name -contains 'os_crypt') {
+            if ($localState.os_crypt.PSObject.Properties.Name -contains 'encrypted_key') {
+                Write-Verbose "[Secure Prefs] Found os_crypt.encrypted_key - seed may be encrypted"
+            }
+        }
+
+        # Check Secure Preferences -> protection.seed (some versions store it here)
+        if (-not $seedBase64 -and $securePrefs.PSObject.Properties.Name -contains 'protection') {
+            if ($securePrefs.protection.PSObject.Properties.Name -contains 'seed') {
+                $seedBase64 = $securePrefs.protection.seed
+                Write-Verbose "[Secure Prefs] Found seed in Secure Preferences -> protection.seed"
+            }
+        }
+
+        if (-not $seedBase64) {
+            Write-Verbose "[Secure Prefs] No HMAC seed found - checking Local State keys..."
+            $localStateKeys = $localState.PSObject.Properties.Name -join ", "
+            Write-Verbose "[Secure Prefs] Local State top-level keys: $localStateKeys"
+            Write-Verbose "[Secure Prefs] Cannot modify tracked preferences without seed"
+            return $false
+        }
         $seedBytes = [Convert]::FromBase64String($seedBase64)
         $seedHex = ([BitConverter]::ToString($seedBytes) -replace '-', '').ToLower()
 
