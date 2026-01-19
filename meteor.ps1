@@ -3291,8 +3291,11 @@ function ConvertTo-JsonForHmac {
     if ($Value -is [bool]) {
         if ($Value) { return "true" } else { return "false" }
     }
-    if ($Value -is [int] -or $Value -is [long] -or $Value -is [double]) {
-        return $Value.ToString()
+    if ($Value -is [int] -or $Value -is [int32] -or $Value -is [int64] -or
+        $Value -is [long] -or $Value -is [double] -or $Value -is [decimal] -or
+        $Value -is [float] -or $Value -is [single]) {
+        # Use ConvertTo-Json for consistent number formatting
+        return ($Value | ConvertTo-Json -Compress)
     }
     if ($Value -is [string]) {
         # JSON-encode the string (adds quotes and escapes)
@@ -3992,32 +3995,53 @@ function Get-PreferenceValue {
     .DESCRIPTION
         Given a path like "extensions.ui.developer_mode", navigates the hashtable
         and returns the value at that path, or $null if not found.
+
+        IMPORTANT: This assumes dots are path separators. Keys containing literal
+        dots will NOT be found correctly (e.g., "foo.bar" as a single key name).
     #>
     param(
         [hashtable]$Preferences,
-        [string]$Path
+        [string]$Path,
+        [switch]$Trace
     )
 
     $parts = $Path -split '\.'
     $current = $Preferences
+    $tracePath = ""
 
     foreach ($part in $parts) {
+        $tracePath = if ($tracePath) { "$tracePath.$part" } else { $part }
+
         if ($null -eq $current) {
+            if ($Trace) { Write-Verbose "[GetPrefValue] FAIL at '$tracePath': current is null" }
             return $null
         }
-        if ($current -is [hashtable] -and $current.ContainsKey($part)) {
-            $current = $current[$part]
+        if ($current -is [hashtable]) {
+            if ($current.ContainsKey($part)) {
+                $current = $current[$part]
+                if ($Trace) { Write-Verbose "[GetPrefValue] OK at '$tracePath': found in hashtable" }
+            }
+            else {
+                if ($Trace) {
+                    $availableKeys = ($current.Keys | Select-Object -First 5) -join ", "
+                    Write-Verbose "[GetPrefValue] FAIL at '$tracePath': key '$part' not in hashtable (available: $availableKeys...)"
+                }
+                return $null
+            }
         }
         elseif ($current -is [PSCustomObject]) {
             $prop = $current.PSObject.Properties[$part]
             if ($prop) {
                 $current = $prop.Value
+                if ($Trace) { Write-Verbose "[GetPrefValue] OK at '$tracePath': found in PSCustomObject" }
             }
             else {
+                if ($Trace) { Write-Verbose "[GetPrefValue] FAIL at '$tracePath': property '$part' not in PSCustomObject" }
                 return $null
             }
         }
         else {
+            if ($Trace) { Write-Verbose "[GetPrefValue] FAIL at '$tracePath': current is $($current.GetType().Name), not traversable" }
             return $null
         }
     }
@@ -4069,6 +4093,9 @@ function Update-AllMacs {
     $recalculated = 0
     $skipped = 0
     $recalculatedPaths = @()
+    $skippedPaths = @()
+    $traceCount = 0
+    $maxTrace = 5  # Trace first 5 skipped paths in detail
 
     foreach ($path in $existingMacs.Keys) {
         # Skip account_values entries - they use a different path for HMAC
@@ -4080,14 +4107,17 @@ function Update-AllMacs {
             $lookupPath = $path -replace "^account_values\.", ""
         }
 
-        # Look up the actual value
-        $value = Get-PreferenceValue -Preferences $Preferences -Path $lookupPath
+        # Look up the actual value (trace first few failures for debugging)
+        $shouldTrace = ($traceCount -lt $maxTrace)
+        $value = Get-PreferenceValue -Preferences $Preferences -Path $lookupPath -Trace:$shouldTrace
 
         if ($null -eq $value) {
             # Value not found - might be a complex type or removed preference
             # Keep the existing MAC
             Write-Verbose "[Update MACs] Skipped $path - value not found at $lookupPath"
             $skipped++
+            $skippedPaths += $path
+            $traceCount++
             continue
         }
 
@@ -4111,10 +4141,22 @@ function Update-AllMacs {
         Write-Verbose "[Update MACs] $path = $($newMac.Substring(0, 16))..."
     }
 
+    # Log summary of skipped paths for debugging
+    if ($skippedPaths.Count -gt 0) {
+        Write-Verbose "[Update MACs] === SKIPPED PATHS SUMMARY ($($skippedPaths.Count) total) ==="
+        foreach ($sp in ($skippedPaths | Select-Object -First 10)) {
+            Write-Verbose "[Update MACs]   - $sp"
+        }
+        if ($skippedPaths.Count -gt 10) {
+            Write-Verbose "[Update MACs]   ... and $($skippedPaths.Count - 10) more"
+        }
+    }
+
     return @{
-        recalculated = $recalculated
-        skipped      = $skipped
-        paths        = $recalculatedPaths
+        recalculated  = $recalculated
+        skipped       = $skipped
+        paths         = $recalculatedPaths
+        skippedPaths  = $skippedPaths
     }
 }
 
