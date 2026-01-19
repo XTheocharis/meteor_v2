@@ -3155,69 +3155,82 @@ function Get-ChromiumDeviceId {
     return ([BitConverter]::ToString($hash) -replace '-', '').ToLower()
 }
 
-function Get-HmacSeedFromPak {
+function Get-HmacSeedFromLocalState {
     <#
     .SYNOPSIS
-        Extract HMAC seed from resources.pak.
+        Get or create HMAC seed from Local State file.
     .DESCRIPTION
-        The seed is a 32-byte (256-bit) block stored in resources.pak.
-        It's typically found within the first 1MB of the file with high entropy.
+        Chromium stores the HMAC seed in the Local State file under protection.seed
+        as a base64-encoded 32-byte value. If no seed exists, we generate one.
+    .PARAMETER LocalStatePath
+        Path to the Local State file.
+    .PARAMETER CreateIfMissing
+        If true, creates a new random seed if none exists.
+    .OUTPUTS
+        Hashtable with 'seed' (hex string) and 'localState' (parsed JSON object).
     #>
-    param([string]$PakPath)
+    param(
+        [string]$LocalStatePath,
+        [switch]$CreateIfMissing
+    )
 
-    if (-not (Test-Path $PakPath)) {
-        Write-Warning "[HMAC Seed] resources.pak not found: $PakPath"
-        return $null
-    }
+    $localState = $null
+    $seedBytes = $null
 
-    try {
-        $bytes = [System.IO.File]::ReadAllBytes($PakPath)
-        $searchEnd = [Math]::Min($bytes.Length, 1024 * 1024)
+    # Try to read existing Local State
+    if (Test-Path $LocalStatePath) {
+        try {
+            $json = Get-Content -Path $LocalStatePath -Raw -ErrorAction Stop
+            $localState = $json | ConvertFrom-Json -ErrorAction Stop
 
-        # Search for 32-byte blocks with high entropy
-        for ($offset = 12; $offset -lt ($searchEnd - 32); $offset += 4) {
-            $potentialSeed = New-Object byte[] 32
-            [Array]::Copy($bytes, $offset, $potentialSeed, 0, 32)
-
-            # Check entropy - seed should have variety of byte values
-            $uniqueBytes = @{}
-            foreach ($b in $potentialSeed) {
-                $uniqueBytes[$b] = $true
+            # Check for existing seed
+            if ($localState.protection -and $localState.protection.seed) {
+                $seedBase64 = $localState.protection.seed
+                $seedBytes = [Convert]::FromBase64String($seedBase64)
+                Write-Verbose "[HMAC Seed] Found existing seed in Local State"
             }
-
-            # Good seed has 15+ unique byte values
-            if ($uniqueBytes.Count -lt 15) {
-                continue
-            }
-
-            # Check byte frequency - no single byte should dominate
-            $byteFreq = @{}
-            foreach ($b in $potentialSeed) {
-                if ($byteFreq.ContainsKey($b)) {
-                    $byteFreq[$b]++
-                }
-                else {
-                    $byteFreq[$b] = 1
-                }
-            }
-            $maxFreq = ($byteFreq.Values | Measure-Object -Maximum).Maximum
-            if ($maxFreq -gt 8) {
-                continue
-            }
-
-            # Convert to hex string
-            $hexSeed = ([BitConverter]::ToString($potentialSeed) -replace '-', '').ToLower()
-
-            Write-Verbose "[HMAC Seed] Found candidate at offset $offset`: $($hexSeed.Substring(0, 32))..."
-            return $hexSeed
         }
+        catch {
+            Write-Verbose "[HMAC Seed] Failed to parse Local State: $_"
+            $localState = $null
+        }
+    }
 
-        Write-Warning "[HMAC Seed] No valid seed found in resources.pak"
+    # Generate new seed if needed
+    if (-not $seedBytes -and $CreateIfMissing) {
+        $seedBytes = New-Object byte[] 32
+        $rng = [System.Security.Cryptography.RNGCryptoServiceProvider]::new()
+        $rng.GetBytes($seedBytes)
+        $rng.Dispose()
+        Write-Verbose "[HMAC Seed] Generated new random seed"
+    }
+
+    if (-not $seedBytes) {
         return $null
     }
-    catch {
-        Write-Warning "[HMAC Seed] Failed to read resources.pak: $_"
-        return $null
+
+    # Convert to hex for our HMAC functions
+    $hexSeed = ([BitConverter]::ToString($seedBytes) -replace '-', '').ToLower()
+
+    # Prepare Local State object if needed
+    if (-not $localState) {
+        $localState = @{}
+    }
+
+    # Ensure protection section exists with seed
+    $seedBase64 = [Convert]::ToBase64String($seedBytes)
+    if ($localState -is [PSCustomObject]) {
+        # Convert to hashtable for modification
+        $localState = Convert-PSObjectToHashtable -InputObject $localState
+    }
+    if (-not $localState.ContainsKey('protection')) {
+        $localState['protection'] = @{}
+    }
+    $localState['protection']['seed'] = $seedBase64
+
+    return @{
+        seed       = $hexSeed
+        localState = $localState
     }
 }
 
@@ -3348,7 +3361,7 @@ function Set-BrowserPreferences {
     .DESCRIPTION
         Chromium protects certain preferences with HMAC-SHA256 signatures.
         This function calculates proper HMACs using:
-        1. HMAC seed extracted from resources.pak
+        1. HMAC seed from Local State file (generated if not exists)
         2. Device ID (Windows SID without RID, hashed)
         3. Preference path + JSON-serialized value
 
@@ -3358,30 +3371,11 @@ function Set-BrowserPreferences {
         Reference: https://www.cse.chalmers.se/~andrei/cans20.pdf
     #>
     param(
-        [Parameter(Mandatory = $true)]
-        [string]$BrowserPath,
+        [string]$BrowserPath,  # No longer used, kept for backwards compatibility
         [string]$UserDataPath,
         [string]$ProfileName = "Default",
         [switch]$DryRunMode
     )
-
-    # Find resources.pak (in version directory next to browser exe)
-    $browserDir = Split-Path -Parent $BrowserPath
-    $versionDirs = Get-ChildItem -Path $browserDir -Directory | Where-Object { $_.Name -match '^\d+\.' }
-    $resourcesPakPath = $null
-
-    foreach ($versionDir in $versionDirs) {
-        $pakPath = Join-Path $versionDir.FullName "resources.pak"
-        if (Test-Path $pakPath) {
-            $resourcesPakPath = $pakPath
-            break
-        }
-    }
-
-    if (-not $resourcesPakPath) {
-        Write-Warning "[Secure Prefs] resources.pak not found - cannot calculate HMACs"
-        return $false
-    }
 
     # Determine User Data path
     $effectiveUserDataPath = $null
@@ -3406,6 +3400,7 @@ function Set-BrowserPreferences {
 
     $profilePath = Join-Path $effectiveUserDataPath $ProfileName
     $securePrefsPath = Join-Path $profilePath "Secure Preferences"
+    $localStatePath = Join-Path $effectiveUserDataPath "Local State"
     $firstRunPath = Join-Path $effectiveUserDataPath "First Run"
 
     if ($DryRunMode) {
@@ -3419,14 +3414,25 @@ function Set-BrowserPreferences {
         return $true
     }
 
-    # Extract HMAC seed
-    Write-Verbose "[Secure Prefs] Extracting HMAC seed from: $resourcesPakPath"
-    $hmacSeed = Get-HmacSeedFromPak -PakPath $resourcesPakPath
+    # Ensure directories exist
+    if (-not (Test-Path $effectiveUserDataPath)) {
+        $null = New-Item -ItemType Directory -Path $effectiveUserDataPath -Force
+    }
+    if (-not (Test-Path $profilePath)) {
+        $null = New-Item -ItemType Directory -Path $profilePath -Force
+    }
 
-    if (-not $hmacSeed) {
-        Write-Warning "[Secure Prefs] Failed to extract HMAC seed - cannot write Secure Preferences"
+    # Get or create HMAC seed from Local State
+    Write-Verbose "[Secure Prefs] Getting HMAC seed from Local State: $localStatePath"
+    $seedResult = Get-HmacSeedFromLocalState -LocalStatePath $localStatePath -CreateIfMissing
+
+    if (-not $seedResult) {
+        Write-Warning "[Secure Prefs] Failed to get/create HMAC seed"
         return $false
     }
+
+    $hmacSeed = $seedResult.seed
+    $localState = $seedResult.localState
 
     Write-Verbose "[Secure Prefs] HMAC seed: $($hmacSeed.Substring(0, 16))..."
 
@@ -3443,8 +3449,8 @@ function Set-BrowserPreferences {
     # Preferences to set with HMAC protection
     # These are the "tracked" preferences that Chromium protects
     $prefsToSet = @{
-        "extensions.ui.developer_mode" = $true
-        "browser.show_home_button"     = $true
+        "extensions.ui.developer_mode"    = $true
+        "browser.show_home_button"        = $true
         "bookmark_bar.show_apps_shortcut" = $false
     }
 
@@ -3495,18 +3501,15 @@ function Set-BrowserPreferences {
     }
 
     try {
-        # Ensure directories exist
-        if (-not (Test-Path $effectiveUserDataPath)) {
-            $null = New-Item -ItemType Directory -Path $effectiveUserDataPath -Force
-        }
-        if (-not (Test-Path $profilePath)) {
-            $null = New-Item -ItemType Directory -Path $profilePath -Force
-        }
-
         # Create "First Run" sentinel
         if (-not (Test-Path $firstRunPath)) {
             $null = New-Item -ItemType File -Path $firstRunPath -Force
         }
+
+        # Write Local State with seed
+        $localStateJson = $localState | ConvertTo-Json -Depth 20
+        Set-Content -Path $localStatePath -Value $localStateJson -Encoding UTF8 -Force
+        Write-Verbose "[Secure Prefs] Wrote Local State with HMAC seed"
 
         # Write Secure Preferences
         $json = $securePrefs | ConvertTo-Json -Depth 20
