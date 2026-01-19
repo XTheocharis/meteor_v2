@@ -3400,7 +3400,6 @@ function Set-BrowserPreferences {
 
     $profilePath = Join-Path $effectiveUserDataPath $ProfileName
     $securePrefsPath = Join-Path $profilePath "Secure Preferences"
-    $localStatePath = Join-Path $effectiveUserDataPath "Local State"
     $firstRunPath = Join-Path $effectiveUserDataPath "First Run"
 
     if ($DryRunMode) {
@@ -3422,81 +3421,28 @@ function Set-BrowserPreferences {
         $null = New-Item -ItemType Directory -Path $profilePath -Force
     }
 
-    # Get or create HMAC seed from Local State
-    Write-Verbose "[Secure Prefs] Getting HMAC seed from Local State: $localStatePath"
-    $seedResult = Get-HmacSeedFromLocalState -LocalStatePath $localStatePath -CreateIfMissing
+    # IMPORTANT: Do NOT write HMAC-protected preferences here!
+    # Chromium's tracked preferences (extensions.settings, extensions.ui.developer_mode,
+    # browser.show_home_button, etc.) require valid HMACs for the ENTIRE subtree.
+    # If any tracked preference is written without a valid HMAC, Chromium resets ALL of them.
+    #
+    # Strategy:
+    # - Only write UNTRACKED preferences here (sync, perplexity.*)
+    # - Let runtime enforcement (meteor-prefs.js) handle tracked preferences via
+    #   chrome.settingsPrivate.setPref() which bypasses HMAC protection
+    #
+    # Note: We still write Local State with a seed for future compatibility.
 
-    if (-not $seedResult) {
-        Write-Warning "[Secure Prefs] Failed to get/create HMAC seed"
-        return $false
-    }
+    Write-Verbose "[Secure Prefs] Writing only untracked preferences (tracked prefs handled by runtime enforcement)"
 
-    $hmacSeed = $seedResult.seed
-    $localState = $seedResult.localState
-
-    Write-Verbose "[Secure Prefs] HMAC seed: $($hmacSeed.Substring(0, 16))..."
-
-    # Get device ID
-    $rawSid = Get-WindowsSidWithoutRid
-    $deviceId = Get-ChromiumDeviceId -RawMachineId $rawSid
-
-    Write-Verbose "[Secure Prefs] Raw SID: $rawSid"
-    Write-Verbose "[Secure Prefs] Device ID: $($deviceId.Substring(0, [Math]::Min(32, $deviceId.Length)))..."
-
-    # uBlock Origin extension ID
-    $ublockExtId = "cjpalhdlnbpafiamejdnhcphjbkeiagm"
-
-    # Preferences to set with HMAC protection
-    # These are the "tracked" preferences that Chromium protects
-    $prefsToSet = @{
-        "extensions.ui.developer_mode"    = $true
-        "browser.show_home_button"        = $true
-        "bookmark_bar.show_apps_shortcut" = $false
-    }
-
-    # Calculate HMACs for each preference
-    $prefMacs = @{}
-    foreach ($path in $prefsToSet.Keys) {
-        $value = $prefsToSet[$path]
-        $mac = Get-PreferenceHmac -SeedHex $hmacSeed -DeviceId $deviceId -Path $path -Value $value
-        $prefMacs[$path] = $mac
-        Write-Verbose "[Secure Prefs] $path = $(ConvertTo-JsonForHmac $value) → $($mac.Substring(0, 16))..."
-    }
-
-    # Calculate super_mac
-    $superMac = Get-SuperMac -SeedHex $hmacSeed -PathsAndMacs $prefMacs
-
-    Write-Verbose "[Secure Prefs] super_mac: $($superMac.Substring(0, 16))..."
-
-    # Build Secure Preferences structure
+    # Build Secure Preferences structure - ONLY untracked preferences
     $securePrefs = @{
-        extensions   = @{
-            ui                = @{
-                developer_mode = $true
-            }
-            pinned_extensions = @($ublockExtId)
-            settings          = @{
-                $ublockExtId = @{
-                    toolbar_pin = "force_pinned"
-                }
-            }
-        }
-        browser      = @{
-            show_home_button = $true
-        }
-        bookmark_bar = @{
-            show_apps_shortcut = $false
-        }
-        sync         = @{
+        sync       = @{
             managed = $true
         }
-        perplexity   = @{
+        perplexity = @{
             onboarding_completed = $true
             metrics_allowed      = $false
-        }
-        protection   = @{
-            macs      = (Build-MacsTree -PathsAndMacs $prefMacs)
-            super_mac = $superMac
         }
     }
 
@@ -3506,16 +3452,11 @@ function Set-BrowserPreferences {
             $null = New-Item -ItemType File -Path $firstRunPath -Force
         }
 
-        # Write Local State with seed
-        $localStateJson = $localState | ConvertTo-Json -Depth 20
-        Set-Content -Path $localStatePath -Value $localStateJson -Encoding UTF8 -Force
-        Write-Verbose "[Secure Prefs] Wrote Local State with HMAC seed"
-
-        # Write Secure Preferences
+        # Write Secure Preferences (untracked prefs only)
         $json = $securePrefs | ConvertTo-Json -Depth 20
         Set-Content -Path $securePrefsPath -Value $json -Encoding UTF8 -Force
 
-        Write-Status "Secure Preferences written with valid HMACs" -Type Success
+        Write-Status "Initial preferences written (tracked prefs via runtime enforcement)" -Type Success
         Write-Verbose "Secure Preferences path: $securePrefsPath"
         return $true
     }
