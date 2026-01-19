@@ -3058,90 +3058,74 @@ function Initialize-PakModifications {
 function Set-BrowserPreferences {
     <#
     .SYNOPSIS
-        Pre-seed browser Preferences file with critical settings.
+        Write initial_preferences file for Chromium first-run initialization.
     .DESCRIPTION
+        Uses Chromium's official initial_preferences mechanism (formerly master_preferences)
+        to set default preferences during first-run initialization.
+
+        The initial_preferences file is placed next to the browser executable and is
+        applied BEFORE HMAC protection kicks in, avoiding the "tracked_preferences_reset"
+        issue that occurs when directly modifying the Preferences file.
+
         Settings like extensions.ui.developer_mode must be set BEFORE the browser
         loads extensions, otherwise unpacked extensions (loaded via --load-extension)
         will fail with "requires developer mode" errors.
 
-        The service worker (meteor-prefs.js) runs too late - after startup checks.
-        This function pre-seeds the Preferences file before launch.
+        Reference: https://www.chromium.org/administrators/configuring-other-preferences/
     #>
     param(
-        [string]$ProfileName = "Default",
+        [Parameter(Mandatory = $true)]
+        [string]$BrowserPath,
         [string]$UserDataPath,
         [switch]$DryRunMode
     )
 
-    # Determine User Data path
+    # initial_preferences goes next to the browser executable
+    $browserDir = Split-Path -Parent $BrowserPath
+    $initialPrefsPath = Join-Path $browserDir "initial_preferences"
+
+    # Also create "First Run" sentinel to skip first-run dialogs
     # IMPORTANT: Use different variable name to avoid shadowing the $UserDataPath parameter
     # (PowerShell is case-insensitive, so $userDataPath and $UserDataPath are the same!)
     $effectiveUserDataPath = $null
 
-    # Use provided path if specified (portable mode)
     if ($UserDataPath) {
         $effectiveUserDataPath = $UserDataPath
-        if (-not $DryRunMode -and -not (Test-Path $effectiveUserDataPath)) {
-            $null = New-Item -ItemType Directory -Path $effectiveUserDataPath -Force
-        }
     }
     else {
-        # Fall back to system paths
+        # Fall back to system paths for First Run file
         $systemPaths = @(
             (Join-Path $env:LOCALAPPDATA "Perplexity\Comet\User Data"),
             (Join-Path $env:LOCALAPPDATA "Comet\User Data")
         )
-
         foreach ($path in $systemPaths) {
             if (Test-Path $path) {
                 $effectiveUserDataPath = $path
                 break
             }
         }
-
         if (-not $effectiveUserDataPath) {
-            # User Data doesn't exist yet - will be created on first run
-            # Create it now so we can pre-seed Preferences
             $effectiveUserDataPath = $systemPaths[0]
-            if (-not $DryRunMode) {
-                $null = New-Item -ItemType Directory -Path $effectiveUserDataPath -Force
-            }
         }
     }
 
-    $profilePath = Join-Path $effectiveUserDataPath $ProfileName
-    $prefsPath = Join-Path $profilePath "Preferences"
     $firstRunPath = Join-Path $effectiveUserDataPath "First Run"
 
     if ($DryRunMode) {
-        Write-Status "Would pre-seed Preferences at: $prefsPath" -Type DryRun
+        Write-Status "Would write initial_preferences at: $initialPrefsPath" -Type DryRun
         return $true
     }
-
-    # Ensure profile directory exists
-    if (-not (Test-Path $profilePath)) {
-        $null = New-Item -ItemType Directory -Path $profilePath -Force
-    }
-
-    # Create "First Run" sentinel file to skip first-run dialogs
-    # Chromium checks for this file's existence, not its contents
-    if (-not (Test-Path $firstRunPath)) {
-        $null = New-Item -ItemType File -Path $firstRunPath -Force
-    }
-
-    # Critical settings that must be set before startup
-    # These cannot be effectively set by meteor-prefs.js (runs too late)
 
     # uBlock Origin extension ID (fixed ID from Chrome Web Store)
     $ublockExtId = "cjpalhdlnbpafiamejdnhcphjbkeiagm"
 
+    # Initial preferences applied during first-run before HMAC protection
+    # These settings will become the defaults for new profiles
+    #
     # NOTE: Chrome does not allow programmatically enabling extensions in incognito mode.
     # Per Chrome Enterprise docs: "As an admin, you can't automatically install extensions
-    # in Incognito mode." Any incognito settings written to Preferences are rejected by
-    # Chrome's HMAC protection and added to tracked_preferences_reset.
-    # Users must manually enable via chrome://extensions → Details → Allow in incognito.
-
-    $criticalSettings = @{
+    # in Incognito mode." Users must manually enable via chrome://extensions → Details → Allow in incognito.
+    $initialPrefs = @{
         extensions   = @{
             ui                = @{
                 developer_mode = $true
@@ -3149,7 +3133,7 @@ function Set-BrowserPreferences {
             # Pin uBlock Origin to toolbar
             pinned_extensions = @($ublockExtId)
             settings          = @{
-                $ublockExtId  = @{
+                $ublockExtId = @{
                     toolbar_pin = "force_pinned"
                 }
             }
@@ -3172,32 +3156,28 @@ function Set-BrowserPreferences {
     }
 
     try {
-        # CRITICAL: Only set HMAC-protected preferences on FIRST RUN.
-        # Chromium uses HMAC signatures in "Secure Preferences" to detect tampering.
-        # If we modify Preferences after the browser has run, the HMAC becomes invalid,
-        # which can cause crashes (especially when opening the browser menu).
-        # See: https://www.cse.chalmers.se/~andrei/cans20.pdf
-        $isFirstRun = -not (Test-Path $prefsPath)
-
-        if (-not $isFirstRun) {
-            Write-Status "Preferences already exist - skipping to avoid HMAC validation issues" -Type Detail
-            return $true
+        # Ensure User Data directory exists for First Run file
+        if (-not (Test-Path $effectiveUserDataPath)) {
+            $null = New-Item -ItemType Directory -Path $effectiveUserDataPath -Force
         }
 
-        $prefs = @{}
+        # Create "First Run" sentinel file to skip first-run dialogs
+        # Chromium checks for this file's existence, not its contents
+        if (-not (Test-Path $firstRunPath)) {
+            $null = New-Item -ItemType File -Path $firstRunPath -Force
+        }
 
-        # Deep merge critical settings (only on first run)
-        $prefs = Merge-Hashtables -Base $prefs -Override $criticalSettings
+        # Write initial_preferences file
+        # This file is read during first-run initialization BEFORE HMAC protection
+        $json = $initialPrefs | ConvertTo-Json -Depth 20 -Compress
+        Set-Content -Path $initialPrefsPath -Value $json -Encoding UTF8 -Force
 
-        # Write preferences
-        $json = $prefs | ConvertTo-Json -Depth 20 -Compress
-        Set-Content -Path $prefsPath -Value $json -Encoding UTF8 -Force
-
-        Write-Status "Browser preferences pre-seeded (developer mode enabled)" -Type Success
+        Write-Status "Initial preferences written (developer mode, toolbar pin, home button)" -Type Success
+        Write-Verbose "initial_preferences path: $initialPrefsPath"
         return $true
     }
     catch {
-        Write-Status "Failed to pre-seed preferences: $_" -Type Warning
+        Write-Status "Failed to write initial_preferences: $_" -Type Warning
         return $false
     }
 }
@@ -3887,15 +3867,14 @@ function Main {
         }
     }
 
-    # Pre-seed Preferences file with critical settings before launch
-    # This ensures extensions.ui.developer_mode is set BEFORE extension loading
-    $profileName = if ($config.browser.profile) { $config.browser.profile } else { "Default" }
-    $prefsUserDataPath = if ($portableMode) { $userDataPath } else { $null }
-    $null = Set-BrowserPreferences -ProfileName $profileName -UserDataPath $prefsUserDataPath -DryRunMode:$DryRun
-
     if ($comet -or $DryRun) {
         $browserExe = if ($comet) { $comet.Executable } else { "comet.exe" }
         $browserUserDataPath = if ($portableMode) { $userDataPath } else { $null }
+
+        # Write initial_preferences file next to browser executable
+        # This ensures developer mode, toolbar pin, and home button are set BEFORE HMAC protection
+        $null = Set-BrowserPreferences -BrowserPath $browserExe -UserDataPath $browserUserDataPath -DryRunMode:$DryRun
+
         $cmd = Build-BrowserCommand -Config $config -BrowserExe $browserExe -ExtPath $patchedExtPath -UBlockPath $ublockPath -AdGuardExtraPath $adguardExtraPath -UserDataPath $browserUserDataPath
 
         $proc = Start-Browser -Command $cmd -DryRunMode:$DryRun
