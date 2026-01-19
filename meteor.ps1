@@ -3281,21 +3281,9 @@ function Build-BrowserCommand {
         [void]$cmd.Add("--profile-directory=$($browserConfig.profile)")
     }
 
-    # Add explicit flags
+    # Add explicit flags (outside flag-switches block)
     foreach ($flag in $browserConfig.flags) {
         [void]$cmd.Add($flag)
-    }
-
-    # Build --enable-features
-    if ($browserConfig.enable_features -and $browserConfig.enable_features.Count -gt 0) {
-        $enableFeatures = $browserConfig.enable_features -join ","
-        [void]$cmd.Add("--enable-features=$enableFeatures")
-    }
-
-    # Build --disable-features
-    if ($browserConfig.disable_features -and $browserConfig.disable_features.Count -gt 0) {
-        $disableFeatures = $browserConfig.disable_features -join ","
-        [void]$cmd.Add("--disable-features=$disableFeatures")
     }
 
     # Build extension list
@@ -3327,10 +3315,28 @@ function Build-BrowserCommand {
     }
 
     # Add flag switches section (mimics comet://flags UI-enabled flags)
-    # These flags must be in this section to take effect
+    # These flags and features must be in this section to take effect
     [void]$cmd.Add("--flag-switches-begin")
-    [void]$cmd.Add("--extensions-on-chrome-urls")
-    [void]$cmd.Add("--extensions-on-extension-urls")
+
+    # Add flag_switches from config
+    if ($browserConfig.flag_switches) {
+        foreach ($flag in $browserConfig.flag_switches) {
+            [void]$cmd.Add($flag)
+        }
+    }
+
+    # Build --enable-features (inside flag-switches block)
+    if ($browserConfig.enable_features -and $browserConfig.enable_features.Count -gt 0) {
+        $enableFeatures = $browserConfig.enable_features -join ","
+        [void]$cmd.Add("--enable-features=$enableFeatures")
+    }
+
+    # Build --disable-features (inside flag-switches block)
+    if ($browserConfig.disable_features -and $browserConfig.disable_features.Count -gt 0) {
+        $disableFeatures = $browserConfig.disable_features -join ","
+        [void]$cmd.Add("--disable-features=$disableFeatures")
+    }
+
     [void]$cmd.Add("--flag-switches-end")
 
     return $cmd
