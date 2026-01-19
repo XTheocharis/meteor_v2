@@ -3357,21 +3357,13 @@ function Build-MacsTree {
 function Set-BrowserPreferences {
     <#
     .SYNOPSIS
-        Write Secure Preferences file with valid HMACs.
+        Write initial Secure Preferences file (untracked prefs only).
     .DESCRIPTION
-        Chromium protects certain preferences with HMAC-SHA256 signatures.
-        This function calculates proper HMACs using:
-        1. HMAC seed from Local State file (generated if not exists)
-        2. Device ID (Windows SID without RID, hashed)
-        3. Preference path + JSON-serialized value
-
-        This allows setting protected preferences like extensions.ui.developer_mode
-        without triggering "tracked_preferences_reset".
-
-        Reference: https://www.cse.chalmers.se/~andrei/cans20.pdf
+        Writes only untracked preferences on first run. Tracked preferences
+        require HMAC protection which needs an existing Chromium seed.
     #>
     param(
-        [string]$BrowserPath,  # No longer used, kept for backwards compatibility
+        [string]$BrowserPath,
         [string]$UserDataPath,
         [string]$ProfileName = "Default",
         [switch]$DryRunMode
@@ -3400,6 +3392,7 @@ function Set-BrowserPreferences {
 
     $profilePath = Join-Path $effectiveUserDataPath $ProfileName
     $securePrefsPath = Join-Path $profilePath "Secure Preferences"
+    $localStatePath = Join-Path $effectiveUserDataPath "Local State"
     $firstRunPath = Join-Path $effectiveUserDataPath "First Run"
 
     if ($DryRunMode) {
@@ -3407,13 +3400,14 @@ function Set-BrowserPreferences {
         return $true
     }
 
-    # Skip if Secure Preferences already exists (profile already used)
-    if (Test-Path $securePrefsPath) {
-        Write-Status "Secure Preferences already exist - skipping to preserve existing HMACs" -Type Detail
-        return $true
+    # If Secure Preferences exists AND Local State exists, try to modify tracked prefs
+    if ((Test-Path $securePrefsPath) -and (Test-Path $localStatePath)) {
+        Write-Verbose "[Secure Prefs] Existing profile found - attempting to modify tracked preferences"
+        return Update-TrackedPreferences -SecurePrefsPath $securePrefsPath -LocalStatePath $localStatePath
     }
 
-    # Ensure directories exist
+    # First run - just write untracked preferences
+    # Tracked preferences need Chromium's seed which doesn't exist yet
     if (-not (Test-Path $effectiveUserDataPath)) {
         $null = New-Item -ItemType Directory -Path $effectiveUserDataPath -Force
     }
@@ -3421,21 +3415,8 @@ function Set-BrowserPreferences {
         $null = New-Item -ItemType Directory -Path $profilePath -Force
     }
 
-    # IMPORTANT: Do NOT write HMAC-protected preferences here!
-    # Chromium's tracked preferences (extensions.settings, extensions.ui.developer_mode,
-    # browser.show_home_button, etc.) require valid HMACs for the ENTIRE subtree.
-    # If any tracked preference is written without a valid HMAC, Chromium resets ALL of them.
-    #
-    # Strategy:
-    # - Only write UNTRACKED preferences here (sync, perplexity.*)
-    # - Let runtime enforcement (meteor-prefs.js) handle tracked preferences via
-    #   chrome.settingsPrivate.setPref() which bypasses HMAC protection
-    #
-    # Note: We still write Local State with a seed for future compatibility.
+    Write-Verbose "[Secure Prefs] First run - writing untracked preferences only"
 
-    Write-Verbose "[Secure Prefs] Writing only untracked preferences (tracked prefs handled by runtime enforcement)"
-
-    # Build Secure Preferences structure - ONLY untracked preferences
     $securePrefs = @{
         sync       = @{
             managed = $true
@@ -3447,22 +3428,173 @@ function Set-BrowserPreferences {
     }
 
     try {
-        # Create "First Run" sentinel
         if (-not (Test-Path $firstRunPath)) {
             $null = New-Item -ItemType File -Path $firstRunPath -Force
         }
 
-        # Write Secure Preferences (untracked prefs only)
         $json = $securePrefs | ConvertTo-Json -Depth 20
         Set-Content -Path $securePrefsPath -Value $json -Encoding UTF8 -Force
 
-        Write-Status "Initial preferences written (tracked prefs via runtime enforcement)" -Type Success
-        Write-Verbose "Secure Preferences path: $securePrefsPath"
+        Write-Status "Initial preferences written (run again after first launch to set tracked prefs)" -Type Success
         return $true
     }
     catch {
         Write-Status "Failed to write Secure Preferences: $_" -Type Warning
         return $false
+    }
+}
+
+function Update-TrackedPreferences {
+    <#
+    .SYNOPSIS
+        Modify tracked preferences in existing Secure Preferences file.
+    .DESCRIPTION
+        Uses Chromium's existing seed to calculate valid HMACs for modified values.
+        This only works AFTER Chromium has created the Local State file with its seed.
+    #>
+    param(
+        [string]$SecurePrefsPath,
+        [string]$LocalStatePath
+    )
+
+    try {
+        # Read existing files
+        $localStateJson = Get-Content -Path $LocalStatePath -Raw -ErrorAction Stop
+        $localState = $localStateJson | ConvertFrom-Json -ErrorAction Stop
+
+        $securePrefsJson = Get-Content -Path $SecurePrefsPath -Raw -ErrorAction Stop
+        $securePrefs = $securePrefsJson | ConvertFrom-Json -ErrorAction Stop
+
+        # Get Chromium's seed
+        if (-not $localState.protection -or -not $localState.protection.seed) {
+            Write-Verbose "[Secure Prefs] No seed found in Local State - cannot modify tracked preferences"
+            return $false
+        }
+
+        $seedBase64 = $localState.protection.seed
+        $seedBytes = [Convert]::FromBase64String($seedBase64)
+        $seedHex = ([BitConverter]::ToString($seedBytes) -replace '-', '').ToLower()
+
+        Write-Verbose "[Secure Prefs] Found Chromium seed: $($seedHex.Substring(0, 16))..."
+
+        # Get device ID
+        $rawSid = Get-WindowsSidWithoutRid
+        $deviceId = Get-ChromiumDeviceId -RawMachineId $rawSid
+
+        Write-Verbose "[Secure Prefs] Device ID: $($deviceId.Substring(0, 32))..."
+
+        # Convert to hashtable for modification
+        $securePrefsHash = Convert-PSObjectToHashtable -InputObject $securePrefs
+
+        # Preferences to modify
+        $prefsToModify = @{
+            "extensions.ui.developer_mode"    = $true
+            "browser.show_home_button"        = $true
+            "bookmark_bar.show_apps_shortcut" = $false
+        }
+
+        # Set values in the preferences structure
+        foreach ($path in $prefsToModify.Keys) {
+            $value = $prefsToModify[$path]
+            $parts = $path -split '\.'
+
+            # Navigate/create nested structure
+            $current = $securePrefsHash
+            for ($i = 0; $i -lt $parts.Count - 1; $i++) {
+                $part = $parts[$i]
+                if (-not $current.ContainsKey($part)) {
+                    $current[$part] = @{}
+                }
+                elseif ($current[$part] -isnot [hashtable]) {
+                    $current[$part] = @{}
+                }
+                $current = $current[$part]
+            }
+            $current[$parts[-1]] = $value
+        }
+
+        # Get existing MACs structure
+        if (-not $securePrefsHash.ContainsKey('protection')) {
+            $securePrefsHash['protection'] = @{ macs = @{} }
+        }
+        if (-not $securePrefsHash['protection'].ContainsKey('macs')) {
+            $securePrefsHash['protection']['macs'] = @{}
+        }
+
+        $macs = $securePrefsHash['protection']['macs']
+
+        # Calculate new MACs for modified preferences
+        foreach ($path in $prefsToModify.Keys) {
+            $value = $prefsToModify[$path]
+            $mac = Get-PreferenceHmac -SeedHex $seedHex -DeviceId $deviceId -Path $path -Value $value
+
+            # Set MAC in nested structure
+            $parts = $path -split '\.'
+            $current = $macs
+            for ($i = 0; $i -lt $parts.Count - 1; $i++) {
+                $part = $parts[$i]
+                if (-not $current.ContainsKey($part)) {
+                    $current[$part] = @{}
+                }
+                elseif ($current[$part] -isnot [hashtable]) {
+                    $current[$part] = @{}
+                }
+                $current = $current[$part]
+            }
+            $current[$parts[-1]] = $mac
+
+            Write-Verbose "[Secure Prefs] $path = $(ConvertTo-JsonForHmac $value) → $($mac.Substring(0, 16))..."
+        }
+
+        # Flatten all MACs for super_mac calculation
+        $allMacs = @{}
+        Get-FlattenedMacs -Node $macs -Path "" -Result $allMacs
+
+        # Calculate new super_mac
+        $superMac = Get-SuperMac -SeedHex $seedHex -PathsAndMacs $allMacs
+        $securePrefsHash['protection']['super_mac'] = $superMac
+
+        Write-Verbose "[Secure Prefs] Calculated super_mac from $($allMacs.Count) MACs: $($superMac.Substring(0, 16))..."
+
+        # Write modified Secure Preferences
+        $json = $securePrefsHash | ConvertTo-Json -Depth 30
+        Set-Content -Path $SecurePrefsPath -Value $json -Encoding UTF8 -Force
+
+        Write-Status "Tracked preferences updated with valid HMACs" -Type Success
+        return $true
+    }
+    catch {
+        Write-Verbose "[Secure Prefs] Error updating tracked preferences: $_"
+        return $false
+    }
+}
+
+function Get-FlattenedMacs {
+    <#
+    .SYNOPSIS
+        Recursively flatten nested MAC structure to path->MAC hashtable.
+    #>
+    param(
+        [object]$Node,
+        [string]$Path,
+        [hashtable]$Result
+    )
+
+    if ($Node -is [string]) {
+        # This is a MAC value
+        $Result[$Path] = $Node
+    }
+    elseif ($Node -is [hashtable] -or $Node -is [System.Collections.IDictionary]) {
+        foreach ($key in $Node.Keys) {
+            $newPath = if ($Path) { "$Path.$key" } else { $key }
+            Get-FlattenedMacs -Node $Node[$key] -Path $newPath -Result $Result
+        }
+    }
+    elseif ($Node -is [PSCustomObject]) {
+        foreach ($prop in $Node.PSObject.Properties) {
+            $newPath = if ($Path) { "$Path.$($prop.Name)" } else { $prop.Name }
+            Get-FlattenedMacs -Node $prop.Value -Path $newPath -Result $Result
+        }
     }
 }
 
