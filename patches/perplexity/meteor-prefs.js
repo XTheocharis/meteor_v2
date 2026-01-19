@@ -87,8 +87,7 @@
     'devtools.availability': 1,  // 1 = always available
 
     // Extensions
-    // Note: developer_mode is set via chrome.developerPrivate.updateProfileConfiguration()
-    // instead of settingsPrivate, as it's more reliable for this specific setting
+    'extensions.ui.developer_mode': true,
     'extensions.unpublished_availability': 1,  // 1 = enabled
     'extensions.block_external_extensions': false
 
@@ -256,32 +255,6 @@
   });
 
   // ============================================================================
-  // DEVELOPER MODE ENFORCEMENT
-  // ============================================================================
-
-  /**
-   * Enable extension developer mode using chrome.developerPrivate API.
-   * This is more reliable than chrome.settingsPrivate for this specific setting.
-   */
-  function enableDeveloperMode() {
-    if (!chrome?.developerPrivate?.updateProfileConfiguration) {
-      console.warn('[Meteor] chrome.developerPrivate.updateProfileConfiguration not available');
-      return;
-    }
-
-    chrome.developerPrivate.updateProfileConfiguration(
-      { inDeveloperMode: true },
-      () => {
-        if (chrome.runtime.lastError) {
-          console.warn('[Meteor] Failed to enable developer mode:', chrome.runtime.lastError.message);
-        } else {
-          console.log('[Meteor] Developer mode enabled');
-        }
-      }
-    );
-  }
-
-  // ============================================================================
   // AUTO-ENABLE INCOGNITO FOR EXTENSIONS
   // ============================================================================
 
@@ -361,9 +334,6 @@
   applyPreferences();
   setupPreferenceMonitor();
 
-  // Enable developer mode via developerPrivate API
-  enableDeveloperMode();
-
   // Try to enable incognito for extensions on startup
   autoEnableIncognito();
 
@@ -372,6 +342,5 @@
 
   console.log('[Meteor] Preference enforcement initialized');
   console.log('[Meteor] Remote URL redirection active');
-  console.log('[Meteor] Developer mode enforcement active');
   console.log('[Meteor] Auto-incognito enablement active');
 })();
