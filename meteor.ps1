@@ -3271,10 +3271,13 @@ function ConvertTo-JsonForHmac {
 function Get-PreferenceHmac {
     <#
     .SYNOPSIS
-        Calculate HMAC for a single preference.
+        Calculate HMAC for a single preference (file-based).
     .DESCRIPTION
         HMAC-SHA256(key=seed, message=device_id+path+value_json)
         Returns uppercase hex string.
+
+        For Google Chrome: seed is 64-byte value from IDR_PREF_HASH_SEED_BIN
+        For non-Chrome builds (Comet): seed is empty string, resulting in empty key
     #>
     param(
         [string]$SeedHex,
@@ -3283,9 +3286,16 @@ function Get-PreferenceHmac {
         [object]$Value
     )
 
-    $seedBytes = [byte[]]::new(32)
-    for ($i = 0; $i -lt 32; $i++) {
-        $seedBytes[$i] = [Convert]::ToByte($SeedHex.Substring($i * 2, 2), 16)
+    # Handle empty seed for non-Chrome builds
+    if ([string]::IsNullOrEmpty($SeedHex)) {
+        $seedBytes = [byte[]]@()
+    } else {
+        # Parse hex string into bytes (assumes 64 hex chars = 32 bytes)
+        $seedLength = $SeedHex.Length / 2
+        $seedBytes = [byte[]]::new($seedLength)
+        for ($i = 0; $i -lt $seedLength; $i++) {
+            $seedBytes[$i] = [Convert]::ToByte($SeedHex.Substring($i * 2, 2), 16)
+        }
     }
 
     $valueJson = ConvertTo-JsonForHmac -Value $Value
@@ -3302,83 +3312,45 @@ $script:RegistryHashSeed = "ChromeRegistryHashStoreValidationSeed"
 function Get-PreferenceHmacSeedFromPak {
     <#
     .SYNOPSIS
-        Extract the 64-byte HMAC seed from resources.pak.
+        Get the HMAC seed for file-based preference MAC calculation.
     .DESCRIPTION
-        Chromium embeds a 64-byte preference HMAC seed in resources.pak at resource ID
-        IDR_PREF_HASH_SEED_BIN. This function finds the first resource that is exactly
-        64 bytes long and returns it as the seed.
+        In Chromium, the preference HMAC seed is only loaded for Google Chrome branded builds:
 
-        Reference: https://www.adlice.com/google-chrome-secure-preferences/
-        "All you need to do is to look for the first resource with a length of 64."
+        ```cpp
+        std::string seed;
+        #if BUILDFLAG(GOOGLE_CHROME_BRANDING)
+          seed = std::string(ui::ResourceBundle::GetSharedInstance().GetRawDataResource(
+              IDR_PREF_HASH_SEED_BIN));
+        #endif
+        ```
+
+        For non-Chrome builds (like Comet), the seed is an EMPTY STRING.
+        This means the HMAC calculation uses an empty key.
+
+        Reference: chromium/src/chrome/browser/prefs/chrome_pref_service_factory.cc
+        Code review: https://codereview.chromium.org/444253002
+          "Prefs: Only use IDR_PREF_HASH_SEED_BIN in Chrome builds."
     .PARAMETER CometDir
-        Path to the Comet installation directory containing resources.pak.
+        Path to the Comet installation directory (unused but kept for API compatibility).
     .OUTPUTS
         Hashtable with:
-        - seedHex: The 64-byte seed as lowercase hex string (128 chars)
-        - seedBytes: The raw 64 bytes
-        - resourceId: The PAK resource ID where seed was found
-        Returns $null if seed cannot be found.
+        - seedHex: Empty string (for non-Chrome builds)
+        - seedBytes: Empty byte array
+        - resourceId: -1 (indicates no resource used)
     #>
     param(
         [string]$CometDir
     )
 
-    # Find resources.pak
-    $pakPath = Join-Path $CometDir "resources.pak"
-    if (-not (Test-Path $pakPath)) {
-        # Try versioned subdirectory
-        $versionDirs = Get-ChildItem -Path $CometDir -Directory -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -match '^\d+\.' } |
-            Sort-Object Name -Descending
-        foreach ($dir in $versionDirs) {
-            $testPath = Join-Path $dir.FullName "resources.pak"
-            if (Test-Path $testPath) {
-                $pakPath = $testPath
-                break
-            }
-        }
-    }
+    # Comet is NOT Google Chrome branded, so it uses an empty seed for file MACs
+    # This is by design in Chromium - see chrome_pref_service_factory.cc
+    Write-Verbose "[PAK Seed] Comet (non-Chrome branded build) uses empty seed for file MACs"
 
-    if (-not (Test-Path $pakPath)) {
-        Write-Verbose "[PAK Seed] resources.pak not found in $CometDir"
-        return $null
-    }
-
-    Write-Verbose "[PAK Seed] Reading resources.pak from: $pakPath"
-
-    try {
-        $pak = Read-PakFile -Path $pakPath
-
-        # Search for the first resource that is exactly 64 bytes
-        for ($i = 0; $i -lt $pak.Resources.Count - 1; $i++) {
-            $startOffset = $pak.Resources[$i].Offset
-            $endOffset = $pak.Resources[$i + 1].Offset
-            $length = $endOffset - $startOffset
-
-            if ($length -eq 64) {
-                $resourceId = $pak.Resources[$i].Id
-                $seedBytes = New-Object byte[] 64
-                [Array]::Copy($pak.RawBytes, $startOffset, $seedBytes, 0, 64)
-                $seedHex = ([BitConverter]::ToString($seedBytes) -replace '-', '').ToLower()
-
-                Write-Verbose "[PAK Seed] Found 64-byte seed at resource ID $resourceId"
-                Write-Verbose "[PAK Seed] Seed: $($seedHex.Substring(0, 32))..."
-
-                return @{
-                    seedHex    = $seedHex
-                    seedBytes  = $seedBytes
-                    resourceId = $resourceId
-                    pakPath    = $pakPath
-                }
-            }
-        }
-
-        Write-Verbose "[PAK Seed] No 64-byte resource found in PAK file"
-        return $null
-    }
-    catch {
-        Write-Verbose "[PAK Seed] Failed to read PAK file: $_"
-        return $null
+    return @{
+        seedHex    = ""
+        seedBytes  = @()
+        resourceId = -1
+        pakPath    = $null
     }
 }
 
@@ -3476,15 +3448,23 @@ function Get-SuperMac {
     .DESCRIPTION
         Concatenate all individual MACs in sorted key order, then:
         HMAC-SHA256(key=seed, message=concat_macs)
+
+        For non-Chrome builds with empty seed, uses empty key.
     #>
     param(
         [string]$SeedHex,
         [hashtable]$PathsAndMacs
     )
 
-    $seedBytes = [byte[]]::new(32)
-    for ($i = 0; $i -lt 32; $i++) {
-        $seedBytes[$i] = [Convert]::ToByte($SeedHex.Substring($i * 2, 2), 16)
+    # Handle empty seed for non-Chrome builds
+    if ([string]::IsNullOrEmpty($SeedHex)) {
+        $seedBytes = [byte[]]@()
+    } else {
+        $seedLength = $SeedHex.Length / 2
+        $seedBytes = [byte[]]::new($seedLength)
+        for ($i = 0; $i -lt $seedLength; $i++) {
+            $seedBytes[$i] = [Convert]::ToByte($SeedHex.Substring($i * 2, 2), 16)
+        }
     }
 
     # Sort paths and concatenate MACs
@@ -3672,23 +3652,22 @@ function Update-TrackedPreferences {
             Write-Verbose "[Secure Prefs] JSON preview: $preview"
         }
 
-        # Extract HMAC seed from resources.pak
-        # The seed is a 64-byte value embedded in the PAK file, NOT in Local State
-        # os_crypt.encrypted_key is for cookie encryption, NOT preference MACs
-        if (-not $CometDir) {
-            Write-Verbose "[Secure Prefs] CometDir not provided - cannot extract PAK seed"
-            return $false
-        }
-
+        # Get HMAC seed for file MAC calculation
+        # For Google Chrome: 64-byte seed from IDR_PREF_HASH_SEED_BIN in resources.pak
+        # For Comet (non-Chrome): Empty string (per Chromium source - GOOGLE_CHROME_BRANDING guard)
         $pakSeed = Get-PreferenceHmacSeedFromPak -CometDir $CometDir
         if (-not $pakSeed) {
-            Write-Verbose "[Secure Prefs] Failed to extract HMAC seed from resources.pak"
+            Write-Verbose "[Secure Prefs] Failed to get HMAC seed"
             return $false
         }
 
         $seedHex = $pakSeed.seedHex
-        Write-Verbose "[Secure Prefs] Extracted 64-byte seed from PAK resource ID $($pakSeed.resourceId)"
-        Write-Verbose "[Secure Prefs] Seed: $($seedHex.Substring(0, 32))..."
+        if ($seedHex -eq "") {
+            Write-Verbose "[Secure Prefs] Using empty seed (non-Chrome branded build)"
+        } else {
+            Write-Verbose "[Secure Prefs] Extracted 64-byte seed from PAK resource ID $($pakSeed.resourceId)"
+            Write-Verbose "[Secure Prefs] Seed: $($seedHex.Substring(0, 32))..."
+        }
 
         # Get device ID
         $rawSid = Get-WindowsSidWithoutRid
