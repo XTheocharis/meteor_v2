@@ -3055,45 +3055,340 @@ function Initialize-PakModifications {
 
 #region Preferences Pre-seeding
 
+# ============================================================================
+# HMAC-Based Secure Preferences
+# ============================================================================
+# Chromium protects certain preferences with HMAC-SHA256 signatures.
+# Directly modifying these preferences triggers "tracked_preferences_reset".
+#
+# This implementation calculates proper HMACs using:
+# 1. HMAC seed extracted from resources.pak
+# 2. Device ID (Windows SID without RID, hashed)
+# 3. Preference path + JSON-serialized value
+#
+# Reference: https://www.cse.chalmers.se/~andrei/cans20.pdf
+# Source: services/preferences/tracked/pref_hash_calculator.cc
+# ============================================================================
+
+function Get-HmacSha256 {
+    <#
+    .SYNOPSIS
+        Calculate HMAC-SHA256 and return as uppercase hex string.
+    #>
+    param(
+        [byte[]]$Key,
+        [byte[]]$Message
+    )
+
+    $hmac = New-Object System.Security.Cryptography.HMACSHA256
+    $hmac.Key = $Key
+    $hash = $hmac.ComputeHash($Message)
+    return ([BitConverter]::ToString($hash) -replace '-', '').ToUpper()
+}
+
+function Get-WindowsSidWithoutRid {
+    <#
+    .SYNOPSIS
+        Get Windows User SID without the RID (Relative ID) component.
+    .DESCRIPTION
+        Chromium uses the SID without the final component as the machine identifier.
+        Example: S-1-5-21-123456789-987654321-555555555-1001 → S-1-5-21-123456789-987654321-555555555
+    #>
+
+    try {
+        # Method 1: Use .NET SecurityIdentifier
+        $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+        $sid = $identity.User.Value
+
+        # Remove the RID (last component after final dash)
+        $sidWithoutRid = $sid -replace '-\d+$', ''
+        return $sidWithoutRid
+    }
+    catch {
+        Write-Verbose "[SID] .NET method failed: $_"
+    }
+
+    try {
+        # Method 2: whoami /user
+        $output = & whoami /user /fo csv 2>$null
+        if ($output) {
+            $lines = $output -split "`n"
+            if ($lines.Count -gt 1) {
+                $sid = ($lines[1] -split ',')[1].Trim().Trim('"')
+                $sidWithoutRid = $sid -replace '-\d+$', ''
+                return $sidWithoutRid
+            }
+        }
+    }
+    catch {
+        Write-Verbose "[SID] whoami method failed: $_"
+    }
+
+    Write-Warning "[SID] Could not extract Windows SID - using empty device ID"
+    return ""
+}
+
+function Get-ChromiumDeviceId {
+    <#
+    .SYNOPSIS
+        Compute Chromium device ID from raw machine ID.
+    .DESCRIPTION
+        From GenerateDeviceIdLikePrefMetricsServiceDid() in pref_hash_calculator.cc:
+        1. If raw_id is empty, return empty
+        2. Otherwise: HMAC-SHA256(key=raw_id, message=raw_id+"PrefMetricsService")
+        3. Return lowercase hex
+    #>
+    param([string]$RawMachineId)
+
+    if ([string]::IsNullOrEmpty($RawMachineId)) {
+        return ""
+    }
+
+    $keyBytes = [System.Text.Encoding]::UTF8.GetBytes($RawMachineId)
+    $messageBytes = [System.Text.Encoding]::UTF8.GetBytes($RawMachineId + "PrefMetricsService")
+
+    $hmac = New-Object System.Security.Cryptography.HMACSHA256
+    $hmac.Key = $keyBytes
+    $hash = $hmac.ComputeHash($messageBytes)
+
+    # Return as lowercase hex
+    return ([BitConverter]::ToString($hash) -replace '-', '').ToLower()
+}
+
+function Get-HmacSeedFromPak {
+    <#
+    .SYNOPSIS
+        Extract HMAC seed from resources.pak.
+    .DESCRIPTION
+        The seed is a 32-byte (256-bit) block stored in resources.pak.
+        It's typically found within the first 1MB of the file with high entropy.
+    #>
+    param([string]$PakPath)
+
+    if (-not (Test-Path $PakPath)) {
+        Write-Warning "[HMAC Seed] resources.pak not found: $PakPath"
+        return $null
+    }
+
+    try {
+        $bytes = [System.IO.File]::ReadAllBytes($PakPath)
+        $searchEnd = [Math]::Min($bytes.Length, 1024 * 1024)
+
+        # Search for 32-byte blocks with high entropy
+        for ($offset = 12; $offset -lt ($searchEnd - 32); $offset += 4) {
+            $potentialSeed = New-Object byte[] 32
+            [Array]::Copy($bytes, $offset, $potentialSeed, 0, 32)
+
+            # Check entropy - seed should have variety of byte values
+            $uniqueBytes = @{}
+            foreach ($b in $potentialSeed) {
+                $uniqueBytes[$b] = $true
+            }
+
+            # Good seed has 15+ unique byte values
+            if ($uniqueBytes.Count -lt 15) {
+                continue
+            }
+
+            # Check byte frequency - no single byte should dominate
+            $byteFreq = @{}
+            foreach ($b in $potentialSeed) {
+                if ($byteFreq.ContainsKey($b)) {
+                    $byteFreq[$b]++
+                }
+                else {
+                    $byteFreq[$b] = 1
+                }
+            }
+            $maxFreq = ($byteFreq.Values | Measure-Object -Maximum).Maximum
+            if ($maxFreq -gt 8) {
+                continue
+            }
+
+            # Convert to hex string
+            $hexSeed = ([BitConverter]::ToString($potentialSeed) -replace '-', '').ToLower()
+
+            Write-Verbose "[HMAC Seed] Found candidate at offset $offset`: $($hexSeed.Substring(0, 32))..."
+            return $hexSeed
+        }
+
+        Write-Warning "[HMAC Seed] No valid seed found in resources.pak"
+        return $null
+    }
+    catch {
+        Write-Warning "[HMAC Seed] Failed to read resources.pak: $_"
+        return $null
+    }
+}
+
+function ConvertTo-JsonForHmac {
+    <#
+    .SYNOPSIS
+        Serialize value to JSON string for HMAC calculation.
+    .DESCRIPTION
+        Chromium's serialization rules:
+        - Booleans: "true"/"false" (lowercase, no quotes)
+        - Numbers: String representation
+        - Strings: JSON-quoted
+        - Objects/Arrays: JSON with sorted keys, compact
+    #>
+    param([object]$Value)
+
+    if ($null -eq $Value) {
+        return "null"
+    }
+    if ($Value -is [bool]) {
+        return if ($Value) { "true" } else { "false" }
+    }
+    if ($Value -is [int] -or $Value -is [long] -or $Value -is [double]) {
+        return $Value.ToString()
+    }
+    if ($Value -is [string]) {
+        # JSON-encode the string (adds quotes and escapes)
+        return ($Value | ConvertTo-Json -Compress)
+    }
+    if ($Value -is [array] -or $Value -is [hashtable] -or $Value -is [PSCustomObject]) {
+        # Convert to JSON with sorted keys
+        return ($Value | ConvertTo-Json -Compress -Depth 20)
+    }
+
+    return ($Value | ConvertTo-Json -Compress)
+}
+
+function Get-PreferenceHmac {
+    <#
+    .SYNOPSIS
+        Calculate HMAC for a single preference.
+    .DESCRIPTION
+        HMAC-SHA256(key=seed, message=device_id+path+value_json)
+        Returns uppercase hex string.
+    #>
+    param(
+        [string]$SeedHex,
+        [string]$DeviceId,
+        [string]$Path,
+        [object]$Value
+    )
+
+    $seedBytes = [byte[]]::new(32)
+    for ($i = 0; $i -lt 32; $i++) {
+        $seedBytes[$i] = [Convert]::ToByte($SeedHex.Substring($i * 2, 2), 16)
+    }
+
+    $valueJson = ConvertTo-JsonForHmac -Value $Value
+    $message = $DeviceId + $Path + $valueJson
+    $messageBytes = [System.Text.Encoding]::UTF8.GetBytes($message)
+
+    return Get-HmacSha256 -Key $seedBytes -Message $messageBytes
+}
+
+function Get-SuperMac {
+    <#
+    .SYNOPSIS
+        Calculate super_mac (global integrity check).
+    .DESCRIPTION
+        Concatenate all individual MACs in sorted key order, then:
+        HMAC-SHA256(key=seed, message=concat_macs)
+    #>
+    param(
+        [string]$SeedHex,
+        [hashtable]$PathsAndMacs
+    )
+
+    $seedBytes = [byte[]]::new(32)
+    for ($i = 0; $i -lt 32; $i++) {
+        $seedBytes[$i] = [Convert]::ToByte($SeedHex.Substring($i * 2, 2), 16)
+    }
+
+    # Sort paths and concatenate MACs
+    $sortedPaths = $PathsAndMacs.Keys | Sort-Object
+    $macString = ""
+    foreach ($path in $sortedPaths) {
+        $macString += $PathsAndMacs[$path]
+    }
+
+    $messageBytes = [System.Text.Encoding]::UTF8.GetBytes($macString)
+    return Get-HmacSha256 -Key $seedBytes -Message $messageBytes
+}
+
+function Build-MacsTree {
+    <#
+    .SYNOPSIS
+        Build nested macs tree from flat dictionary.
+    .DESCRIPTION
+        Input: @{"homepage" = "MAC1"; "browser.show_home_button" = "MAC2"}
+        Output: @{homepage = "MAC1"; browser = @{show_home_button = "MAC2"}}
+    #>
+    param([hashtable]$PathsAndMacs)
+
+    $macsTree = @{}
+
+    foreach ($path in $PathsAndMacs.Keys) {
+        $parts = $path -split '\.'
+        $current = $macsTree
+
+        for ($i = 0; $i -lt $parts.Count - 1; $i++) {
+            $part = $parts[$i]
+            if (-not $current.ContainsKey($part)) {
+                $current[$part] = @{}
+            }
+            $current = $current[$part]
+        }
+
+        $current[$parts[-1]] = $PathsAndMacs[$path]
+    }
+
+    return $macsTree
+}
+
 function Set-BrowserPreferences {
     <#
     .SYNOPSIS
-        Write initial_preferences file for Chromium first-run initialization.
+        Write Secure Preferences file with valid HMACs.
     .DESCRIPTION
-        Uses Chromium's official initial_preferences mechanism (formerly master_preferences)
-        to set default preferences during first-run initialization.
+        Chromium protects certain preferences with HMAC-SHA256 signatures.
+        This function calculates proper HMACs using:
+        1. HMAC seed extracted from resources.pak
+        2. Device ID (Windows SID without RID, hashed)
+        3. Preference path + JSON-serialized value
 
-        The initial_preferences file is placed next to the browser executable and is
-        applied BEFORE HMAC protection kicks in, avoiding the "tracked_preferences_reset"
-        issue that occurs when directly modifying the Preferences file.
+        This allows setting protected preferences like extensions.ui.developer_mode
+        without triggering "tracked_preferences_reset".
 
-        Settings like extensions.ui.developer_mode must be set BEFORE the browser
-        loads extensions, otherwise unpacked extensions (loaded via --load-extension)
-        will fail with "requires developer mode" errors.
-
-        Reference: https://www.chromium.org/administrators/configuring-other-preferences/
+        Reference: https://www.cse.chalmers.se/~andrei/cans20.pdf
     #>
     param(
         [Parameter(Mandatory = $true)]
         [string]$BrowserPath,
         [string]$UserDataPath,
+        [string]$ProfileName = "Default",
         [switch]$DryRunMode
     )
 
-    # initial_preferences goes next to the browser executable
+    # Find resources.pak (in version directory next to browser exe)
     $browserDir = Split-Path -Parent $BrowserPath
-    $initialPrefsPath = Join-Path $browserDir "initial_preferences"
+    $versionDirs = Get-ChildItem -Path $browserDir -Directory | Where-Object { $_.Name -match '^\d+\.' }
+    $resourcesPakPath = $null
 
-    # Also create "First Run" sentinel to skip first-run dialogs
-    # IMPORTANT: Use different variable name to avoid shadowing the $UserDataPath parameter
-    # (PowerShell is case-insensitive, so $userDataPath and $UserDataPath are the same!)
+    foreach ($versionDir in $versionDirs) {
+        $pakPath = Join-Path $versionDir.FullName "resources.pak"
+        if (Test-Path $pakPath) {
+            $resourcesPakPath = $pakPath
+            break
+        }
+    }
+
+    if (-not $resourcesPakPath) {
+        Write-Warning "[Secure Prefs] resources.pak not found - cannot calculate HMACs"
+        return $false
+    }
+
+    # Determine User Data path
     $effectiveUserDataPath = $null
-
     if ($UserDataPath) {
         $effectiveUserDataPath = $UserDataPath
     }
     else {
-        # Fall back to system paths for First Run file
         $systemPaths = @(
             (Join-Path $env:LOCALAPPDATA "Perplexity\Comet\User Data"),
             (Join-Path $env:LOCALAPPDATA "Comet\User Data")
@@ -3109,28 +3404,70 @@ function Set-BrowserPreferences {
         }
     }
 
+    $profilePath = Join-Path $effectiveUserDataPath $ProfileName
+    $securePrefsPath = Join-Path $profilePath "Secure Preferences"
     $firstRunPath = Join-Path $effectiveUserDataPath "First Run"
 
     if ($DryRunMode) {
-        Write-Status "Would write initial_preferences at: $initialPrefsPath" -Type DryRun
+        Write-Status "Would write Secure Preferences at: $securePrefsPath" -Type DryRun
         return $true
     }
 
-    # uBlock Origin extension ID (fixed ID from Chrome Web Store)
+    # Skip if Secure Preferences already exists (profile already used)
+    if (Test-Path $securePrefsPath) {
+        Write-Status "Secure Preferences already exist - skipping to preserve existing HMACs" -Type Detail
+        return $true
+    }
+
+    # Extract HMAC seed
+    Write-Verbose "[Secure Prefs] Extracting HMAC seed from: $resourcesPakPath"
+    $hmacSeed = Get-HmacSeedFromPak -PakPath $resourcesPakPath
+
+    if (-not $hmacSeed) {
+        Write-Warning "[Secure Prefs] Failed to extract HMAC seed - cannot write Secure Preferences"
+        return $false
+    }
+
+    Write-Verbose "[Secure Prefs] HMAC seed: $($hmacSeed.Substring(0, 16))..."
+
+    # Get device ID
+    $rawSid = Get-WindowsSidWithoutRid
+    $deviceId = Get-ChromiumDeviceId -RawMachineId $rawSid
+
+    Write-Verbose "[Secure Prefs] Raw SID: $rawSid"
+    Write-Verbose "[Secure Prefs] Device ID: $($deviceId.Substring(0, [Math]::Min(32, $deviceId.Length)))..."
+
+    # uBlock Origin extension ID
     $ublockExtId = "cjpalhdlnbpafiamejdnhcphjbkeiagm"
 
-    # Initial preferences applied during first-run before HMAC protection
-    # These settings will become the defaults for new profiles
-    #
-    # NOTE: Chrome does not allow programmatically enabling extensions in incognito mode.
-    # Per Chrome Enterprise docs: "As an admin, you can't automatically install extensions
-    # in Incognito mode." Users must manually enable via chrome://extensions → Details → Allow in incognito.
-    $initialPrefs = @{
+    # Preferences to set with HMAC protection
+    # These are the "tracked" preferences that Chromium protects
+    $prefsToSet = @{
+        "extensions.ui.developer_mode" = $true
+        "browser.show_home_button"     = $true
+        "bookmark_bar.show_apps_shortcut" = $false
+    }
+
+    # Calculate HMACs for each preference
+    $prefMacs = @{}
+    foreach ($path in $prefsToSet.Keys) {
+        $value = $prefsToSet[$path]
+        $mac = Get-PreferenceHmac -SeedHex $hmacSeed -DeviceId $deviceId -Path $path -Value $value
+        $prefMacs[$path] = $mac
+        Write-Verbose "[Secure Prefs] $path = $(ConvertTo-JsonForHmac $value) → $($mac.Substring(0, 16))..."
+    }
+
+    # Calculate super_mac
+    $superMac = Get-SuperMac -SeedHex $hmacSeed -PathsAndMacs $prefMacs
+
+    Write-Verbose "[Secure Prefs] super_mac: $($superMac.Substring(0, 16))..."
+
+    # Build Secure Preferences structure
+    $securePrefs = @{
         extensions   = @{
             ui                = @{
                 developer_mode = $true
             }
-            # Pin uBlock Origin to toolbar
             pinned_extensions = @($ublockExtId)
             settings          = @{
                 $ublockExtId = @{
@@ -3138,46 +3475,49 @@ function Set-BrowserPreferences {
                 }
             }
         }
-        # Note: signin.allowed is NOT set here - allow sign-in but disable sync
-        sync         = @{
-            managed = $true
-        }
         browser      = @{
             show_home_button = $true
         }
         bookmark_bar = @{
             show_apps_shortcut = $false
         }
-        # Perplexity-specific settings
+        sync         = @{
+            managed = $true
+        }
         perplexity   = @{
             onboarding_completed = $true
             metrics_allowed      = $false
         }
+        protection   = @{
+            macs      = (Build-MacsTree -PathsAndMacs $prefMacs)
+            super_mac = $superMac
+        }
     }
 
     try {
-        # Ensure User Data directory exists for First Run file
+        # Ensure directories exist
         if (-not (Test-Path $effectiveUserDataPath)) {
             $null = New-Item -ItemType Directory -Path $effectiveUserDataPath -Force
         }
+        if (-not (Test-Path $profilePath)) {
+            $null = New-Item -ItemType Directory -Path $profilePath -Force
+        }
 
-        # Create "First Run" sentinel file to skip first-run dialogs
-        # Chromium checks for this file's existence, not its contents
+        # Create "First Run" sentinel
         if (-not (Test-Path $firstRunPath)) {
             $null = New-Item -ItemType File -Path $firstRunPath -Force
         }
 
-        # Write initial_preferences file
-        # This file is read during first-run initialization BEFORE HMAC protection
-        $json = $initialPrefs | ConvertTo-Json -Depth 20 -Compress
-        Set-Content -Path $initialPrefsPath -Value $json -Encoding UTF8 -Force
+        # Write Secure Preferences
+        $json = $securePrefs | ConvertTo-Json -Depth 20
+        Set-Content -Path $securePrefsPath -Value $json -Encoding UTF8 -Force
 
-        Write-Status "Initial preferences written (developer mode, toolbar pin, home button)" -Type Success
-        Write-Verbose "initial_preferences path: $initialPrefsPath"
+        Write-Status "Secure Preferences written with valid HMACs" -Type Success
+        Write-Verbose "Secure Preferences path: $securePrefsPath"
         return $true
     }
     catch {
-        Write-Status "Failed to write initial_preferences: $_" -Type Warning
+        Write-Status "Failed to write Secure Preferences: $_" -Type Warning
         return $false
     }
 }
@@ -3870,10 +4210,11 @@ function Main {
     if ($comet -or $DryRun) {
         $browserExe = if ($comet) { $comet.Executable } else { "comet.exe" }
         $browserUserDataPath = if ($portableMode) { $userDataPath } else { $null }
+        $profileName = if ($config.browser.profile) { $config.browser.profile } else { "Default" }
 
-        # Write initial_preferences file next to browser executable
-        # This ensures developer mode, toolbar pin, and home button are set BEFORE HMAC protection
-        $null = Set-BrowserPreferences -BrowserPath $browserExe -UserDataPath $browserUserDataPath -DryRunMode:$DryRun
+        # Write Secure Preferences with valid HMACs
+        # This ensures developer mode, toolbar pin, and home button are set without HMAC validation failures
+        $null = Set-BrowserPreferences -BrowserPath $browserExe -UserDataPath $browserUserDataPath -ProfileName $profileName -DryRunMode:$DryRun
 
         $cmd = Build-BrowserCommand -Config $config -BrowserExe $browserExe -ExtPath $patchedExtPath -UBlockPath $ublockPath -AdGuardExtraPath $adguardExtraPath -UserDataPath $browserUserDataPath
 
