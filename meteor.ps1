@@ -3295,6 +3295,97 @@ function Get-PreferenceHmac {
     return Get-HmacSha256 -Key $seedBytes -Message $messageBytes
 }
 
+# Registry MAC Constant - Used as literal ASCII bytes for Windows Registry MAC calculation
+# This is different from the 64-byte seed in resources.pak used for Secure Preferences file MACs
+$script:RegistryHashSeed = "ChromeRegistryHashStoreValidationSeed"
+
+function Get-RegistryPreferenceHmac {
+    <#
+    .SYNOPSIS
+        Calculate registry MAC for a single preference.
+    .DESCRIPTION
+        HMAC-SHA256(key=ASCII("ChromeRegistryHashStoreValidationSeed"), message=device_id+path+value_json)
+        Returns uppercase hex string.
+
+        The registry uses a different HMAC key than the Secure Preferences file:
+        - Registry: Literal ASCII string "ChromeRegistryHashStoreValidationSeed" (35 bytes)
+        - File: 64-byte seed from resources.pak
+    #>
+    param(
+        [string]$DeviceId,
+        [string]$Path,
+        [object]$Value
+    )
+
+    # Use literal ASCII bytes of the seed string
+    $seedBytes = [System.Text.Encoding]::ASCII.GetBytes($script:RegistryHashSeed)
+
+    $valueJson = ConvertTo-JsonForHmac -Value $Value
+    $message = $DeviceId + $Path + $valueJson
+    $messageBytes = [System.Text.Encoding]::UTF8.GetBytes($message)
+
+    return Get-HmacSha256 -Key $seedBytes -Message $messageBytes
+}
+
+function Set-RegistryPreferenceMacs {
+    <#
+    .SYNOPSIS
+        Write preference MACs to Windows Registry.
+    .DESCRIPTION
+        Comet stores authoritative MACs at:
+        HKCU:\SOFTWARE\Perplexity\Comet\PreferenceMACs\Default
+
+        Each preference path becomes a registry value name with the MAC as data.
+        This must be synchronized with Secure Preferences MACs or browser crashes.
+    .PARAMETER DeviceId
+        The device ID calculated from Windows SID.
+    .PARAMETER PreferencesToSet
+        Hashtable of preference paths to values (e.g., @{"extensions.ui.developer_mode" = $true})
+    .PARAMETER DryRunMode
+        If set, only show what would be done without making changes.
+    #>
+    param(
+        [string]$DeviceId,
+        [hashtable]$PreferencesToSet,
+        [switch]$DryRunMode
+    )
+
+    $regPath = "HKCU:\SOFTWARE\Perplexity\Comet\PreferenceMACs\Default"
+
+    if ($DryRunMode) {
+        Write-Status "Would set registry MACs at: $regPath" -Type Detail
+        foreach ($path in $PreferencesToSet.Keys) {
+            $mac = Get-RegistryPreferenceHmac -DeviceId $DeviceId -Path $path -Value $PreferencesToSet[$path]
+            Write-Verbose "[Registry MAC] Would set $path = $($mac.Substring(0, 16))..."
+        }
+        return $true
+    }
+
+    try {
+        # Create the registry path if it doesn't exist
+        if (-not (Test-Path $regPath)) {
+            New-Item -Path $regPath -Force | Out-Null
+            Write-Verbose "[Registry MAC] Created path: $regPath"
+        }
+
+        foreach ($path in $PreferencesToSet.Keys) {
+            $value = $PreferencesToSet[$path]
+            $mac = Get-RegistryPreferenceHmac -DeviceId $DeviceId -Path $path -Value $value
+
+            # Set the registry value
+            Set-ItemProperty -Path $regPath -Name $path -Value $mac -Type String -Force
+            Write-Verbose "[Registry MAC] Set $path = $($mac.Substring(0, 16))..."
+        }
+
+        Write-Verbose "[Registry MAC] Updated $($PreferencesToSet.Count) registry MACs"
+        return $true
+    }
+    catch {
+        Write-Verbose "[Registry MAC] Error setting registry MACs: $_"
+        return $false
+    }
+}
+
 function Get-SuperMac {
     <#
     .SYNOPSIS
@@ -3400,14 +3491,15 @@ function Set-BrowserPreferences {
         return $true
     }
 
-    # If Secure Preferences exists AND Local State exists, skip tracked prefs modification
-    # IMPORTANT: Comet stores authoritative MACs in Windows Registry at:
-    #   HKCU:\SOFTWARE\Perplexity\Comet\PreferenceMACs\Default
-    # Modifying Secure Preferences without matching registry MACs causes browser crash.
-    # TODO: Implement registry-based MAC synchronization instead.
+    # If Secure Preferences exists AND Local State exists, update tracked preferences
+    # Uses dual MAC synchronization: Secure Preferences file + Windows Registry
+    # Both stores use DIFFERENT HMAC seeds:
+    #   - File: 64-byte seed from Local State (protection.seed) or resources.pak
+    #   - Registry: Literal ASCII string "ChromeRegistryHashStoreValidationSeed"
     if ((Test-Path $securePrefsPath) -and (Test-Path $localStatePath)) {
-        Write-Verbose "[Secure Prefs] Existing profile found - skipping tracked prefs (registry MACs not yet supported)"
-        return $true
+        Write-Verbose "[Secure Prefs] Existing profile found - updating tracked prefs with dual MAC sync"
+        $result = Update-TrackedPreferences -SecurePrefsPath $securePrefsPath -LocalStatePath $localStatePath
+        return $result
     }
 
     # First run - just write untracked preferences
@@ -3691,7 +3783,20 @@ function Update-TrackedPreferences {
         $json = $securePrefsHash | ConvertTo-Json -Depth 30
         Set-Content -Path $SecurePrefsPath -Value $json -Encoding UTF8 -Force
 
-        Write-Status "Tracked preferences updated with valid HMACs" -Type Success
+        Write-Verbose "[Secure Prefs] File updated successfully"
+
+        # CRITICAL: Also update Windows Registry MACs
+        # Comet stores duplicate MACs in registry using a DIFFERENT seed ("ChromeRegistryHashStoreValidationSeed")
+        # If registry MACs don't match, browser crashes on startup
+        $registryResult = Set-RegistryPreferenceMacs -DeviceId $deviceId -PreferencesToSet $prefsToModify
+        if ($registryResult) {
+            Write-Verbose "[Registry MAC] Registry MACs synchronized successfully"
+        }
+        else {
+            Write-Verbose "[Registry MAC] WARNING: Failed to update registry MACs - browser may crash"
+        }
+
+        Write-Status "Tracked preferences updated with valid HMACs (file + registry)" -Type Success
         return $true
     }
     catch {
