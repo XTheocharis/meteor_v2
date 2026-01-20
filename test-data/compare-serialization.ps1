@@ -325,13 +325,15 @@ function ConvertTo-SortedAndPruned {
         foreach ($item in $Value) {
             $result += ConvertTo-SortedAndPruned -Value $item
         }
-        return $result
+        # CRITICAL: Use comma operator to prevent PowerShell from unrolling empty arrays to $null
+        return ,$result
     }
     elseif ($Value -is [PSCustomObject]) {
         $sorted = [ordered]@{}
         foreach ($prop in ($Value.PSObject.Properties | Sort-Object Name)) {
             $childValue = ConvertTo-SortedAndPruned -Value $prop.Value
-            # PRUNE: Skip empty arrays, empty objects, and empty PSCustomObjects
+            # PRUNE: Skip null, empty arrays, empty objects, and empty PSCustomObjects
+            if ($null -eq $childValue) { continue }
             if ($childValue -is [array] -and $childValue.Count -eq 0) { continue }
             if ($childValue -is [hashtable] -and $childValue.Count -eq 0) { continue }
             if ($childValue -is [System.Collections.Specialized.OrderedDictionary] -and $childValue.Count -eq 0) { continue }
