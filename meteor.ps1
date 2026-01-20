@@ -3472,7 +3472,13 @@ function Set-RegistryPreferenceMacs {
     if ($DryRunMode) {
         Write-Status "Would set registry MACs at: $regPath" -Type Detail
         foreach ($path in $PreferencesToSet.Keys) {
-            $mac = Get-RegistryPreferenceHmac -DeviceId $DeviceId -Path $path -Value $PreferencesToSet[$path]
+            # For account_values entries, HMAC path should be without the prefix
+            # but registry value name uses the full path
+            $hmacPath = $path
+            if ($path -like "account_values.*") {
+                $hmacPath = $path -replace "^account_values\.", ""
+            }
+            $mac = Get-RegistryPreferenceHmac -DeviceId $DeviceId -Path $hmacPath -Value $PreferencesToSet[$path]
             Write-Verbose "[Registry MAC] Would set $path = $($mac.Substring(0, 16))..."
         }
         return $true
@@ -3487,9 +3493,15 @@ function Set-RegistryPreferenceMacs {
 
         foreach ($path in $PreferencesToSet.Keys) {
             $value = $PreferencesToSet[$path]
-            $mac = Get-RegistryPreferenceHmac -DeviceId $DeviceId -Path $path -Value $value
+            # For account_values entries, HMAC path should be without the prefix
+            # but registry value name uses the full path
+            $hmacPath = $path
+            if ($path -like "account_values.*") {
+                $hmacPath = $path -replace "^account_values\.", ""
+            }
+            $mac = Get-RegistryPreferenceHmac -DeviceId $DeviceId -Path $hmacPath -Value $value
 
-            # Set the registry value
+            # Set the registry value (uses full path including account_values prefix)
             Set-ItemProperty -Path $regPath -Name $path -Value $mac -Type String -Force
             Write-Verbose "[Registry MAC] Set $path = $($mac.Substring(0, 16))..."
         }
@@ -4139,13 +4151,15 @@ function Update-AllMacs {
     $maxTrace = 5  # Trace first 5 skipped paths in detail
 
     foreach ($path in $existingMacs.Keys) {
-        # Skip account_values entries - they use a different path for HMAC
-        # but reference the same value as the non-prefixed version
+        # For account_values entries, the HMAC path should be the preference path
+        # without the account_values prefix. The prefix is just the storage location
+        # in the macs tree, not part of the HMAC message.
         $lookupPath = $path
         $hmacPath = $path
         if ($path -like "account_values.*") {
-            # For account_values.foo.bar, lookup foo.bar but use full path for HMAC
+            # For account_values.foo.bar, both lookup AND HMAC use foo.bar
             $lookupPath = $path -replace "^account_values\.", ""
+            $hmacPath = $lookupPath
         }
 
         # Look up the actual value - check Secure Preferences first, then Regular Preferences
