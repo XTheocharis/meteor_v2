@@ -3951,13 +3951,12 @@ function Update-TrackedPreferences {
 
         Write-Verbose "[Secure Prefs] File updated successfully"
 
-        # CRITICAL: Also update Windows Registry MACs for ALL recalculated paths
+        # CRITICAL: Also update Windows Registry MACs for the modified paths
         # Comet stores duplicate MACs in registry using a DIFFERENT seed ("ChromeRegistryHashStoreValidationSeed")
-        # If registry MACs don't match, browser crashes on startup
-        # We must update registry MACs for ALL preferences that have file MACs
-        # CRITICAL: Include null-value preferences too - they have file MACs and need matching registry MACs
+        # If registry MACs don't match, browser detects tampering
+        # We only update registry MACs for the paths we actually modified
         $registryPrefs = @{}
-        foreach ($path in $recalcResult.paths) {
+        foreach ($path in $updateResult.paths) {
             # Look up the value for this path - check both Secure and Regular Preferences
             # For account_values.*, value is stored IN the account_values dictionary
             # at the full nested path, NOT at the root level with stripped prefix
@@ -3999,8 +3998,7 @@ function Update-TrackedPreferences {
             Write-Verbose "[Registry MAC] WARNING: Failed to update registry MACs - browser may crash"
         }
 
-        $removedInfo = if ($recalcResult.removed -gt 0) { ", cleaned $($recalcResult.removed) orphaned" } else { "" }
-        Write-Status "Tracked preferences updated with valid HMACs (file: $($recalcResult.recalculated), registry: $($registryPrefs.Count)$removedInfo)" -Type Success
+        Write-Status "Tracked preferences updated with valid HMACs (file: $($updateResult.updated), registry: $($registryPrefs.Count))" -Type Success
         return $true
     }
     catch {
