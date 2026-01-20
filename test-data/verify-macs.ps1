@@ -191,8 +191,8 @@ function ConvertTo-ChromiumJson {
         Normalize PowerShell JSON to match Chromium's JSONWriter format.
     .DESCRIPTION
         PowerShell's ConvertTo-Json uses different unicode escaping than Chromium:
-        - PowerShell: \u003c (lowercase), \u003e (escaped >)
-        - Chromium:   \u003C (uppercase), > (not escaped)
+        - PowerShell: \u003c (lowercase), \u003e (escaped >), \u0027 (escaped ')
+        - Chromium:   \u003C (uppercase), > (not escaped), ' (not escaped)
 
         This function normalizes the JSON string to match Chromium's format.
     #>
@@ -210,6 +210,9 @@ function ConvertTo-ChromiumJson {
 
     # Step 2: Unescape > (Chromium doesn't escape it)
     $result = $result -replace '\\u003E', '>'
+
+    # Step 3: Unescape single quotes (Chromium doesn't escape them)
+    $result = $result -replace '\\u0027', "'"
 
     return $result
 }

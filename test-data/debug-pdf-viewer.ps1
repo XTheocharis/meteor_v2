@@ -142,6 +142,8 @@ function ConvertTo-ChromiumJson {
     })
     # Chromium does NOT escape > (but does escape <)
     $result = $result -replace '\\u003E', '>'
+    # Chromium does NOT escape single quotes (PowerShell does)
+    $result = $result -replace '\\u0027', "'"
     return $result
 }
 
