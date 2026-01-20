@@ -3301,6 +3301,43 @@ function ConvertTo-SortedObject {
     return $Value
 }
 
+function ConvertTo-ChromiumJson {
+    <#
+    .SYNOPSIS
+        Normalize PowerShell JSON to match Chromium's JSONWriter format.
+    .DESCRIPTION
+        PowerShell's ConvertTo-Json uses different unicode escaping than Chromium:
+        - PowerShell: \u003c (lowercase), \u003e (escaped >)
+        - Chromium:   \u003C (uppercase), > (not escaped)
+
+        This function normalizes the JSON string to match Chromium's format,
+        which is critical for HMAC calculation to produce matching MACs.
+
+        Chromium's JSONWriter (base/json/json_writer.cc):
+        - Escapes < as \u003C (uppercase hex, for HTML safety)
+        - Does NOT escape > (leaves as literal >)
+        - Uses uppercase hex for all unicode escapes
+    #>
+    param([string]$Json)
+
+    if ([string]::IsNullOrEmpty($Json)) {
+        return $Json
+    }
+
+    # Step 1: Convert all lowercase unicode escapes to uppercase
+    # Pattern: \uXXXX where XXXX is hex (case-insensitive match, replace with uppercase)
+    $result = [regex]::Replace($Json, '\\u([0-9a-fA-F]{4})', {
+        param($match)
+        "\u" + $match.Groups[1].Value.ToUpper()
+    })
+
+    # Step 2: Unescape > (Chromium doesn't escape it)
+    # \u003E -> >
+    $result = $result -replace '\\u003E', '>'
+
+    return $result
+}
+
 function ConvertTo-JsonForHmac {
     <#
     .SYNOPSIS
@@ -3315,6 +3352,11 @@ function ConvertTo-JsonForHmac {
         CRITICAL: Chromium's JSONWriter sorts keys alphabetically.
         PowerShell's ConvertTo-Json does NOT sort keys, so we must
         sort them first to produce matching output.
+
+        CRITICAL: Unicode escaping must match Chromium's format:
+        - Uppercase hex: \u003C not \u003c
+        - No > escaping: > not \u003E
+        ConvertTo-ChromiumJson handles this normalization.
     #>
     param([object]$Value)
 
@@ -3331,8 +3373,9 @@ function ConvertTo-JsonForHmac {
         return ($Value | ConvertTo-Json -Compress)
     }
     if ($Value -is [string]) {
-        # JSON-encode the string (adds quotes and escapes)
-        return ($Value | ConvertTo-Json -Compress)
+        # JSON-encode the string (adds quotes and escapes), then normalize unicode
+        $json = $Value | ConvertTo-Json -Compress
+        return ConvertTo-ChromiumJson -Json $json
     }
     if ($Value -is [array]) {
         # WORKAROUND for PowerShell 5.1: Empty arrays piped to ConvertTo-Json return null
@@ -3342,15 +3385,18 @@ function ConvertTo-JsonForHmac {
         }
         # CRITICAL: Sort keys alphabetically to match Chromium's JSONWriter
         $sorted = ConvertTo-SortedObject -Value $Value
-        return (ConvertTo-Json -InputObject $sorted -Compress -Depth 20)
+        $json = ConvertTo-Json -InputObject $sorted -Compress -Depth 20
+        return ConvertTo-ChromiumJson -Json $json
     }
     if ($Value -is [hashtable] -or $Value -is [PSCustomObject]) {
         # CRITICAL: Sort keys alphabetically to match Chromium's JSONWriter
         $sorted = ConvertTo-SortedObject -Value $Value
-        return (ConvertTo-Json -InputObject $sorted -Compress -Depth 20)
+        $json = ConvertTo-Json -InputObject $sorted -Compress -Depth 20
+        return ConvertTo-ChromiumJson -Json $json
     }
 
-    return ($Value | ConvertTo-Json -Compress)
+    $json = $Value | ConvertTo-Json -Compress
+    return ConvertTo-ChromiumJson -Json $json
 }
 
 function Get-PreferenceHmac {
