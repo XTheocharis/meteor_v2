@@ -3708,9 +3708,15 @@ function Get-SuperMac {
     # The macs tree is the nested structure like: { homepage: "MAC", browser: { show_home_button: "MAC" }, ... }
     $macsJson = ConvertTo-JsonForHmac -Value $MacsTree
 
+    # Debug: Show first part of macs JSON for verification
+    Write-Verbose "[SuperMac] Macs JSON length: $($macsJson.Length)"
+    Write-Verbose "[SuperMac] Macs JSON (first 200 chars): $($macsJson.Substring(0, [Math]::Min(200, $macsJson.Length)))"
+
     # Build message: device_id + path + value_json
     # For super_mac: path is empty string ""
     $message = $DeviceId + "" + $macsJson
+
+    Write-Verbose "[SuperMac] Message length: $($message.Length) (device_id=$($DeviceId.Length) + path=0 + json=$($macsJson.Length))"
 
     $messageBytes = [System.Text.Encoding]::UTF8.GetBytes($message)
     return Get-HmacSha256 -Key $seedBytes -Message $messageBytes
@@ -4122,6 +4128,35 @@ function Update-TrackedPreferences {
                 if ($resetArray -and $resetArray.Count -gt 0) {
                     Write-Verbose "[Secure Prefs] Clearing nested tracked_preferences_reset array (had $($resetArray.Count) entries)"
                     $prefsSection['tracked_preferences_reset'] = @()
+                }
+            }
+        }
+
+        # CRITICAL: Restore empty arrays that PowerShell 5.1 converted to $null
+        # The MACs were calculated using [] but the hashtable has $null. If we write $null,
+        # the browser sees "pinned_tabs":null but MAC was calculated for [], triggering reset.
+        if ($updateResult.emptyArrayPaths -and $updateResult.emptyArrayPaths.Count -gt 0) {
+            Write-Verbose "[Secure Prefs] Restoring $($updateResult.emptyArrayPaths.Count) empty arrays that PS 5.1 converted to null"
+            foreach ($path in $updateResult.emptyArrayPaths.Keys) {
+                # Navigate to the parent and set the value to empty array
+                $parts = $path -split '\.'
+                $current = $securePrefsHash
+                $found = $true
+                for ($i = 0; $i -lt $parts.Count - 1; $i++) {
+                    $part = $parts[$i]
+                    if ($current -is [hashtable] -and $current.ContainsKey($part)) {
+                        $current = $current[$part]
+                    } else {
+                        $found = $false
+                        break
+                    }
+                }
+                if ($found -and $current -is [hashtable]) {
+                    $lastKey = $parts[-1]
+                    if ($current.ContainsKey($lastKey) -and $null -eq $current[$lastKey]) {
+                        $current[$lastKey] = @()
+                        Write-Verbose "[Secure Prefs]   Restored: $path = []"
+                    }
                 }
             }
         }
@@ -4633,11 +4668,12 @@ function Update-AllMacs {
     }
 
     return @{
-        recalculated   = $recalculated
-        removed        = $skipped
-        paths          = $recalculatedPaths
-        removedPaths   = $skippedPaths
-        changed        = $changedMacs
+        recalculated    = $recalculated
+        removed         = $skipped
+        paths           = $recalculatedPaths
+        removedPaths    = $skippedPaths
+        changed         = $changedMacs
+        emptyArrayPaths = $emptyArrayPaths  # PS 5.1 workaround: paths that had [] in raw JSON
     }
 }
 
