@@ -3529,11 +3529,12 @@ function Get-SuperMac {
         }
     }
 
-    # Sort paths and concatenate MACs
+    # Sort paths and concatenate path+MAC pairs
+    # Chromium format: path1 + mac1 + path2 + mac2 + ... (sorted by path)
     $sortedPaths = $PathsAndMacs.Keys | Sort-Object
     $macString = ""
     foreach ($path in $sortedPaths) {
-        $macString += $PathsAndMacs[$path]
+        $macString += $path + $PathsAndMacs[$path]
     }
 
     $messageBytes = [System.Text.Encoding]::UTF8.GetBytes($macString)
