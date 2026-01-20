@@ -3949,13 +3949,11 @@ function Update-TrackedPreferences {
         $registryPrefs = @{}
         foreach ($path in $recalcResult.paths) {
             # Look up the value for this path - check both Secure and Regular Preferences
-            # For account_values.*, value is stored at the path WITHOUT the prefix
+            # For account_values.*, value is stored IN the account_values dictionary
+            # at the full nested path, NOT at the root level with stripped prefix
             $lookupPath = $path
-            if ($path -like "account_values.*") {
-                $lookupPath = $path -replace "^account_values\.", ""
-            }
-            # Note: MAC is calculated using FULL path (including account_values prefix)
-            # in Set-RegistryPreferenceMacs, but value lookup uses stripped path
+            # NOTE: We use the full path for lookup since account_values is a dictionary
+            # containing account-scoped preference values
             $lookupResult = Get-PreferenceValue -Preferences $securePrefsHash -Path $lookupPath
             if (-not $lookupResult.Found -and $null -ne $regularPrefsHash) {
                 $lookupResult = Get-PreferenceValue -Preferences $regularPrefsHash -Path $lookupPath
@@ -4200,17 +4198,15 @@ function Update-AllMacs {
         $originalMac = $existingMacs[$path]
 
         # For account_values entries:
-        # - VALUE lookup uses the path WITHOUT account_values prefix (actual pref location)
+        # - VALUE lookup uses the FULL path (account_values is a DICTIONARY storing account prefs)
         # - HMAC calculation uses the FULL path including account_values prefix
-        # This matches Chromium's behavior where account_values.X and X have DIFFERENT MACs
+        # The value for account_values.browser.show_home_button is stored at:
+        #   securePrefs["account_values"]["browser"]["show_home_button"]
+        # NOT at securePrefs["browser"]["show_home_button"] (that's the LOCAL value)
         $lookupPath = $path
         $hmacPath = $path  # ALWAYS use full path for HMAC
-        if ($path -like "account_values.*") {
-            # Strip prefix only for value lookup - the actual preference value is stored
-            # at browser.show_home_button, not account_values.browser.show_home_button
-            $lookupPath = $path -replace "^account_values\.", ""
-            # But keep $hmacPath = $path (full path) for MAC calculation
-        }
+        # NOTE: We do NOT strip account_values. prefix anymore - the value is
+        # stored IN the account_values dictionary, not at the root level.
 
         # Look up the actual value - check Secure Preferences first, then Regular Preferences
         # Many tracked prefs (session.*, homepage, google.services.*) are in Regular Preferences
