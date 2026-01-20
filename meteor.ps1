@@ -3314,9 +3314,14 @@ function ConvertTo-SortedObject {
 
     if ($Value -is [array]) {
         # Arrays maintain order, but sort nested objects (don't prune items from arrays)
-        $result = @($Value | ForEach-Object { ConvertTo-SortedObject -Value $_ })
+        # CRITICAL: Use explicit foreach, not pipeline, to avoid PS 5.1 serialization bugs
+        $result = [System.Collections.ArrayList]::new()
+        foreach ($item in $Value) {
+            $sorted = ConvertTo-SortedObject -Value $item
+            $null = $result.Add($sorted)
+        }
         # CRITICAL: Use comma operator to prevent PowerShell from unrolling empty arrays to $null
-        return ,$result
+        return ,$result.ToArray()
     }
 
     # Primitives pass through unchanged
