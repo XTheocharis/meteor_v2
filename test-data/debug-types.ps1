@@ -204,4 +204,90 @@ if (Test-Path $testFile) {
 }
 Write-Host ""
 
+# Test 10: Direct JSON comparison for PDF Viewer
+Write-Host "=== Test 10: PDF Viewer JSON comparison ===" -ForegroundColor Yellow
+$testFile = Join-Path $PSScriptRoot "secure-preferences.json"
+if (Test-Path $testFile) {
+    $rawJson = Get-Content $testFile -Raw
+    $prefs = $rawJson | ConvertFrom-Json
+    $pdfExt = $prefs.extensions.settings.mhjfbmdgcfjbbpaeojofohoefgiehjai
+
+    # Extract raw JSON for PDF Viewer using brace counting
+    $searchKey = '"mhjfbmdgcfjbbpaeojofohoefgiehjai":'
+    $startIndex = $rawJson.IndexOf($searchKey)
+    if ($startIndex -ge 0) {
+        $braceStart = $rawJson.IndexOf("{", $startIndex)
+        $depth = 0
+        $braceEnd = -1
+        for ($i = $braceStart; $i -lt $rawJson.Length; $i++) {
+            if ($rawJson[$i] -eq '{') { $depth++ }
+            elseif ($rawJson[$i] -eq '}') {
+                $depth--
+                if ($depth -eq 0) { $braceEnd = $i; break }
+            }
+        }
+        $rawExtJson = $rawJson.Substring($braceStart, $braceEnd - $braceStart + 1)
+
+        # Our serialized version (with pruning and sorting)
+        function LocalConvertToSorted {
+            param($Value)
+            if ($null -eq $Value) { return $null }
+            elseif ($Value -is [array]) {
+                $result = @($Value | ForEach-Object { LocalConvertToSorted -Value $_ })
+                return ,$result
+            }
+            elseif ($Value -is [PSCustomObject]) {
+                $sorted = [ordered]@{}
+                foreach ($prop in ($Value.PSObject.Properties | Sort-Object Name)) {
+                    $childValue = LocalConvertToSorted -Value $prop.Value
+                    if ($null -eq $childValue) { continue }
+                    if ($childValue -is [array] -and $childValue.Count -eq 0) { continue }
+                    if ($childValue -is [System.Collections.Specialized.OrderedDictionary] -and $childValue.Count -eq 0) { continue }
+                    $sorted[$prop.Name] = $childValue
+                }
+                return $sorted
+            }
+            else { return $Value }
+        }
+
+        $sorted = LocalConvertToSorted -Value $pdfExt
+        $ourJson = ConvertTo-Json -InputObject $sorted -Compress -Depth 20
+        # Normalize unicode
+        $ourJson = [regex]::Replace($ourJson, '\\u([0-9a-fA-F]{4})', { param($m) "\u" + $m.Groups[1].Value.ToUpper() })
+        $ourJson = $ourJson -replace '\\u003E', '>'
+
+        Write-Host "Raw JSON length:  $($rawExtJson.Length)"
+        Write-Host "Our JSON length:  $($ourJson.Length)"
+        Write-Host ""
+
+        # Find first difference
+        $minLen = [Math]::Min($ourJson.Length, $rawExtJson.Length)
+        $firstDiff = -1
+        for ($i = 0; $i -lt $minLen; $i++) {
+            if ($ourJson[$i] -ne $rawExtJson[$i]) {
+                $firstDiff = $i
+                break
+            }
+        }
+        if ($firstDiff -eq -1 -and $ourJson.Length -ne $rawExtJson.Length) {
+            $firstDiff = $minLen
+        }
+
+        if ($firstDiff -eq -1) {
+            Write-Host "JSON MATCHES EXACTLY!" -ForegroundColor Green
+        } else {
+            Write-Host "FIRST DIFFERENCE at position $firstDiff" -ForegroundColor Red
+            $start = [Math]::Max(0, $firstDiff - 40)
+            $len = [Math]::Min(80, $ourJson.Length - $start)
+            Write-Host "Our JSON:  ...$($ourJson.Substring($start, $len))..."
+            $len = [Math]::Min(80, $rawExtJson.Length - $start)
+            Write-Host "Raw JSON:  ...$($rawExtJson.Substring($start, $len))..."
+            Write-Host ""
+            Write-Host "Char at diff - Our: '$($ourJson[$firstDiff])' (0x$([int][char]$ourJson[$firstDiff] | ForEach-Object { $_.ToString('X2') }))"
+            Write-Host "Char at diff - Raw: '$($rawExtJson[$firstDiff])' (0x$([int][char]$rawExtJson[$firstDiff] | ForEach-Object { $_.ToString('X2') }))"
+        }
+    }
+}
+Write-Host ""
+
 Write-Host "=== Done ===" -ForegroundColor Cyan

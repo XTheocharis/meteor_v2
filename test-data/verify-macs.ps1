@@ -50,17 +50,23 @@ $FileMacSeed = ""  # Comet uses empty string
 $RegistryMacSeed = "ChromeRegistryHashStoreValidationSeed"
 
 # ============================================================================
-# GET DEVICE ID (Windows SID)
+# GET DEVICE ID (Windows SID without RID)
 # ============================================================================
 
 function Get-DeviceId {
     <#
     .SYNOPSIS
-        Get the current user's Windows SID, which Chromium uses as the device ID.
+        Get the Windows machine SID (without RID), which Chromium uses as the device ID.
+    .DESCRIPTION
+        Chromium uses the SID without the final RID (Relative ID) component.
+        Example: S-1-5-21-123456789-987654321-555555555-1001 → S-1-5-21-123456789-987654321-555555555
     #>
     try {
         $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent()
-        return $currentUser.User.Value
+        $fullSid = $currentUser.User.Value
+        # Remove the RID (last component after final dash)
+        $sidWithoutRid = $fullSid -replace '-\d+$', ''
+        return $sidWithoutRid
     }
     catch {
         Write-Host "ERROR: Failed to get Windows SID: $_" -ForegroundColor Red
@@ -391,7 +397,7 @@ Write-Host ""
 
 # Get device ID
 $deviceId = Get-DeviceId
-Write-Host "Device ID (SID): $deviceId"
+Write-Host "Device ID (SID without RID): $deviceId"
 Write-Host "File MAC Seed: '$FileMacSeed' (empty = Comet)"
 Write-Host "Registry MAC Seed: '$RegistryMacSeed'"
 Write-Host ""

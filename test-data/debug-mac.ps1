@@ -5,11 +5,12 @@
 
 $ErrorActionPreference = "Stop"
 
-# Get device ID
-$deviceId = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-Write-Host "Device ID: $deviceId"
+# Get device ID (Windows SID WITHOUT the RID - Chromium uses machine SID only)
+$fullSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$deviceId = $fullSid -replace '-\d+$', ''  # Remove RID (last component)
+Write-Host "Full SID:   $fullSid"
+Write-Host "Device ID:  $deviceId (without RID)"
 Write-Host "Device ID Length: $($deviceId.Length)"
-Write-Host "Device ID Bytes: $([System.Text.Encoding]::UTF8.GetBytes($deviceId) -join ',')"
 Write-Host ""
 
 # Test with a simple boolean preference
