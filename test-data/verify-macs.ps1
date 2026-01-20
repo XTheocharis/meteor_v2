@@ -425,10 +425,15 @@ if ($securePrefs.protection -and $securePrefs.protection.macs) {
 
 Write-Host "Found $($fileMacs.Count) file MACs in Secure Preferences"
 
-# Read registry MACs
+# Read registry MACs (handles hierarchical structure)
+# Chromium stores MACs in two ways:
+#   1. Atomic MACs: Direct values in PreferenceMACs\Default (e.g., "browser.show_home_button")
+#   2. Split MACs:  Values in subkeys (e.g., PreferenceMACs\Default\extensions.settings\{extId})
 $registryMacs = @{}
 if (Test-Path $RegistryPath) {
     Write-Host "Reading: $RegistryPath"
+
+    # Read atomic MACs (direct values in the Default key)
     $regProps = Get-ItemProperty -Path $RegistryPath -ErrorAction SilentlyContinue
     if ($regProps) {
         foreach ($prop in $regProps.PSObject.Properties) {
@@ -437,6 +442,26 @@ if (Test-Path $RegistryPath) {
             $registryMacs[$prop.Name] = $prop.Value
         }
     }
+
+    # Read split MACs (values in subkeys)
+    # These are stored as: PreferenceMACs\Default\{prefix}\{suffix} = MAC
+    # Which represents path: {prefix}.{suffix}
+    $subkeys = Get-ChildItem -Path $RegistryPath -ErrorAction SilentlyContinue
+    foreach ($subkey in $subkeys) {
+        $subkeyName = $subkey.PSChildName  # e.g., "extensions.settings"
+        $subkeyPath = Join-Path $RegistryPath $subkeyName
+        $subkeyProps = Get-ItemProperty -Path $subkeyPath -ErrorAction SilentlyContinue
+        if ($subkeyProps) {
+            foreach ($prop in $subkeyProps.PSObject.Properties) {
+                # Skip PowerShell metadata properties
+                if ($prop.Name -match '^PS') { continue }
+                # Reconstruct full path: subkey name + "." + value name
+                $fullPath = "$subkeyName.$($prop.Name)"
+                $registryMacs[$fullPath] = $prop.Value
+            }
+        }
+    }
+
     Write-Host "Found $($registryMacs.Count) registry MACs"
 }
 else {
