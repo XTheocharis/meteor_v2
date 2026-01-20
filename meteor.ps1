@@ -4160,35 +4160,29 @@ function Update-AllMacs {
         }
 
         if (-not $lookupResult.Found) {
-            # Path doesn't exist in EITHER preferences file - REMOVE the orphaned MAC
-            # Orphaned MACs cause validation failures when the browser can't find
-            # the corresponding preference value to validate against
-            Write-Verbose "[Update MACs] Removing orphaned MAC: $path (not found in Secure or Regular Preferences)"
-            $skipped++
-            $skippedPaths += $path
-            $traceCount++
+            # Path doesn't exist in EITHER preferences file
+            # DON'T remove the MAC - the browser expects MACs for all tracked preferences
+            # even if they haven't been set yet. Instead, recalculate with null value.
+            # Removing MACs causes the browser to detect tampering.
+            Write-Verbose "[Update MACs] $path not found - using null value for MAC"
+            $value = $null
+            $newMac = Get-PreferenceHmac -SeedHex $SeedHex -DeviceId $DeviceId -Path $hmacPath -Value $value
 
-            # Remove the MAC from the nested structure
+            # Update MAC in nested structure
             $parts = $path -split '\.'
             $current = $Macs
             for ($i = 0; $i -lt $parts.Count - 1; $i++) {
                 $part = $parts[$i]
-                if ($current -is [hashtable] -and $current.ContainsKey($part)) {
-                    $current = $current[$part]
+                if (-not $current.ContainsKey($part)) {
+                    $current[$part] = @{}
                 }
-                else {
-                    # Parent path doesn't exist, nothing to remove
-                    $current = $null
-                    break
-                }
+                $current = $current[$part]
             }
-            if ($null -ne $current -and $current -is [hashtable]) {
-                $leafKey = $parts[-1]
-                if ($current.ContainsKey($leafKey)) {
-                    $current.Remove($leafKey)
-                    Write-Verbose "[Update MACs]   -> Removed MAC entry for '$leafKey'"
-                }
-            }
+            $current[$parts[-1]] = $newMac
+
+            $recalculated++
+            $recalculatedPaths += $path
+            Write-Verbose "[Update MACs] $path = $($newMac.Substring(0, 16))... (null value)"
             continue
         }
 
