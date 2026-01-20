@@ -3265,10 +3265,16 @@ function Get-HmacSeedFromLocalState {
 function ConvertTo-SortedObject {
     <#
     .SYNOPSIS
-        Recursively sort all keys in a hashtable/object alphabetically.
+        Recursively sort all keys and PRUNE empty containers.
     .DESCRIPTION
         Chromium's JSONWriter sorts keys alphabetically. PowerShell's ConvertTo-Json
         does NOT sort keys, so we must sort them first to match Chromium's output.
+
+        CRITICAL: Chromium's PrefHashCalculator PRUNES empty containers before MAC calculation!
+        Empty arrays [] and empty objects {} are removed from dict entries.
+
+        CRITICAL: PowerShell 5.1 unrolls empty arrays to $null when returned from functions.
+        Use comma operator (return ,$result) to prevent this.
     #>
     param([object]$Value)
 
@@ -3279,7 +3285,14 @@ function ConvertTo-SortedObject {
     if ($Value -is [hashtable]) {
         $sorted = [ordered]@{}
         foreach ($key in ($Value.Keys | Sort-Object)) {
-            $sorted[$key] = ConvertTo-SortedObject -Value $Value[$key]
+            $childValue = ConvertTo-SortedObject -Value $Value[$key]
+            # PRUNE: Skip null, empty arrays, empty hashtables, empty OrderedDictionaries, empty PSCustomObjects
+            if ($null -eq $childValue) { continue }
+            if ($childValue -is [array] -and $childValue.Count -eq 0) { continue }
+            if ($childValue -is [hashtable] -and $childValue.Count -eq 0) { continue }
+            if ($childValue -is [System.Collections.Specialized.OrderedDictionary] -and $childValue.Count -eq 0) { continue }
+            if ($childValue -is [PSCustomObject] -and $childValue.PSObject.Properties.Count -eq 0) { continue }
+            $sorted[$key] = $childValue
         }
         return $sorted
     }
@@ -3287,14 +3300,23 @@ function ConvertTo-SortedObject {
     if ($Value -is [PSCustomObject]) {
         $sorted = [ordered]@{}
         foreach ($prop in ($Value.PSObject.Properties | Sort-Object Name)) {
-            $sorted[$prop.Name] = ConvertTo-SortedObject -Value $prop.Value
+            $childValue = ConvertTo-SortedObject -Value $prop.Value
+            # PRUNE: Skip null, empty arrays, empty hashtables, empty OrderedDictionaries, empty PSCustomObjects
+            if ($null -eq $childValue) { continue }
+            if ($childValue -is [array] -and $childValue.Count -eq 0) { continue }
+            if ($childValue -is [hashtable] -and $childValue.Count -eq 0) { continue }
+            if ($childValue -is [System.Collections.Specialized.OrderedDictionary] -and $childValue.Count -eq 0) { continue }
+            if ($childValue -is [PSCustomObject] -and $childValue.PSObject.Properties.Count -eq 0) { continue }
+            $sorted[$prop.Name] = $childValue
         }
         return $sorted
     }
 
     if ($Value -is [array]) {
-        # Arrays maintain order, but sort nested objects
-        return @($Value | ForEach-Object { ConvertTo-SortedObject -Value $_ })
+        # Arrays maintain order, but sort nested objects (don't prune items from arrays)
+        $result = @($Value | ForEach-Object { ConvertTo-SortedObject -Value $_ })
+        # CRITICAL: Use comma operator to prevent PowerShell from unrolling empty arrays to $null
+        return ,$result
     }
 
     # Primitives pass through unchanged
