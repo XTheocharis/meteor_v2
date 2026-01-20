@@ -3698,6 +3698,25 @@ function Update-TrackedPreferences {
         $securePrefsJson = Get-Content -Path $SecurePrefsPath -Raw -ErrorAction Stop
         $securePrefs = $securePrefsJson | ConvertFrom-Json -ErrorAction Stop
 
+        # Also load regular Preferences file - many tracked prefs are stored here
+        # (session.*, homepage, google.services.*, etc.)
+        $regularPrefsPath = Join-Path (Split-Path $SecurePrefsPath -Parent) "Preferences"
+        $regularPrefsHash = $null
+        if (Test-Path $regularPrefsPath) {
+            Write-Verbose "[Secure Prefs] Reading Regular Prefs from: $regularPrefsPath"
+            $regularPrefsJson = Get-Content -Path $regularPrefsPath -Raw -ErrorAction SilentlyContinue
+            if ($regularPrefsJson) {
+                $regularPrefs = $regularPrefsJson | ConvertFrom-Json -ErrorAction SilentlyContinue
+                if ($regularPrefs) {
+                    $regularPrefsHash = Convert-PSObjectToHashtable -InputObject $regularPrefs
+                    Write-Verbose "[Secure Prefs] Regular Prefs loaded ($($regularPrefsHash.Keys.Count) top-level keys)"
+                }
+            }
+        }
+        else {
+            Write-Verbose "[Secure Prefs] Regular Preferences file not found at: $regularPrefsPath"
+        }
+
         # Debug: Show raw JSON structure to understand what Comet stores
         Write-Verbose "[Secure Prefs] Raw Secure Preferences file length: $($securePrefsJson.Length) chars"
         # Check if 'protection' exists in raw JSON
@@ -3829,7 +3848,7 @@ function Update-TrackedPreferences {
         # When Meteor patches extensions or other data changes, the existing MACs
         # become invalid because they were calculated for the old values.
         # This ensures ALL MACs are valid for current preference values.
-        $recalcResult = Update-AllMacs -Macs $macs -Preferences $securePrefsHash -SeedHex $seedHex -DeviceId $deviceId
+        $recalcResult = Update-AllMacs -Macs $macs -SecurePreferences $securePrefsHash -RegularPreferences $regularPrefsHash -SeedHex $seedHex -DeviceId $deviceId
 
         Write-Verbose "[Secure Prefs] Recalculated $($recalcResult.recalculated) MACs, removed $($recalcResult.removed) orphaned MACs"
 
@@ -4067,9 +4086,10 @@ function Update-AllMacs {
 
         This function:
         1. Gets all existing MAC paths from the MACs structure
-        2. For each path, looks up the ACTUAL current value in the preferences
+        2. For each path, looks up the ACTUAL current value in preferences
+           (checks SecurePreferences first, then RegularPreferences)
         3. If the preference exists: recalculates the MAC using the correct formula
-        4. If the preference does NOT exist: REMOVES the orphaned MAC entry
+        4. If the preference does NOT exist in EITHER file: REMOVES the orphaned MAC entry
 
         Removing orphaned MACs is critical - the browser fails validation when
         it finds a MAC for a preference that doesn't exist, causing Settings
@@ -4079,8 +4099,11 @@ function Update-AllMacs {
         "tracked_preferences_reset" entries for ANY preference.
     .PARAMETER Macs
         The existing MACs hashtable structure (nested, e.g., protection.macs).
-    .PARAMETER Preferences
-        The preferences hashtable (to look up actual values).
+    .PARAMETER SecurePreferences
+        The Secure Preferences hashtable (checked first for values).
+    .PARAMETER RegularPreferences
+        The regular Preferences hashtable (checked second for values).
+        Some tracked prefs like session.*, homepage, google.services.* are stored here.
     .PARAMETER SeedHex
         The HMAC seed (empty for non-Chrome builds).
     .PARAMETER DeviceId
@@ -4094,7 +4117,8 @@ function Update-AllMacs {
     #>
     param(
         [hashtable]$Macs,
-        [hashtable]$Preferences,
+        [hashtable]$SecurePreferences,
+        [hashtable]$RegularPreferences,
         [string]$SeedHex,
         [string]$DeviceId
     )
@@ -4120,15 +4144,23 @@ function Update-AllMacs {
             $lookupPath = $path -replace "^account_values\.", ""
         }
 
-        # Look up the actual value (trace first few failures for debugging)
+        # Look up the actual value - check Secure Preferences first, then Regular Preferences
+        # Many tracked prefs (session.*, homepage, google.services.*) are in Regular Preferences
         $shouldTrace = ($traceCount -lt $maxTrace)
-        $lookupResult = Get-PreferenceValue -Preferences $Preferences -Path $lookupPath -Trace:$shouldTrace
+        $lookupResult = Get-PreferenceValue -Preferences $SecurePreferences -Path $lookupPath -Trace:$shouldTrace
+        $foundIn = "SecurePreferences"
+
+        if (-not $lookupResult.Found -and $null -ne $RegularPreferences) {
+            # Not found in Secure Preferences - try Regular Preferences
+            $lookupResult = Get-PreferenceValue -Preferences $RegularPreferences -Path $lookupPath -Trace:$shouldTrace
+            $foundIn = "RegularPreferences"
+        }
 
         if (-not $lookupResult.Found) {
-            # Path doesn't exist in preferences - REMOVE the orphaned MAC
+            # Path doesn't exist in EITHER preferences file - REMOVE the orphaned MAC
             # Orphaned MACs cause validation failures when the browser can't find
             # the corresponding preference value to validate against
-            Write-Verbose "[Update MACs] Removing orphaned MAC: $path (preference not found at $lookupPath)"
+            Write-Verbose "[Update MACs] Removing orphaned MAC: $path (not found in Secure or Regular Preferences)"
             $skipped++
             $skippedPaths += $path
             $traceCount++
@@ -4176,7 +4208,8 @@ function Update-AllMacs {
 
         $recalculated++
         $recalculatedPaths += $path
-        Write-Verbose "[Update MACs] $path = $($newMac.Substring(0, 16))..."
+        $sourceIndicator = if ($foundIn -eq "RegularPreferences") { " (from Prefs)" } else { "" }
+        Write-Verbose "[Update MACs] $path = $($newMac.Substring(0, 16))...$sourceIndicator"
     }
 
     # Log summary of removed orphaned MACs
