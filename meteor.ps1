@@ -3959,6 +3959,16 @@ function Update-TrackedPreferences {
                 $lookupResult = Get-PreferenceValue -Preferences $regularPrefsHash -Path $lookupPath
             }
 
+            # FALLBACK for account_values.*: When user isn't signed in, there's no account_values
+            # section, but the browser still tracks MACs. Use LOCAL value as fallback.
+            if (-not $lookupResult.Found -and $path -like "account_values.*") {
+                $localPath = $path -replace "^account_values\.", ""
+                $lookupResult = Get-PreferenceValue -Preferences $securePrefsHash -Path $localPath
+                if (-not $lookupResult.Found -and $null -ne $regularPrefsHash) {
+                    $lookupResult = Get-PreferenceValue -Preferences $regularPrefsHash -Path $localPath
+                }
+            }
+
             # CRITICAL: Set registry MAC for ALL paths, including those with null values
             # The file MAC was calculated (possibly with null), so registry MAC must match
             if ($lookupResult.Found) {
@@ -4218,6 +4228,20 @@ function Update-AllMacs {
             # Not found in Secure Preferences - try Regular Preferences
             $lookupResult = Get-PreferenceValue -Preferences $RegularPreferences -Path $lookupPath -Trace:$shouldTrace
             $foundIn = "RegularPreferences"
+        }
+
+        # FALLBACK for account_values.*: When user isn't signed in, there's no account_values
+        # section, but the browser still tracks MACs for these paths. Chromium uses the LOCAL
+        # value as fallback (the value at the path WITHOUT the account_values. prefix).
+        if (-not $lookupResult.Found -and $path -like "account_values.*") {
+            $localPath = $path -replace "^account_values\.", ""
+            Write-Verbose "[Update MACs] account_values path '$path' not found - trying local value at '$localPath'"
+            $lookupResult = Get-PreferenceValue -Preferences $SecurePreferences -Path $localPath -Trace:$shouldTrace
+            $foundIn = "SecurePreferences (local fallback)"
+            if (-not $lookupResult.Found -and $null -ne $RegularPreferences) {
+                $lookupResult = Get-PreferenceValue -Preferences $RegularPreferences -Path $localPath -Trace:$shouldTrace
+                $foundIn = "RegularPreferences (local fallback)"
+            }
         }
 
         if (-not $lookupResult.Found) {
