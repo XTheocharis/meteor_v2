@@ -3315,17 +3315,20 @@ function Get-PreferenceHmac {
     .SYNOPSIS
         Calculate HMAC for a single preference (file-based).
     .DESCRIPTION
-        HMAC-SHA256(key=seed, message=device_id + path + value_json)
+        HMAC-SHA256(key=seed, message=device_id + path + json_dict)
         Returns uppercase hex string.
 
-        The message format is simple concatenation:
-          message = device_id + path + value_json
+        The message format matches Chromium's pref_hash_calculator.cc:
+          message = device_id + path + json_dict
 
-        Where value_json is the JSON representation of the value:
-          - Booleans: "true" or "false" (lowercase, no quotes)
-          - Numbers: string representation
-          - Strings: JSON-quoted
-          - Objects/Arrays: compact JSON
+        Where json_dict is a JSON object with the path as key:
+          {"<path>": <value>}
+
+        For example, for browser.show_home_button = true:
+          json_dict = {"browser.show_home_button":true}
+
+        This wrapping makes the MAC more robust against dictionary
+        serialization issues (path appears twice: explicitly and in dict).
 
         For Google Chrome: seed is 64-byte value from IDR_PREF_HASH_SEED_BIN
         For non-Chrome builds (Comet): seed is empty string, resulting in empty key
@@ -3349,9 +3352,12 @@ function Get-PreferenceHmac {
         }
     }
 
-    # Build message: device_id + path + value_json (simple concatenation)
+    # Build message: device_id + path + json_dict (where json_dict is {"path":value})
+    # Chromium wraps the value in a dict with path as key for robustness
+    # Reference: pref_hash_calculator.cc - dict.Set(path, value)
     $valueJson = ConvertTo-JsonForHmac -Value $Value
-    $message = $DeviceId + $Path + $valueJson
+    $jsonDict = '{"' + $Path + '":' + $valueJson + '}'
+    $message = $DeviceId + $Path + $jsonDict
     $messageBytes = [System.Text.Encoding]::UTF8.GetBytes($message)
 
     return Get-HmacSha256 -Key $seedBytes -Message $messageBytes
@@ -3411,17 +3417,17 @@ function Get-RegistryPreferenceHmac {
     .SYNOPSIS
         Calculate registry MAC for a single preference.
     .DESCRIPTION
-        HMAC-SHA256(key=ASCII("ChromeRegistryHashStoreValidationSeed"), message=device_id + path + value_json)
+        HMAC-SHA256(key=ASCII("ChromeRegistryHashStoreValidationSeed"), message=device_id + path + json_dict)
         Returns uppercase hex string.
 
-        The message format is simple concatenation:
-          message = device_id + path + value_json
+        The message format matches Chromium's pref_hash_calculator.cc:
+          message = device_id + path + json_dict
 
-        Where value_json is the JSON representation of the value:
-          - Booleans: "true" or "false" (lowercase, no quotes)
-          - Numbers: string representation
-          - Strings: JSON-quoted
-          - Objects/Arrays: compact JSON
+        Where json_dict is a JSON object with the path as key:
+          {"<path>": <value>}
+
+        For example, for browser.show_home_button = true:
+          json_dict = {"browser.show_home_button":true}
 
         The registry uses a different HMAC key than the Secure Preferences file:
         - Registry: Literal ASCII string "ChromeRegistryHashStoreValidationSeed" (37 bytes)
@@ -3436,9 +3442,12 @@ function Get-RegistryPreferenceHmac {
     # Use literal ASCII bytes of the seed string
     $seedBytes = [System.Text.Encoding]::ASCII.GetBytes($script:RegistryHashSeed)
 
-    # Build message: device_id + path + value_json (simple concatenation)
+    # Build message: device_id + path + json_dict (where json_dict is {"path":value})
+    # Chromium wraps the value in a dict with path as key for robustness
+    # Reference: pref_hash_calculator.cc - dict.Set(path, value)
     $valueJson = ConvertTo-JsonForHmac -Value $Value
-    $message = $DeviceId + $Path + $valueJson
+    $jsonDict = '{"' + $Path + '":' + $valueJson + '}'
+    $message = $DeviceId + $Path + $jsonDict
     $messageBytes = [System.Text.Encoding]::UTF8.GetBytes($message)
 
     return Get-HmacSha256 -Key $seedBytes -Message $messageBytes
