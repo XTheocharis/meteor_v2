@@ -3334,10 +3334,20 @@ function ConvertTo-JsonForHmac {
         # JSON-encode the string (adds quotes and escapes)
         return ($Value | ConvertTo-Json -Compress)
     }
-    if ($Value -is [array] -or $Value -is [hashtable] -or $Value -is [PSCustomObject]) {
+    if ($Value -is [array]) {
+        # WORKAROUND for PowerShell 5.1: Empty arrays piped to ConvertTo-Json return null
+        # because PowerShell unrolls the array in the pipeline
+        if ($Value.Count -eq 0) {
+            return "[]"
+        }
         # CRITICAL: Sort keys alphabetically to match Chromium's JSONWriter
         $sorted = ConvertTo-SortedObject -Value $Value
-        return ($sorted | ConvertTo-Json -Compress -Depth 20)
+        return (ConvertTo-Json -InputObject $sorted -Compress -Depth 20)
+    }
+    if ($Value -is [hashtable] -or $Value -is [PSCustomObject]) {
+        # CRITICAL: Sort keys alphabetically to match Chromium's JSONWriter
+        $sorted = ConvertTo-SortedObject -Value $Value
+        return (ConvertTo-Json -InputObject $sorted -Compress -Depth 20)
     }
 
     return ($Value | ConvertTo-Json -Compress)
@@ -4320,11 +4330,15 @@ function Update-AllMacs {
         # Compare with original MAC
         $sourceIndicator = if ($foundIn -eq "RegularPreferences") { " (from Prefs)" } else { "" }
         if ($originalMac -ne $newMac) {
+            # Get truncated value for logging (avoid calling ConvertTo-JsonForHmac twice)
+            $jsonValue = if ($null -eq $value) { "null" } else { ConvertTo-JsonForHmac -Value $value }
+            if ([string]::IsNullOrEmpty($jsonValue)) { $jsonValue = "(empty)" }
+            $truncatedValue = if ($jsonValue.Length -le 50) { $jsonValue } else { $jsonValue.Substring(0, 50) + "..." }
             $changedMacs += @{
                 Path = $path
                 Original = $originalMac
                 New = $newMac
-                Value = if ($null -eq $value) { "null" } else { (ConvertTo-JsonForHmac -Value $value).Substring(0, [Math]::Min(50, (ConvertTo-JsonForHmac -Value $value).Length)) + "..." }
+                Value = $truncatedValue
             }
             Write-Verbose "[Update MACs] $path CHANGED: $($originalMac.Substring(0, 16))... -> $($newMac.Substring(0, 16))...$sourceIndicator"
         } else {
