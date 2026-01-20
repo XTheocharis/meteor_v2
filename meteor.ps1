@@ -4170,7 +4170,12 @@ function Update-AllMacs {
     $traceCount = 0
     $maxTrace = 5  # Trace first 5 skipped paths in detail
 
+    $changedMacs = @()  # Track MACs that changed from original
+
     foreach ($path in $existingMacs.Keys) {
+        # Save original MAC for comparison
+        $originalMac = $existingMacs[$path]
+
         # For account_values entries, the HMAC path should be the preference path
         # without the account_values prefix. The prefix is just the storage location
         # in the macs tree, not part of the HMAC message.
@@ -4217,7 +4222,19 @@ function Update-AllMacs {
 
             $recalculated++
             $recalculatedPaths += $path
-            Write-Verbose "[Update MACs] $path = $($newMac.Substring(0, 16))... (null value)"
+
+            # Compare with original MAC
+            if ($originalMac -ne $newMac) {
+                $changedMacs += @{
+                    Path = $path
+                    Original = $originalMac
+                    New = $newMac
+                    Value = "null (not found)"
+                }
+                Write-Verbose "[Update MACs] $path CHANGED: $($originalMac.Substring(0, 16))... -> $($newMac.Substring(0, 16))... (null value)"
+            } else {
+                Write-Verbose "[Update MACs] $path = $($newMac.Substring(0, 16))... (null value, unchanged)"
+            }
             continue
         }
 
@@ -4240,8 +4257,20 @@ function Update-AllMacs {
 
         $recalculated++
         $recalculatedPaths += $path
+
+        # Compare with original MAC
         $sourceIndicator = if ($foundIn -eq "RegularPreferences") { " (from Prefs)" } else { "" }
-        Write-Verbose "[Update MACs] $path = $($newMac.Substring(0, 16))...$sourceIndicator"
+        if ($originalMac -ne $newMac) {
+            $changedMacs += @{
+                Path = $path
+                Original = $originalMac
+                New = $newMac
+                Value = if ($null -eq $value) { "null" } else { (ConvertTo-JsonForHmac -Value $value).Substring(0, [Math]::Min(50, (ConvertTo-JsonForHmac -Value $value).Length)) + "..." }
+            }
+            Write-Verbose "[Update MACs] $path CHANGED: $($originalMac.Substring(0, 16))... -> $($newMac.Substring(0, 16))...$sourceIndicator"
+        } else {
+            Write-Verbose "[Update MACs] $path = $($newMac.Substring(0, 16))...$sourceIndicator (unchanged)"
+        }
     }
 
     # Log summary of removed orphaned MACs
@@ -4255,11 +4284,26 @@ function Update-AllMacs {
         }
     }
 
+    # Log summary of changed MACs (MACs that differ from browser's original calculation)
+    # This helps identify which preferences have MAC mismatches
+    if ($changedMacs.Count -gt 0) {
+        Write-Verbose "[Update MACs] === CHANGED MACs ($($changedMacs.Count) of $recalculated differ from original) ==="
+        foreach ($change in $changedMacs) {
+            Write-Verbose "[Update MACs]   $($change.Path)"
+            Write-Verbose "[Update MACs]     Original: $($change.Original.Substring(0, 32))..."
+            Write-Verbose "[Update MACs]     New:      $($change.New.Substring(0, 32))..."
+            Write-Verbose "[Update MACs]     Value:    $($change.Value)"
+        }
+    } else {
+        Write-Verbose "[Update MACs] All $recalculated MACs match browser's original calculation"
+    }
+
     return @{
         recalculated   = $recalculated
         removed        = $skipped
         paths          = $recalculatedPaths
         removedPaths   = $skippedPaths
+        changed        = $changedMacs
     }
 }
 
