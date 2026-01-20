@@ -122,7 +122,10 @@ $ErrorActionPreference = "Stop"
 
 $script:MeteorVersion = "2.0.0"
 $script:UserAgent = "Meteor/$script:MeteorVersion"
-$script:ExtensionKeyFile = Join-Path (Join-Path $PSScriptRoot ".meteor") "extension-key.pem"
+
+# Registry MAC Constant - Used as literal ASCII bytes for Windows Registry MAC calculation
+# This is different from the 64-byte seed in resources.pak used for Secure Preferences file MACs
+$script:RegistryHashSeed = "ChromeRegistryHashStoreValidationSeed"
 
 #endregion
 
@@ -176,6 +179,190 @@ function ConvertFrom-UInt16ToBytes {
     return [BitConverter]::GetBytes($Value)
 }
 
+function Expand-GzipData {
+    <#
+    .SYNOPSIS
+        Decompress gzip-compressed byte array.
+    .DESCRIPTION
+        Takes a gzip-compressed byte array and returns the decompressed data.
+        Returns $null on decompression failure.
+    #>
+    param([byte[]]$CompressedBytes)
+
+    try {
+        $inputStream = New-Object System.IO.MemoryStream($CompressedBytes, $false)
+        $gzipStream = New-Object System.IO.Compression.GZipStream($inputStream, [System.IO.Compression.CompressionMode]::Decompress)
+        $outputStream = New-Object System.IO.MemoryStream
+        $gzipStream.CopyTo($outputStream)
+        $gzipStream.Close()
+        $inputStream.Close()
+        $result = $outputStream.ToArray()
+        $outputStream.Close()
+        return $result
+    }
+    catch {
+        return $null
+    }
+}
+
+function Compress-GzipData {
+    <#
+    .SYNOPSIS
+        Compress byte array using gzip.
+    .DESCRIPTION
+        Takes a byte array and returns gzip-compressed data.
+    #>
+    param([byte[]]$UncompressedBytes)
+
+    $outputStream = New-Object System.IO.MemoryStream
+    $gzipStream = New-Object System.IO.Compression.GZipStream($outputStream, [System.IO.Compression.CompressionMode]::Compress)
+    $gzipStream.Write($UncompressedBytes, 0, $UncompressedBytes.Length)
+    $gzipStream.Close()
+    $result = $outputStream.ToArray()
+    $outputStream.Close()
+    return $result
+}
+
+function Test-BinaryContent {
+    <#
+    .SYNOPSIS
+        Test if byte array contains binary (non-text) content.
+    .DESCRIPTION
+        Uses regex to detect binary indicators (null bytes and control characters).
+        More efficient than byte-by-byte comparison.
+    .RETURNS
+        $true if content appears to be binary, $false if it appears to be text.
+    #>
+    param([byte[]]$Bytes)
+
+    try {
+        $text = [System.Text.Encoding]::UTF8.GetString($Bytes)
+        # Binary indicators: null bytes and control chars (except newlines/tabs)
+        return $text -match '[\x00-\x08\x0E-\x1F]'
+    }
+    catch {
+        return $true
+    }
+}
+
+function Find-CometVersionDirectory {
+    <#
+    .SYNOPSIS
+        Find the version directory inside a Comet installation.
+    .DESCRIPTION
+        Looks for directories matching version pattern (e.g., "131.0.6778.140")
+        and returns the one with the highest version number.
+    #>
+    param([string]$CometPath)
+
+    if (-not (Test-Path $CometPath)) {
+        return $null
+    }
+
+    $versionDirs = Get-ChildItem -Path $CometPath -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -match '^\d+\.\d+\.\d+' } |
+        Sort-Object { [Version]($_.Name -replace '^(\d+\.\d+\.\d+\.\d+).*', '$1') } -Descending
+
+    if ($versionDirs -and $versionDirs.Count -gt 0) {
+        return $versionDirs[0]
+    }
+
+    return $null
+}
+
+function Invoke-MeteorWebRequest {
+    <#
+    .SYNOPSIS
+        Unified web request helper with consistent settings.
+    .DESCRIPTION
+        Handles three modes of web requests:
+        - Content: Returns response content (for API calls)
+        - Download: Downloads to file (for smaller files)
+        - Redirect: Returns redirect URL without following (for version checks)
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [string]$Uri,
+
+        [ValidateSet('Content', 'Download', 'Redirect')]
+        [string]$Mode = 'Content',
+
+        [string]$OutFile,
+
+        [int]$TimeoutSec = 30
+    )
+
+    # Ensure TLS 1.2 is enabled
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+
+    $headers = @{
+        "User-Agent" = $script:UserAgent
+    }
+
+    try {
+        switch ($Mode) {
+            'Content' {
+                $response = Invoke-WebRequest -Uri $Uri -UseBasicParsing -TimeoutSec $TimeoutSec -Headers $headers
+                return $response.Content
+            }
+            'Download' {
+                if (-not $OutFile) {
+                    throw "OutFile is required for Download mode"
+                }
+                Invoke-WebRequest -Uri $Uri -OutFile $OutFile -UseBasicParsing -TimeoutSec $TimeoutSec -Headers $headers
+                return $true
+            }
+            'Redirect' {
+                try {
+                    $response = Invoke-WebRequest -Uri $Uri -Method Get -UseBasicParsing -MaximumRedirection 0 -Headers $headers -ErrorAction Stop
+                    return $null
+                }
+                catch {
+                    if ($_.Exception.Response.StatusCode -eq 302 -or $_.Exception.Response.StatusCode -eq 301) {
+                        return $_.Exception.Response.Headers.Location
+                    }
+                    throw
+                }
+            }
+        }
+    }
+    catch {
+        Write-Verbose "Web request failed: $_"
+        throw
+    }
+}
+
+function Invoke-MeteorDownload {
+    <#
+    .SYNOPSIS
+        Download large files using WebClient for better performance.
+    .DESCRIPTION
+        Uses System.Net.WebClient for downloading large files like browser installers.
+        Provides progress indication via events.
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [string]$Uri,
+
+        [Parameter(Mandatory)]
+        [string]$OutFile
+    )
+
+    # Ensure TLS 1.2 is enabled
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+
+    $webClient = New-Object System.Net.WebClient
+    $webClient.Headers.Add("User-Agent", $script:UserAgent)
+
+    try {
+        $webClient.DownloadFile($Uri, $OutFile)
+        return $true
+    }
+    finally {
+        $webClient.Dispose()
+    }
+}
+
 #endregion
 
 #region Configuration
@@ -202,6 +389,52 @@ function Resolve-MeteorPath {
     }
 
     return (Join-Path $BasePath $RelativePath)
+}
+
+function Test-MeteorConfig {
+    <#
+    .SYNOPSIS
+        Validates that the Meteor configuration has all required sections and paths.
+    .DESCRIPTION
+        Fails fast with a clear error message if required configuration is missing.
+        Called early in the workflow to catch config issues before any changes are made.
+    #>
+    param([PSCustomObject]$Config)
+
+    $requiredSections = @('comet', 'browser', 'extensions', 'paths', 'pak_modifications', 'ublock')
+    $requiredPaths = @('patched_extensions', 'ublock', 'state_file', 'patches')
+
+    # Check required top-level sections
+    foreach ($section in $requiredSections) {
+        if (-not $Config.PSObject.Properties.Name -contains $section) {
+            throw "Config validation failed: missing required section '$section'"
+        }
+        if ($null -eq $Config.$section) {
+            throw "Config validation failed: section '$section' is null"
+        }
+    }
+
+    # Check required paths
+    foreach ($pathName in $requiredPaths) {
+        if (-not $Config.paths.PSObject.Properties.Name -contains $pathName) {
+            throw "Config validation failed: missing required path 'paths.$pathName'"
+        }
+        if ([string]::IsNullOrWhiteSpace($Config.paths.$pathName)) {
+            throw "Config validation failed: path 'paths.$pathName' is empty"
+        }
+    }
+
+    # Check browser has required settings
+    if (-not $Config.browser.PSObject.Properties.Name -contains 'flags') {
+        throw "Config validation failed: missing 'browser.flags'"
+    }
+
+    # Check extensions has required settings
+    if (-not $Config.extensions.PSObject.Properties.Name -contains 'sources') {
+        throw "Config validation failed: missing 'extensions.sources'"
+    }
+
+    return $true
 }
 
 #endregion
@@ -402,6 +635,11 @@ function Set-PakResource {
         Replace the content of a specific resource in a PAK structure.
     .DESCRIPTION
         Updates the PAK structure in-memory. Use Write-PakFile to save.
+
+        DEPRECATION NOTICE: For bulk modifications, prefer Write-PakFileWithModifications
+        which applies all changes in a single pass (O(n) vs O(n²) memory).
+        This function is retained for single-resource updates where batch writing
+        is not appropriate.
     #>
     param(
         [hashtable]$Pak,
@@ -539,6 +777,115 @@ function Write-PakFile {
     [System.IO.File]::WriteAllBytes($Path, [byte[]]$output.ToArray())
 }
 
+function Write-PakFileWithModifications {
+    <#
+    .SYNOPSIS
+        Write a PAK file with multiple resource modifications in a single pass.
+    .DESCRIPTION
+        Optimized batch writer that avoids the O(n²) memory behavior of repeatedly
+        calling Set-PakResource. Takes a hashtable of modifications and applies
+        them all during the write operation.
+
+        This function does NOT modify Pak.RawBytes, making it safe for repeated use.
+    .PARAMETER Pak
+        The PAK structure from Read-PakFile.
+    .PARAMETER Path
+        Output file path.
+    .PARAMETER Modifications
+        Hashtable mapping ResourceId (int) -> NewData (byte[]).
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [hashtable]$Pak,
+
+        [Parameter(Mandatory)]
+        [string]$Path,
+
+        [Parameter(Mandatory)]
+        [hashtable]$Modifications
+    )
+
+    # Build output using ArrayList for efficiency
+    $output = [System.Collections.ArrayList]@()
+
+    # Version (4 bytes)
+    [void]$output.AddRange((ConvertFrom-UInt32ToBytes -Value $Pak.Version))
+
+    # Encoding (1 byte)
+    [void]$output.Add($Pak.Encoding)
+
+    $numResources = $Pak.Resources.Count - 1  # Exclude sentinel
+
+    if ($Pak.Version -eq 4) {
+        # num_resources (4 bytes)
+        [void]$output.AddRange((ConvertFrom-UInt32ToBytes -Value $numResources))
+    }
+    else {
+        # Version 5: padding(3) + num_resources(2) + num_aliases(2)
+        [void]$output.Add([byte]0)
+        [void]$output.Add([byte]0)
+        [void]$output.Add([byte]0)
+        [void]$output.AddRange((ConvertFrom-UInt16ToBytes -Value ([uint16]$numResources)))
+        [void]$output.AddRange((ConvertFrom-UInt16ToBytes -Value ([uint16]$Pak.Aliases.Count)))
+    }
+
+    # Calculate header size
+    $headerSize = $output.Count
+    $resourceTableSize = $Pak.Resources.Count * 6  # 6 bytes per entry including sentinel
+    $aliasTableSize = $Pak.Aliases.Count * 4
+
+    $dataStartOffset = $headerSize + $resourceTableSize + $aliasTableSize
+
+    # Build resource data list and calculate new offsets
+    $currentDataOffset = $dataStartOffset
+    $resourceData = [System.Collections.ArrayList]@()
+    $newOffsets = @{}
+
+    for ($i = 0; $i -lt $Pak.Resources.Count - 1; $i++) {
+        $resourceId = $Pak.Resources[$i].Id
+        $startOffset = $Pak.Resources[$i].Offset
+        $endOffset = $Pak.Resources[$i + 1].Offset
+        $originalLength = $endOffset - $startOffset
+
+        # Check if this resource has a modification
+        if ($Modifications.ContainsKey($resourceId)) {
+            $data = [byte[]]$Modifications[$resourceId]
+        }
+        else {
+            # Use original data
+            $data = New-Object byte[] $originalLength
+            [Array]::Copy($Pak.RawBytes, $startOffset, $data, 0, $originalLength)
+        }
+
+        $newOffsets[$i] = $currentDataOffset
+        [void]$resourceData.Add($data)
+        $currentDataOffset += $data.Length
+    }
+
+    # Sentinel offset
+    $newOffsets[$Pak.Resources.Count - 1] = $currentDataOffset
+
+    # Write resource entries with new offsets
+    for ($i = 0; $i -lt $Pak.Resources.Count; $i++) {
+        [void]$output.AddRange((ConvertFrom-UInt16ToBytes -Value ([uint16]$Pak.Resources[$i].Id)))
+        [void]$output.AddRange((ConvertFrom-UInt32ToBytes -Value ([uint32]$newOffsets[$i])))
+    }
+
+    # Write alias entries
+    foreach ($alias in $Pak.Aliases) {
+        [void]$output.AddRange((ConvertFrom-UInt16ToBytes -Value ([uint16]$alias.Id)))
+        [void]$output.AddRange((ConvertFrom-UInt16ToBytes -Value ([uint16]$alias.ResourceIndex)))
+    }
+
+    # Write resource data
+    foreach ($data in $resourceData) {
+        [void]$output.AddRange($data)
+    }
+
+    # Write to file
+    [System.IO.File]::WriteAllBytes($Path, [byte[]]$output.ToArray())
+}
+
 function Export-PakResources {
     <#
     .SYNOPSIS
@@ -591,36 +938,18 @@ function Export-PakResources {
 
         if ($isGzipped) {
             $gzipCount++
-            try {
-                $ms = New-Object System.IO.MemoryStream($resourceBytes, $false)
-                $gz = New-Object System.IO.Compression.GZipStream($ms, [System.IO.Compression.CompressionMode]::Decompress)
-                $outMs = New-Object System.IO.MemoryStream
-                $gz.CopyTo($outMs)
-                $gz.Close()
-                $ms.Close()
-                $contentBytes = $outMs.ToArray()
-                $outMs.Close()
+            $decompressed = Expand-GzipData -CompressedBytes $resourceBytes
+            if ($null -ne $decompressed) {
+                $contentBytes = $decompressed
                 $wasDecompressed = $true
-            }
-            catch {
-                # Failed to decompress, keep original
-                $contentBytes = $resourceBytes
-                $wasDecompressed = $false
             }
         }
 
         # Determine if text or binary
-        $isText = $false
+        $isText = -not (Test-BinaryContent -Bytes $contentBytes)
         $content = $null
-        try {
+        if ($isText) {
             $content = [System.Text.Encoding]::UTF8.GetString($contentBytes)
-            # Check for binary indicators (null bytes or control chars except newlines/tabs)
-            if ($content -notmatch '[\x00-\x08\x0E-\x1F]') {
-                $isText = $true
-            }
-        }
-        catch {
-            $isText = $false
         }
 
         # Save resource
@@ -730,12 +1059,7 @@ function Import-PakResources {
 
         # Re-compress if originally gzipped
         if ($resourceInfo.gzipped -and $resourceInfo.decompressed) {
-            $ms = New-Object System.IO.MemoryStream
-            $gz = New-Object System.IO.Compression.GZipStream($ms, [System.IO.Compression.CompressionMode]::Compress)
-            $gz.Write($contentBytes, 0, $contentBytes.Length)
-            $gz.Close()
-            $contentBytes = $ms.ToArray()
-            $ms.Close()
+            $contentBytes = Compress-GzipData -UncompressedBytes $contentBytes
         }
 
         $resourceData[$resourceId] = $contentBytes
@@ -852,13 +1176,11 @@ function Test-PakModifications {
             $PakPath = Join-Path $comet.Directory "resources.pak"
             if (-not (Test-Path $PakPath)) {
                 # Try version subdirectories
-                $versionDirs = Get-ChildItem -Path $comet.Directory -Directory -ErrorAction SilentlyContinue |
-                    Where-Object { $_.Name -match '^\d+\.\d+\.\d+' }
-                foreach ($dir in $versionDirs) {
-                    $testPath = Join-Path $dir.FullName "resources.pak"
+                $versionDir = Find-CometVersionDirectory -CometPath $comet.Directory
+                if ($versionDir) {
+                    $testPath = Join-Path $versionDir.FullName "resources.pak"
                     if (Test-Path $testPath) {
                         $PakPath = $testPath
-                        break
                     }
                 }
             }
@@ -916,34 +1238,19 @@ function Test-PakModifications {
 
         $scannedCount++
 
-        # Check if gzip compressed
+        # Check if gzip compressed and decompress
         $isGzipped = ($resourceBytes[0] -eq 0x1f -and $resourceBytes[1] -eq 0x8b)
         $contentBytes = $resourceBytes
 
         if ($isGzipped) {
-            try {
-                $ms = New-Object System.IO.MemoryStream($resourceBytes, $false)
-                $gz = New-Object System.IO.Compression.GZipStream($ms, [System.IO.Compression.CompressionMode]::Decompress)
-                $outMs = New-Object System.IO.MemoryStream
-                $gz.CopyTo($outMs)
-                $gz.Close()
-                $ms.Close()
-                $contentBytes = $outMs.ToArray()
-                $outMs.Close()
-            }
-            catch {
-                continue
-            }
+            $decompressed = Expand-GzipData -CompressedBytes $resourceBytes
+            if ($null -eq $decompressed) { continue }
+            $contentBytes = $decompressed
         }
 
-        # Try to decode as UTF-8 text
-        try {
-            $content = [System.Text.Encoding]::UTF8.GetString($contentBytes)
-            if ($content -match '[\x00-\x08\x0E-\x1F]') { continue }
-        }
-        catch {
-            continue
-        }
+        # Skip binary content
+        if (Test-BinaryContent -Bytes $contentBytes) { continue }
+        $content = [System.Text.Encoding]::UTF8.GetString($contentBytes)
 
         # Check each verification pattern (look for replacement values)
         foreach ($pattern in $verificationPatterns) {
@@ -1179,227 +1486,6 @@ function Get-CrxPublicKey {
     }
 }
 
-function ConvertTo-SpkiBase64 {
-    <#
-    .SYNOPSIS
-        Convert RSA parameters to SubjectPublicKeyInfo (SPKI) base64 format.
-    .DESCRIPTION
-        Takes RSA public key parameters (modulus and exponent) and encodes them
-        in the DER/SPKI format that Chrome uses for extension public keys.
-    #>
-    param([System.Security.Cryptography.RSAParameters]$Params)
-
-    function Get-DerInteger {
-        param([byte[]]$Value)
-        $i = 0
-        $valueLen = $Value.GetLength(0)
-        while ($i -lt $valueLen - 1 -and $Value[$i] -eq 0) { $i++ }
-        $Value = $Value[$i..($valueLen - 1)]
-        if ($Value[0] -band 0x80) {
-            $Value = @([byte]0) + $Value
-        }
-        $len = $Value.GetLength(0)
-        if ($len -lt 128) {
-            return @([byte]0x02, [byte]$len) + $Value
-        }
-        elseif ($len -lt 256) {
-            return @([byte]0x02, [byte]0x81, [byte]$len) + $Value
-        }
-        else {
-            return @([byte]0x02, [byte]0x82, [byte](($len -shr 8) -band 0xFF), [byte]($len -band 0xFF)) + $Value
-        }
-    }
-
-    function Get-DerSequence {
-        param([byte[]]$Content)
-        $len = $Content.GetLength(0)
-        if ($len -lt 128) {
-            return @([byte]0x30, [byte]$len) + $Content
-        }
-        elseif ($len -lt 256) {
-            return @([byte]0x30, [byte]0x81, [byte]$len) + $Content
-        }
-        else {
-            return @([byte]0x30, [byte]0x82, [byte](($len -shr 8) -band 0xFF), [byte]($len -band 0xFF)) + $Content
-        }
-    }
-
-    function Get-DerBitString {
-        param([byte[]]$Content)
-        $len = $Content.GetLength(0) + 1
-        if ($len -lt 128) {
-            return @([byte]0x03, [byte]$len, [byte]0x00) + $Content
-        }
-        elseif ($len -lt 256) {
-            return @([byte]0x03, [byte]0x81, [byte]$len, [byte]0x00) + $Content
-        }
-        else {
-            return @([byte]0x03, [byte]0x82, [byte](($len -shr 8) -band 0xFF), [byte]($len -band 0xFF), [byte]0x00) + $Content
-        }
-    }
-
-    $rsaOid = [byte[]]@(0x06, 0x09, 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x01)
-    $nullParam = [byte[]]@(0x05, 0x00)
-    $algorithmId = Get-DerSequence -Content ($rsaOid + $nullParam)
-
-    $modulus = Get-DerInteger -Value $Params.Modulus
-    $exponent = Get-DerInteger -Value $Params.Exponent
-    $rsaPublicKey = Get-DerSequence -Content ([byte[]]$modulus + [byte[]]$exponent)
-
-    $publicKeyBitString = Get-DerBitString -Content $rsaPublicKey
-    $spki = Get-DerSequence -Content ([byte[]]$algorithmId + [byte[]]$publicKeyBitString)
-
-    return [Convert]::ToBase64String([byte[]]$spki)
-}
-
-function Initialize-ExtensionKey {
-    <#
-    .SYNOPSIS
-        Generate and store an RSA key pair for extension signing if not present.
-    .DESCRIPTION
-        Creates a 2048-bit RSA key pair and stores it in XML format.
-        This key is used to give all unpacked extensions a consistent ID.
-    #>
-    if (Test-Path $script:ExtensionKeyFile) {
-        return $true
-    }
-
-    Write-Status "Generating extension pinning key..." -Type Info
-
-    try {
-        # Ensure .meteor directory exists
-        $keyDir = Split-Path $script:ExtensionKeyFile -Parent
-        if (-not (Test-Path $keyDir)) {
-            $null = New-Item -ItemType Directory -Path $keyDir -Force
-        }
-
-        $rsa = New-Object System.Security.Cryptography.RSACryptoServiceProvider(2048)
-        $xmlKey = $rsa.ToXmlString($true)
-
-        Set-Content -Path $script:ExtensionKeyFile -Value $xmlKey -Encoding UTF8 -NoNewline
-        Write-Status "Extension key generated: $script:ExtensionKeyFile" -Type Success
-        return $true
-    }
-    catch {
-        Write-Status "Could not generate extension key: $_" -Type Warning
-        return $false
-    }
-}
-
-function Get-PublicKeyBase64 {
-    <#
-    .SYNOPSIS
-        Get the public key in base64 SPKI format from the stored key file.
-    #>
-    if (-not (Test-Path $script:ExtensionKeyFile)) {
-        return $null
-    }
-
-    try {
-        $xmlKey = Get-Content $script:ExtensionKeyFile -Raw
-
-        $rsa = New-Object System.Security.Cryptography.RSACryptoServiceProvider
-        $rsa.FromXmlString($xmlKey)
-        $params = $rsa.ExportParameters($false)
-
-        return ConvertTo-SpkiBase64 -Params $params
-    }
-    catch {
-        Write-Status "Could not extract public key: $_" -Type Warning
-        return $null
-    }
-}
-
-function Get-ExtensionIdFromKey {
-    <#
-    .SYNOPSIS
-        Calculate the extension ID from a public key.
-    .DESCRIPTION
-        Chrome extension IDs are derived from the first 128 bits of the SHA256 hash
-        of the public key, encoded using a-p alphabet (not hex).
-    #>
-    param([string]$PublicKeyBase64)
-
-    try {
-        $keyBytes = [Convert]::FromBase64String($PublicKeyBase64)
-        $sha256 = [System.Security.Cryptography.SHA256]::Create()
-        $hashBytes = $sha256.ComputeHash($keyBytes)
-
-        $chars = 'abcdefghijklmnop'
-        $extId = ''
-        for ($i = 0; $i -lt 16; $i++) {
-            $extId += $chars[[int][Math]::Floor($hashBytes[$i] / 16)]
-            $extId += $chars[$hashBytes[$i] % 16]
-        }
-        return $extId
-    }
-    catch {
-        Write-Status "Could not calculate extension ID: $_" -Type Warning
-        return $null
-    }
-}
-
-function Add-ExtensionKey {
-    <#
-    .SYNOPSIS
-        Inject the Meteor extension key into an extension's manifest.json.
-    .DESCRIPTION
-        Adds or updates the "key" field in manifest.json to ensure a consistent extension ID.
-        Returns the extension ID that will result from this key.
-    #>
-    param(
-        [string]$ExtensionDir,
-        [string]$ExtensionName
-    )
-
-    $manifestPath = Join-Path $ExtensionDir "manifest.json"
-
-    if (-not (Test-Path $manifestPath)) {
-        Write-Status "Manifest not found: $manifestPath" -Type Warning
-        return $null
-    }
-
-    try {
-        # Ensure we have a key
-        if (-not (Initialize-ExtensionKey)) {
-            return $null
-        }
-
-        $publicKeyB64 = Get-PublicKeyBase64
-        if (-not $publicKeyB64) {
-            Write-Status "Could not get public key" -Type Warning
-            return $null
-        }
-
-        $extId = Get-ExtensionIdFromKey $publicKeyB64
-        if (-not $extId) {
-            Write-Status "Could not calculate extension ID" -Type Warning
-            return $null
-        }
-
-        $manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
-
-        $existingKey = $null
-        if ($manifest.PSObject.Properties.Name -contains 'key') {
-            $existingKey = $manifest.key
-        }
-
-        if ($existingKey -eq $publicKeyB64) {
-            Write-Status "Extension key verified ($ExtensionName ID: $extId)" -Type Detail
-            return $extId
-        }
-
-        $manifest | Add-Member -NotePropertyName 'key' -NotePropertyValue $publicKeyB64 -Force
-        $manifest | ConvertTo-Json -Depth 20 | Set-Content -Path $manifestPath -Encoding UTF8
-        Write-Status "Updated extension key ($ExtensionName ID: $extId)" -Type Success
-        return $extId
-    }
-    catch {
-        Write-Status "Could not update extension key for ${ExtensionName}: $_" -Type Warning
-        return $null
-    }
-}
-
 function Export-CrxToDirectory {
     <#
     .SYNOPSIS
@@ -1582,12 +1668,10 @@ function Get-ExtensionUpdateInfo {
     $checkUrl = "$UpdateUrl`?x=$encodedId%26$encodedVersion%26uc"
 
     try {
-        $response = Invoke-WebRequest -Uri $checkUrl -UseBasicParsing -TimeoutSec 30 -Headers @{
-            "User-Agent" = $script:UserAgent
-        }
+        $content = Invoke-MeteorWebRequest -Uri $checkUrl -Mode Content -TimeoutSec 30
 
         # Parse XML response
-        [xml]$xml = $response.Content
+        [xml]$xml = $content
 
         $ns = @{ g = "http://www.google.com/update2/response" }
         $app = Select-Xml -Xml $xml -XPath "//g:app[@appid='$ExtensionId']" -Namespace $ns
@@ -1658,9 +1742,7 @@ function Update-Extension {
     try {
         Write-Status "Downloading update from: $Codebase" -Type Info
 
-        Invoke-WebRequest -Uri $Codebase -OutFile $tempCrx -UseBasicParsing -TimeoutSec 120 -Headers @{
-            "User-Agent" = $script:UserAgent
-        }
+        $null = Invoke-MeteorWebRequest -Uri $Codebase -Mode Download -OutFile $tempCrx -TimeoutSec 120
 
         Export-CrxToDirectory -CrxPath $tempCrx -OutputDir $OutputPath -InjectKey
         return $true
@@ -1690,12 +1772,10 @@ function Get-ChromeExtensionVersion {
         # Use Chrome Web Store update API - much faster than scraping HTML
         $url = "https://clients2.google.com/service/update2/crx?response=updatecheck&os=win&arch=x86-64&os_arch=x86-64&prod=chromecrx&prodchannel=unknown&prodversion=120.0.0.0&acceptformat=crx3&x=id%3D$ExtensionId%26v%3D0.0.0%26uc"
 
-        $response = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 30 -Headers @{
-            "User-Agent" = $script:UserAgent
-        }
+        $content = Invoke-MeteorWebRequest -Uri $url -Mode Content -TimeoutSec 30
 
         # Parse XML response for version attribute
-        [xml]$xml = $response.Content
+        [xml]$xml = $content
         $updatecheck = $xml.gupdate.app.updatecheck
 
         if ($updatecheck -and $updatecheck.status -eq "ok" -and $updatecheck.version) {
@@ -1818,9 +1898,7 @@ function Get-CometInstallation {
             }
 
             # Check for comet.exe in version subdirectory (e.g., browser\137.0.7151.87\comet.exe)
-            $versionDir = Get-ChildItem -Path $portableBrowserDir -Directory -ErrorAction SilentlyContinue |
-                Where-Object { $_.Name -match '^\d+\.\d+\.\d+' } |
-                Select-Object -First 1
+            $versionDir = Find-CometVersionDirectory -CometPath $portableBrowserDir
             if ($versionDir) {
                 $versionExe = Join-Path $versionDir.FullName "comet.exe"
                 if (Test-Path $versionExe) {
@@ -1956,9 +2034,7 @@ function Install-Comet {
     try {
         Write-Status "Downloading from: $DownloadUrl" -Type Detail
 
-        $webClient = New-Object System.Net.WebClient
-        $webClient.Headers.Add("User-Agent", $script:UserAgent)
-        $webClient.DownloadFile($DownloadUrl, $tempInstaller)
+        $null = Invoke-MeteorDownload -Uri $DownloadUrl -OutFile $tempInstaller
 
         Write-Status "Running installer..." -Type Info
         $process = Start-Process -FilePath $tempInstaller -ArgumentList "/S" -Wait -PassThru
@@ -2065,9 +2141,7 @@ function Install-CometPortable {
 
         # Download installer
         Write-Status "Downloading from: $DownloadUrl" -Type Detail
-        $webClient = New-Object System.Net.WebClient
-        $webClient.Headers.Add("User-Agent", $script:UserAgent)
-        $webClient.DownloadFile($DownloadUrl, $tempInstaller)
+        $null = Invoke-MeteorDownload -Uri $DownloadUrl -OutFile $tempInstaller
 
         Write-Status "Extracting installer (step 1/2)..." -Type Detail
 
@@ -2150,7 +2224,7 @@ function Install-CometPortable {
         $cometExe = Join-Path $cometDir "comet.exe"
         if (-not (Test-Path $cometExe)) {
             # Try to find it in a version subdirectory
-            $versionDir = Get-ChildItem -Path $cometDir -Directory | Where-Object { $_.Name -match '^\d+\.\d+\.\d+' } | Select-Object -First 1
+            $versionDir = Find-CometVersionDirectory -CometPath $cometDir
             if ($versionDir) {
                 $cometExe = Join-Path $versionDir.FullName "comet.exe"
             }
@@ -2270,6 +2344,108 @@ function Test-CometUpdate {
 
 #endregion
 
+#region Chrome Web Store Extensions
+
+function Install-ChromeWebStoreExtension {
+    <#
+    .SYNOPSIS
+        Download and install an extension from Chrome Web Store.
+    .DESCRIPTION
+        Generic helper function that handles the common download/extract workflow:
+        - Checks current version if already installed
+        - Downloads CRX from Chrome Web Store (skips if up to date)
+        - Extracts to output directory with key injection
+        - Handles dry run mode and force download
+
+        Returns @{Updated=$true/false; Path=$OutputDir} on success, $null on failure.
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [string]$ExtensionId,
+
+        [Parameter(Mandatory)]
+        [string]$ExtensionName,
+
+        [Parameter(Mandatory)]
+        [string]$OutputDir,
+
+        [switch]$DryRunMode,
+        [switch]$ForceDownload
+    )
+
+    $manifestPath = Join-Path $OutputDir "manifest.json"
+    $currentVersion = $null
+
+    # Check if already installed
+    if ((Test-Path $OutputDir) -and (Test-Path $manifestPath)) {
+        $manifest = Get-Content -Path $manifestPath -Raw | ConvertFrom-Json
+        $currentVersion = $manifest.version
+        if ($ForceDownload) {
+            Write-Status "$ExtensionName $currentVersion installed, forcing re-download..." -Type Info
+        }
+        else {
+            Write-Status "$ExtensionName $currentVersion installed, checking for updates..." -Type Info
+        }
+    }
+    else {
+        Write-Status "$ExtensionName not found, downloading..." -Type Info
+    }
+
+    # Handle dry run mode
+    if ($DryRunMode) {
+        if ($currentVersion) {
+            Write-Status "Would check for $ExtensionName updates" -Type Detail
+        }
+        else {
+            Write-Status "Would download $ExtensionName from Chrome Web Store" -Type Detail
+        }
+        return @{ Updated = $false; Path = $null; CurrentVersion = $currentVersion }
+    }
+
+    # Download CRX (will skip if up to date, unless ForceDownload)
+    $tempDir = Join-Path $env:TEMP "cws_ext_$(Get-Random)"
+    $null = New-Item -ItemType Directory -Path $tempDir -Force
+
+    try {
+        $versionToCheck = if ($ForceDownload) { $null } else { $currentVersion }
+        $crxFile = Get-ChromeExtensionCrx -ExtensionId $ExtensionId -CurrentVersion $versionToCheck -OutPath $tempDir
+
+        if (-not $crxFile) {
+            # Either up to date or download failed
+            if ($currentVersion) {
+                Write-Status "$ExtensionName is up to date ($currentVersion)" -Type Success
+                return @{ Updated = $false; Path = $OutputDir; CurrentVersion = $currentVersion }
+            }
+            return $null
+        }
+
+        # Extract CRX
+        Write-Status "Extracting $ExtensionName..." -Type Detail
+
+        # Remove existing directory
+        if (Test-Path $OutputDir) {
+            Remove-Item $OutputDir -Recurse -Force
+        }
+
+        # Extract CRX to output directory (with key injection for consistent extension ID)
+        Export-CrxToDirectory -CrxPath $crxFile -OutputDir $OutputDir -InjectKey
+
+        # Get new version from manifest
+        $newManifest = Get-Content -Path $manifestPath -Raw | ConvertFrom-Json
+        Write-Status "$ExtensionName installed successfully (v$($newManifest.version))" -Type Success
+
+        return @{ Updated = $true; Path = $OutputDir; CurrentVersion = $newManifest.version }
+    }
+    finally {
+        # Cleanup temp directory
+        if (Test-Path $tempDir) {
+            Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+#endregion
+
 #region uBlock Origin
 
 function Get-UBlockOrigin {
@@ -2287,29 +2463,11 @@ function Get-UBlockOrigin {
         [switch]$ForceDownload
     )
 
-    $extensionId = $UBlockConfig.extension_id
-    $manifestPath = Join-Path $OutputDir "manifest.json"
-    $currentVersion = $null
-
-    # Check if already installed
-    if ((Test-Path $OutputDir) -and (Test-Path $manifestPath)) {
-        $manifest = Get-Content -Path $manifestPath -Raw | ConvertFrom-Json
-        $currentVersion = $manifest.version
-        if ($ForceDownload) {
-            Write-Status "uBlock Origin $currentVersion installed, forcing re-download..." -Type Info
-        }
-        else {
-            Write-Status "uBlock Origin $currentVersion installed, checking for updates..." -Type Info
-        }
-    }
-    else {
-        Write-Status "uBlock Origin not found, downloading..." -Type Info
-    }
-
     try {
-        # Handle dry run mode
+        # Handle dry run mode - just show what would happen
         if ($DryRunMode) {
-            if ($currentVersion) {
+            $manifestPath = Join-Path $OutputDir "manifest.json"
+            if ((Test-Path $OutputDir) -and (Test-Path $manifestPath)) {
                 Write-Status "Would check for uBlock Origin updates" -Type Detail
             }
             else {
@@ -2319,40 +2477,16 @@ function Get-UBlockOrigin {
             return $null
         }
 
-        # Download CRX (will skip if up to date, unless ForceDownload)
-        $tempDir = Join-Path $env:TEMP "ublock_$(Get-Random)"
-        $null = New-Item -ItemType Directory -Path $tempDir -Force
-        $versionToCheck = if ($ForceDownload) { $null } else { $currentVersion }
-        $crxFile = Get-ChromeExtensionCrx -ExtensionId $extensionId -CurrentVersion $versionToCheck -OutPath $tempDir
+        # Use common helper for download/extract
+        $result = Install-ChromeWebStoreExtension `
+            -ExtensionId $UBlockConfig.extension_id `
+            -ExtensionName "uBlock Origin" `
+            -OutputDir $OutputDir `
+            -DryRunMode:$DryRunMode `
+            -ForceDownload:$ForceDownload
 
-        if (-not $crxFile) {
-            # Either up to date or download failed
-            if ($currentVersion) {
-                # Already have a version installed, skip to configuration
-                Write-Status "uBlock Origin is up to date ($currentVersion)" -Type Success
-            }
-            else {
-                throw "Failed to download uBlock Origin"
-            }
-        }
-        else {
-            # Extract CRX
-            Write-Status "Extracting uBlock Origin..." -Type Detail
-
-            # Remove existing directory
-            if (Test-Path $OutputDir) {
-                Remove-Item $OutputDir -Recurse -Force
-            }
-
-            # Extract CRX to output directory (with key injection for consistent extension ID)
-            Export-CrxToDirectory -CrxPath $crxFile -OutputDir $OutputDir -InjectKey
-
-            # Cleanup temp directory
-            if (Test-Path $tempDir) {
-                Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue
-            }
-
-            Write-Status "uBlock Origin installed successfully" -Type Success
+        if ($null -eq $result) {
+            throw "Failed to download uBlock Origin"
         }
 
         # Apply defaults if configured - using auto-import approach
@@ -2480,8 +2614,9 @@ setTimeout(checkAndImport, 3000);
     }
     catch {
         Write-Status "Failed to get uBlock Origin: $_" -Type Error
-        if ($currentVersion) {
-            Write-Status "Continuing with existing installation ($currentVersion)" -Type Warning
+        # Return existing path if it exists
+        if (Test-Path $OutputDir) {
+            Write-Status "Continuing with existing installation" -Type Warning
             return $OutputDir
         }
         return $null
@@ -2503,75 +2638,26 @@ function Get-AdGuardExtra {
         [switch]$ForceDownload
     )
 
-    $extensionId = $AdGuardConfig.extension_id
-    $manifestPath = Join-Path $OutputDir "manifest.json"
-    $currentVersion = $null
-
-    # Check if already installed
-    if ((Test-Path $OutputDir) -and (Test-Path $manifestPath)) {
-        $manifest = Get-Content -Path $manifestPath -Raw | ConvertFrom-Json
-        $currentVersion = $manifest.version
-        if ($ForceDownload) {
-            Write-Status "AdGuard Extra $currentVersion installed, forcing re-download..." -Type Info
-        }
-        else {
-            Write-Status "AdGuard Extra $currentVersion installed, checking for updates..." -Type Info
-        }
-    }
-    else {
-        Write-Status "AdGuard Extra not found, downloading..." -Type Info
-    }
-
     try {
-        # Handle dry run mode
-        if ($DryRunMode) {
-            if ($currentVersion) {
-                Write-Status "Would check for AdGuard Extra updates" -Type Detail
-            }
-            else {
-                Write-Status "Would download AdGuard Extra from Chrome Web Store" -Type Detail
-            }
-            return $null
-        }
+        # Use common helper for download/extract
+        $result = Install-ChromeWebStoreExtension `
+            -ExtensionId $AdGuardConfig.extension_id `
+            -ExtensionName "AdGuard Extra" `
+            -OutputDir $OutputDir `
+            -DryRunMode:$DryRunMode `
+            -ForceDownload:$ForceDownload
 
-        # Download CRX (will skip if up to date, unless ForceDownload)
-        $tempDir = Join-Path $env:TEMP "adguard_extra_$(Get-Random)"
-        $null = New-Item -ItemType Directory -Path $tempDir -Force
-        $versionToCheck = if ($ForceDownload) { $null } else { $currentVersion }
-        $crxFile = Get-ChromeExtensionCrx -ExtensionId $extensionId -CurrentVersion $versionToCheck -OutPath $tempDir
-
-        if (-not $crxFile) {
-            # Either up to date or download failed
-            if ($currentVersion) {
-                # Already have a version installed
-                return $OutputDir
-            }
+        if ($null -eq $result) {
             throw "Failed to download AdGuard Extra"
         }
 
-        # Extract CRX
-        Write-Status "Extracting AdGuard Extra..." -Type Detail
-
-        # Remove existing directory
-        if (Test-Path $OutputDir) {
-            Remove-Item $OutputDir -Recurse -Force
-        }
-
-        # Extract CRX to output directory (with key injection for consistent extension ID)
-        Export-CrxToDirectory -CrxPath $crxFile -OutputDir $OutputDir -InjectKey
-
-        # Cleanup temp directory
-        if (Test-Path $tempDir) {
-            Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue
-        }
-
-        Write-Status "AdGuard Extra installed successfully" -Type Success
-        return $OutputDir
+        return $result.Path
     }
     catch {
         Write-Status "Failed to get AdGuard Extra: $_" -Type Error
-        if ($currentVersion) {
-            Write-Status "Continuing with existing installation ($currentVersion)" -Type Warning
+        # Return existing path if it exists
+        if (Test-Path $OutputDir) {
+            Write-Status "Continuing with existing installation" -Type Warning
             return $OutputDir
         }
         return $null
@@ -2764,13 +2850,11 @@ function Initialize-PakModifications {
     # 1. Locate resources.pak
     $pakPath = Join-Path $CometDir "resources.pak"
     if (-not (Test-Path $pakPath)) {
-        $versionDirs = Get-ChildItem -Path $CometDir -Directory -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -match '^\d+\.\d+\.\d+' }
-        foreach ($dir in $versionDirs) {
-            $testPath = Join-Path $dir.FullName "resources.pak"
+        $versionDir = Find-CometVersionDirectory -CometPath $CometDir
+        if ($versionDir) {
+            $testPath = Join-Path $versionDir.FullName "resources.pak"
             if (Test-Path $testPath) {
                 $pakPath = $testPath
-                break
             }
         }
     }
@@ -2841,31 +2925,14 @@ function Initialize-PakModifications {
 
         if ($isGzipped) {
             $gzipCount++
-            try {
-                $ms = New-Object System.IO.MemoryStream($resourceBytes, $false)
-                $gz = New-Object System.IO.Compression.GZipStream($ms, [System.IO.Compression.CompressionMode]::Decompress)
-                $outMs = New-Object System.IO.MemoryStream
-                $gz.CopyTo($outMs)
-                $gz.Close()
-                $ms.Close()
-                $contentBytes = $outMs.ToArray()
-                $outMs.Close()
-            }
-            catch {
-                # Failed to decompress, skip
-                continue
-            }
+            $decompressed = Expand-GzipData -CompressedBytes $resourceBytes
+            if ($null -eq $decompressed) { continue }
+            $contentBytes = $decompressed
         }
 
-        # Try to decode as UTF-8 text (skip binary resources)
-        try {
-            $content = [System.Text.Encoding]::UTF8.GetString($contentBytes)
-            # Skip if it looks like binary (has null bytes or non-printable chars)
-            if ($content -match '[\x00-\x08\x0E-\x1F]') { continue }
-        }
-        catch {
-            continue
-        }
+        # Skip binary resources
+        if (Test-BinaryContent -Bytes $contentBytes) { continue }
+        $content = [System.Text.Encoding]::UTF8.GetString($contentBytes)
 
         $textCount++
         $resourceModified = $false
@@ -2916,11 +2983,11 @@ function Initialize-PakModifications {
         Write-Status "PAK scan stats: $scannedCount resources, $gzipCount gzipped, $textCount text - no pattern matches" -Type Detail
     }
 
-    # 4. Apply all modifications to PAK structure
-    $modified = $false
+    # 4. Prepare all byte modifications (optimized batch approach)
+    $byteModifications = @{}
     foreach ($resourceId in $modifiedResources.Keys) {
         try {
-            Write-Verbose "[PAK] Processing resource $resourceId"
+            Write-Verbose "[PAK] Preparing resource $resourceId"
             $entry = $modifiedResources[$resourceId]
             $contentString = $entry['Content']
             $wasGzipped = $entry['WasGzipped']
@@ -2934,7 +3001,6 @@ function Initialize-PakModifications {
 
             Write-Verbose "[PAK] Encoding to UTF8..."
             [byte[]]$newBytes = [System.Text.Encoding]::UTF8.GetBytes($contentString)
-            Write-Verbose "[PAK] Encoded bytes type: $($newBytes.GetType().FullName)"
 
             if ($null -eq $newBytes) {
                 Write-Status "Failed to encode content for resource $resourceId" -Type Error
@@ -2944,19 +3010,7 @@ function Initialize-PakModifications {
             # Re-compress if originally gzipped
             if ($wasGzipped) {
                 Write-Verbose "[PAK] Recompressing with gzip..."
-                $outMs = New-Object System.IO.MemoryStream
-                $gz = New-Object System.IO.Compression.GZipStream($outMs, [System.IO.Compression.CompressionLevel]::Optimal, $true)
-
-                # Get length using .NET method to avoid PowerShell property resolution issues
-                $byteCount = $newBytes.GetLength(0)
-                Write-Verbose "[PAK] Writing $byteCount bytes to gzip stream..."
-
-                $gz.Write($newBytes, 0, $byteCount)
-                $gz.Flush()
-                $gz.Dispose()
-                $compressedBytes = $outMs.ToArray()
-                $outMs.Dispose()
-
+                $compressedBytes = Compress-GzipData -UncompressedBytes $newBytes
                 if ($null -eq $compressedBytes) {
                     Write-Status "Gzip compression returned null for resource $resourceId" -Type Error
                     continue
@@ -2969,25 +3023,17 @@ function Initialize-PakModifications {
                 Write-Status "Would modify resource $resourceId$(if ($wasGzipped) { ' (gzipped)' })" -Type DryRun
             }
             else {
-                Write-Verbose "[PAK] Calling Set-PakResource..."
-                $success = Set-PakResource -Pak $pak -ResourceId $resourceId -NewData $newBytes
-                if ($success) {
-                    $modified = $true
-                }
-                else {
-                    Write-Status "Failed to set resource $resourceId" -Type Error
-                }
+                $byteModifications[$resourceId] = $newBytes
             }
         }
         catch {
-            Write-Status "Error processing resource $resourceId`: $($_.Exception.Message)" -Type Error
-            Write-Status "  At: $($_.InvocationInfo.ScriptLineNumber)" -Type Error
+            Write-Status "Error preparing resource $resourceId`: $($_.Exception.Message)" -Type Error
             continue
         }
     }
 
-    # 5. Write modified PAK (with backup)
-    if ($modified -and -not $DryRunMode) {
+    # 5. Write modified PAK in single pass (with backup)
+    if ($byteModifications.Count -gt 0 -and -not $DryRunMode) {
         $backupPath = "$pakPath.meteor-backup"
 
         if (-not (Test-Path $backupPath)) {
@@ -3003,7 +3049,8 @@ function Initialize-PakModifications {
             $beforeHash = (Get-FileHash -Path $pakPath -Algorithm SHA256).Hash
             Write-Verbose "[PAK] Hash before write: $beforeHash"
 
-            Write-PakFile -Pak $pak -Path $pakPath
+            # Use optimized batch writer (single pass, no O(n²) memory)
+            Write-PakFileWithModifications -Pak $pak -Path $pakPath -Modifications $byteModifications
 
             # Verify write succeeded by comparing hashes
             $afterHash = (Get-FileHash -Path $pakPath -Algorithm SHA256).Hash
@@ -3024,14 +3071,10 @@ function Initialize-PakModifications {
                         [byte[]]$verifyBytes = $verifyBytes
                         # Decompress if gzipped
                         if ($verifyBytes[0] -eq 0x1f -and $verifyBytes[1] -eq 0x8b) {
-                            $ms = New-Object System.IO.MemoryStream($verifyBytes, $false)
-                            $gz = New-Object System.IO.Compression.GZipStream($ms, [System.IO.Compression.CompressionMode]::Decompress)
-                            $outMs = New-Object System.IO.MemoryStream
-                            $gz.CopyTo($outMs)
-                            $gz.Close()
-                            $ms.Close()
-                            $verifyBytes = $outMs.ToArray()
-                            $outMs.Close()
+                            $decompressed = Expand-GzipData -CompressedBytes $verifyBytes
+                            if ($null -ne $decompressed) {
+                                $verifyBytes = $decompressed
+                            }
                         }
                         $verifyContent = [System.Text.Encoding]::UTF8.GetString($verifyBytes)
                         if ($verifyContent -match 'return false;\s*//\s*Meteor|shouldHidePerplexityServiceWorker.*return false;') {
@@ -3478,10 +3521,6 @@ function Get-PreferenceHmac {
 
     return Get-HmacSha256 -Key $seedBytes -Message $messageBytes
 }
-
-# Registry MAC Constant - Used as literal ASCII bytes for Windows Registry MAC calculation
-# This is different from the 64-byte seed in resources.pak used for Secure Preferences file MACs
-$script:RegistryHashSeed = "ChromeRegistryHashStoreValidationSeed"
 
 function Get-PreferenceHmacSeedFromPak {
     <#
@@ -5050,6 +5089,7 @@ function Main {
     # Load config
     $configPath = if ($Config) { $Config } else { Join-Path $baseDir "config.json" }
     $config = Get-MeteorConfig -ConfigPath $configPath
+    $null = Test-MeteorConfig -Config $config
 
     # Determine if portable mode is enabled
     $portableMode = $config.comet.portable -eq $true
@@ -5279,9 +5319,7 @@ function Main {
                             if (-not $DryRun) {
                                 try {
                                     $tempCrx = Join-Path $env:TEMP "meteor_ext_$(Get-Random).crx"
-                                    Invoke-WebRequest -Uri $extUpdate.Codebase -OutFile $tempCrx -UseBasicParsing -Headers @{
-                                        "User-Agent" = $script:UserAgent
-                                    }
+                                    $null = Invoke-MeteorWebRequest -Uri $extUpdate.Codebase -Mode Download -OutFile $tempCrx -TimeoutSec 120
                                     Copy-Item -Path $tempCrx -Destination $crx.FullName -Force
                                     Remove-Item -Path $tempCrx -Force -ErrorAction SilentlyContinue
                                     Write-Status "  Updated $($manifest.name) to $($extUpdate.Version)" -Type Success
