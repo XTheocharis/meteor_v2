@@ -259,11 +259,12 @@ function Find-CometVersionDirectory {
         return $null
     }
 
-    $versionDirs = Get-ChildItem -Path $CometPath -Directory -ErrorAction SilentlyContinue |
+    # Wrap in @() to ensure array - single item doesn't have .Count in PS 5.1
+    $versionDirs = @(Get-ChildItem -Path $CometPath -Directory -ErrorAction SilentlyContinue |
         Where-Object { $_.Name -match '^\d+\.\d+\.\d+' } |
-        Sort-Object { [Version]($_.Name -replace '^(\d+\.\d+\.\d+\.\d+).*', '$1') } -Descending
+        Sort-Object { [Version]($_.Name -replace '^(\d+\.\d+\.\d+\.\d+).*', '$1') } -Descending)
 
-    if ($versionDirs -and $versionDirs.Count -gt 0) {
+    if ($versionDirs.Count -gt 0) {
         return $versionDirs[0]
     }
 
