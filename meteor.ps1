@@ -3119,68 +3119,64 @@ function Get-HmacSha256 {
     return ([BitConverter]::ToString($hash) -replace '-', '').ToUpper()
 }
 
-function Get-WindowsSidWithoutRid {
+function Get-WindowsMachineGuid {
     <#
     .SYNOPSIS
-        Get Windows User SID without the RID (Relative ID) component.
+        Get Windows MachineGuid from the registry.
     .DESCRIPTION
-        Chromium uses the SID without the final component as the machine identifier.
-        Example: S-1-5-21-123456789-987654321-555555555-1001 → S-1-5-21-123456789-987654321-555555555
+        Chromium uses the MachineGuid from the Windows registry as the device identifier
+        for preference MAC calculation. This is NOT the user SID.
+
+        Registry path: HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Cryptography\MachineGuid
+
+        Reference: chrome/browser/prefs/tracked/pref_hash_calculator_helper_win.cc
+        See: https://chromium.googlesource.com/chromium/chromium/+/trunk/chrome/browser/prefs/tracked/pref_hash_calculator_helper_win.cc
     #>
 
     try {
-        # Method 1: Use .NET SecurityIdentifier
-        $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
-        $sid = $identity.User.Value
-
-        # Remove the RID (last component after final dash)
-        $sidWithoutRid = $sid -replace '-\d+$', ''
-        return $sidWithoutRid
+        # Read MachineGuid from registry (use 64-bit registry view)
+        $regPath = "HKLM:\SOFTWARE\Microsoft\Cryptography"
+        $machineGuid = Get-ItemProperty -Path $regPath -Name "MachineGuid" -ErrorAction Stop
+        return $machineGuid.MachineGuid
     }
     catch {
-        Write-Verbose "[SID] .NET method failed: $_"
+        Write-Verbose "[MachineGuid] Registry read failed: $_"
     }
 
     try {
-        # Method 2: whoami /user
-        $output = & whoami /user /fo csv 2>$null
+        # Fallback: Use reg.exe with 64-bit view
+        $output = & reg query "HKLM\SOFTWARE\Microsoft\Cryptography" /v MachineGuid /reg:64 2>$null
         if ($output) {
-            $lines = $output -split "`n"
-            if ($lines.Count -gt 1) {
-                $sid = ($lines[1] -split ',')[1].Trim().Trim('"')
-                $sidWithoutRid = $sid -replace '-\d+$', ''
-                return $sidWithoutRid
+            $match = $output | Select-String -Pattern "MachineGuid\s+REG_SZ\s+(.+)"
+            if ($match) {
+                return $match.Matches[0].Groups[1].Value.Trim()
             }
         }
     }
     catch {
-        Write-Verbose "[SID] whoami method failed: $_"
+        Write-Verbose "[MachineGuid] reg.exe method failed: $_"
     }
 
-    Write-Warning "[SID] Could not extract Windows SID - using empty device ID"
+    Write-Warning "[MachineGuid] Could not read Windows MachineGuid - MAC calculation will fail"
     return ""
 }
 
 function Get-ChromiumDeviceId {
     <#
     .SYNOPSIS
-        Get device ID for Chromium preference HMAC calculation.
+        Get device ID for Chromium preference MAC calculation.
     .DESCRIPTION
-        According to Chromium source (services/preferences/tracked/device_id_win.cc),
-        the device ID is the raw machine SID used DIRECTLY without any transformation.
+        Chromium uses the Windows MachineGuid as the device identifier for preference
+        protection. This is read from the registry:
+          HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Cryptography\MachineGuid
 
-        The old GenerateDeviceIdLikePrefMetricsServiceDid() function exists in the codebase
-        but is NOT used for preference protection. The PrefHashStoreImpl constructor
-        passes GenerateDeviceId() directly to PrefHashCalculator:
-          prefs_hash_calculator_(seed, GenerateDeviceId())
+        The MachineGuid is a GUID like: 12345678-1234-1234-1234-123456789abc
 
-        See: https://chromium.googlesource.com/chromium/src/+/main/services/preferences/tracked/device_id_win.cc
-        See: https://chromium.googlesource.com/chromium/src/+/main/services/preferences/tracked/pref_hash_store_impl.cc
+        Reference: chrome/browser/prefs/tracked/pref_hash_calculator_helper_win.cc
     #>
-    param([string]$RawMachineId)
 
-    # Device ID is the raw machine SID used directly - no transformation
-    return $RawMachineId
+    # Get MachineGuid from registry - this is what Chromium uses
+    return Get-WindowsMachineGuid
 }
 
 function Get-HmacSeedFromLocalState {
@@ -3800,11 +3796,10 @@ function Update-TrackedPreferences {
             Write-Verbose "[Secure Prefs] Seed: $($seedHex.Substring(0, 32))..."
         }
 
-        # Get device ID
-        $rawSid = Get-WindowsSidWithoutRid
-        $deviceId = Get-ChromiumDeviceId -RawMachineId $rawSid
+        # Get device ID (Windows MachineGuid from registry)
+        $deviceId = Get-ChromiumDeviceId
 
-        Write-Verbose "[Secure Prefs] Device ID (raw SID): $deviceId"
+        Write-Verbose "[Secure Prefs] Device ID (MachineGuid): $deviceId"
 
         # Debug: Check original securePrefs BEFORE conversion
         Write-Verbose "[Secure Prefs] Original securePrefs type: $($securePrefs.GetType().FullName)"
