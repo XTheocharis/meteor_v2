@@ -179,6 +179,27 @@ if (Test-Path $testFile) {
         } elseif ($rawJson -match '"web_accessible_resources"\s*:\s*\[') {
             Write-Host "  web_accessible_resources is ARRAY in raw"
         }
+
+        # Check fileSystem specifically
+        Write-Host ""
+        Write-Host "fileSystem in permissions:"
+        if ($rawJson -match '\{"fileSystem"\s*:\s*"([^"]*)"\}') {
+            Write-Host "  fileSystem is STRING in raw: $($Matches[1])"
+        } elseif ($rawJson -match '\{"fileSystem"\s*:\s*\[([^\]]*)\]\}') {
+            Write-Host "  fileSystem is ARRAY in raw: [$($Matches[1])]"
+        }
+
+        # Show what we serialize it as
+        $fsObj = $perms | Where-Object { $_ -is [PSCustomObject] } | Select-Object -First 1
+        if ($fsObj) {
+            $fsValue = $fsObj.fileSystem
+            Write-Host "  fileSystem parsed as: $($fsValue.GetType().Name)"
+            if ($fsValue -is [array]) {
+                Write-Host "  fileSystem array contents: $($fsValue -join ', ')"
+            } else {
+                Write-Host "  fileSystem value: $fsValue"
+            }
+        }
     }
 }
 Write-Host ""
