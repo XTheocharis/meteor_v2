@@ -3890,19 +3890,31 @@ function Update-TrackedPreferences {
         # CRITICAL: Clear prefs.tracked_preferences_reset if it exists
         # When browser detects invalid MACs, it populates this array with reset preference names
         # If this array is non-empty, subsequent runs may crash
+        # NOTE: Chromium may write this as a TOP-LEVEL key with literal dot in name,
+        # or nested under 'prefs' section - check both locations
+
+        # Check for top-level key with literal dot in name (e.g., "prefs.tracked_preferences_reset")
+        if ($securePrefsHash.ContainsKey('prefs.tracked_preferences_reset')) {
+            Write-Verbose "[Secure Prefs] Removing top-level 'prefs.tracked_preferences_reset' key"
+            $securePrefsHash.Remove('prefs.tracked_preferences_reset')
+        }
+
+        # Also check nested under 'prefs' section
         if ($securePrefsHash.ContainsKey('prefs')) {
             $prefsSection = $securePrefsHash['prefs']
             if ($prefsSection -is [hashtable] -and $prefsSection.ContainsKey('tracked_preferences_reset')) {
                 $resetArray = $prefsSection['tracked_preferences_reset']
                 if ($resetArray -and $resetArray.Count -gt 0) {
-                    Write-Verbose "[Secure Prefs] Clearing tracked_preferences_reset array (had $($resetArray.Count) entries)"
+                    Write-Verbose "[Secure Prefs] Clearing nested tracked_preferences_reset array (had $($resetArray.Count) entries)"
                     $prefsSection['tracked_preferences_reset'] = @()
                 }
             }
         }
 
         # Write modified Secure Preferences
-        $json = $securePrefsHash | ConvertTo-Json -Depth 30
+        # CRITICAL: Use -Compress to produce compact JSON without whitespace
+        # Chromium's JSONWriter produces compact JSON; prettified JSON may cause issues
+        $json = $securePrefsHash | ConvertTo-Json -Depth 30 -Compress
         Set-Content -Path $SecurePrefsPath -Value $json -Encoding UTF8 -Force
 
         Write-Verbose "[Secure Prefs] File updated successfully"
@@ -3911,20 +3923,28 @@ function Update-TrackedPreferences {
         # Comet stores duplicate MACs in registry using a DIFFERENT seed ("ChromeRegistryHashStoreValidationSeed")
         # If registry MACs don't match, browser crashes on startup
         # We must update registry MACs for ALL preferences that have file MACs
+        # CRITICAL: Include null-value preferences too - they have file MACs and need matching registry MACs
         $registryPrefs = @{}
         foreach ($path in $recalcResult.paths) {
             # Look up the value for this path - check both Secure and Regular Preferences
             $lookupPath = $path
+            $hmacPath = $path
             if ($path -like "account_values.*") {
                 $lookupPath = $path -replace "^account_values\.", ""
+                $hmacPath = $lookupPath
             }
             $lookupResult = Get-PreferenceValue -Preferences $securePrefsHash -Path $lookupPath
             if (-not $lookupResult.Found -and $null -ne $regularPrefsHash) {
                 $lookupResult = Get-PreferenceValue -Preferences $regularPrefsHash -Path $lookupPath
             }
+
+            # CRITICAL: Set registry MAC for ALL paths, including those with null values
+            # The file MAC was calculated (possibly with null), so registry MAC must match
             if ($lookupResult.Found) {
-                # Include even null values - they need registry MACs too
                 $registryPrefs[$path] = $lookupResult.Value
+            } else {
+                # Preference not found - use null value to match file MAC calculation
+                $registryPrefs[$path] = $null
             }
         }
 
