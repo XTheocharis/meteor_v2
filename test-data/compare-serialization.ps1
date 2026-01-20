@@ -331,10 +331,11 @@ function ConvertTo-SortedAndPruned {
         $sorted = [ordered]@{}
         foreach ($prop in ($Value.PSObject.Properties | Sort-Object Name)) {
             $childValue = ConvertTo-SortedAndPruned -Value $prop.Value
-            # PRUNE: Skip empty arrays and empty objects
+            # PRUNE: Skip empty arrays, empty objects, and empty PSCustomObjects
             if ($childValue -is [array] -and $childValue.Count -eq 0) { continue }
             if ($childValue -is [hashtable] -and $childValue.Count -eq 0) { continue }
             if ($childValue -is [System.Collections.Specialized.OrderedDictionary] -and $childValue.Count -eq 0) { continue }
+            if ($childValue -is [PSCustomObject] -and $childValue.PSObject.Properties.Count -eq 0) { continue }
             $sorted[$prop.Name] = $childValue
         }
         return $sorted

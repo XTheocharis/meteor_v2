@@ -104,7 +104,7 @@ function ConvertTo-SortedAndPruned {
         $sorted = [ordered]@{}
         foreach ($key in ($Value.Keys | Sort-Object)) {
             $childValue = ConvertTo-SortedAndPruned -Value $Value[$key]
-            # PRUNE: Skip empty arrays and empty hashtables
+            # PRUNE: Skip empty arrays, empty hashtables, and empty PSCustomObjects
             if ($childValue -is [array] -and $childValue.Count -eq 0) {
                 continue
             }
@@ -112,6 +112,9 @@ function ConvertTo-SortedAndPruned {
                 continue
             }
             if ($childValue -is [System.Collections.Specialized.OrderedDictionary] -and $childValue.Count -eq 0) {
+                continue
+            }
+            if ($childValue -is [PSCustomObject] -and $childValue.PSObject.Properties.Count -eq 0) {
                 continue
             }
             $sorted[$key] = $childValue
@@ -122,7 +125,7 @@ function ConvertTo-SortedAndPruned {
         $sorted = [ordered]@{}
         foreach ($prop in ($Value.PSObject.Properties | Sort-Object Name)) {
             $childValue = ConvertTo-SortedAndPruned -Value $prop.Value
-            # PRUNE: Skip empty arrays and empty objects
+            # PRUNE: Skip empty arrays, empty objects, and empty PSCustomObjects
             if ($childValue -is [array] -and $childValue.Count -eq 0) {
                 continue
             }
@@ -130,6 +133,9 @@ function ConvertTo-SortedAndPruned {
                 continue
             }
             if ($childValue -is [System.Collections.Specialized.OrderedDictionary] -and $childValue.Count -eq 0) {
+                continue
+            }
+            if ($childValue -is [PSCustomObject] -and $childValue.PSObject.Properties.Count -eq 0) {
                 continue
             }
             $sorted[$prop.Name] = $childValue
