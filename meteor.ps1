@@ -3883,7 +3883,7 @@ function Update-TrackedPreferences {
         # When Meteor patches extensions or other data changes, the existing MACs
         # become invalid because they were calculated for the old values.
         # This ensures ALL MACs are valid for current preference values.
-        $recalcResult = Update-AllMacs -Macs $macs -SecurePreferences $securePrefsHash -RegularPreferences $regularPrefsHash -SeedHex $seedHex -DeviceId $deviceId
+        $recalcResult = Update-AllMacs -Macs $macs -SecurePreferences $securePrefsHash -RegularPreferences $regularPrefsHash -SeedHex $seedHex -DeviceId $deviceId -SecurePrefsRawJson $securePrefsJson
 
         Write-Verbose "[Secure Prefs] Recalculated $($recalcResult.recalculated) MACs, removed $($recalcResult.removed) orphaned MACs"
 
@@ -3959,20 +3959,20 @@ function Update-TrackedPreferences {
                 $lookupResult = Get-PreferenceValue -Preferences $regularPrefsHash -Path $lookupPath
             }
 
-            # FALLBACK for account_values.*: When user isn't signed in, there's no account_values
-            # section, but the browser still tracks MACs. Use LOCAL value as fallback.
-            if (-not $lookupResult.Found -and $path -like "account_values.*") {
-                $localPath = $path -replace "^account_values\.", ""
-                $lookupResult = Get-PreferenceValue -Preferences $securePrefsHash -Path $localPath
-                if (-not $lookupResult.Found -and $null -ne $regularPrefsHash) {
-                    $lookupResult = Get-PreferenceValue -Preferences $regularPrefsHash -Path $localPath
-                }
-            }
+            # NOTE: For account_values.* paths when not signed in, browser expects NULL value
+            # (not the local value). Do NOT fall back to local values.
 
             # CRITICAL: Set registry MAC for ALL paths, including those with null values
             # The file MAC was calculated (possibly with null), so registry MAC must match
             if ($lookupResult.Found) {
-                $registryPrefs[$path] = $lookupResult.Value
+                $value = $lookupResult.Value
+                # WORKAROUND: PowerShell 5.1 converts [] to $null
+                # Check if raw JSON had [] for this path (detected during Update-AllMacs)
+                # We can check by looking for "path":[] pattern in the raw JSON
+                if ($null -eq $value -and $securePrefsJson -match ('"' + [regex]::Escape($path) + '"\s*:\s*\[\s*\]')) {
+                    $value = @()
+                }
+                $registryPrefs[$path] = $value
             } else {
                 # Preference not found - use null value to match file MAC calculation
                 $registryPrefs[$path] = $null
@@ -4187,8 +4187,24 @@ function Update-AllMacs {
         [hashtable]$SecurePreferences,
         [hashtable]$RegularPreferences,
         [string]$SeedHex,
-        [string]$DeviceId
+        [string]$DeviceId,
+        [string]$SecurePrefsRawJson = ""  # Raw JSON to detect empty arrays (PS 5.1 converts [] to $null)
     )
+
+    # WORKAROUND for PowerShell 5.1: ConvertFrom-Json converts [] to $null
+    # Detect top-level keys that have empty arrays in the raw JSON so we can
+    # use [] instead of $null for HMAC calculation.
+    # Pattern: "key_name":[] or "key_name": [] (with optional whitespace)
+    $emptyArrayPaths = @{}
+    if ($SecurePrefsRawJson) {
+        # Match top-level keys with empty array values: "pinned_tabs":[]
+        $matches = [regex]::Matches($SecurePrefsRawJson, '"([^"]+)"\s*:\s*\[\s*\]')
+        foreach ($match in $matches) {
+            $key = $match.Groups[1].Value
+            $emptyArrayPaths[$key] = $true
+            Write-Verbose "[Update MACs] Detected empty array in raw JSON: $key"
+        }
+    }
 
     # Flatten existing MACs to get all paths
     $existingMacs = @{}
@@ -4230,19 +4246,9 @@ function Update-AllMacs {
             $foundIn = "RegularPreferences"
         }
 
-        # FALLBACK for account_values.*: When user isn't signed in, there's no account_values
-        # section, but the browser still tracks MACs for these paths. Chromium uses the LOCAL
-        # value as fallback (the value at the path WITHOUT the account_values. prefix).
-        if (-not $lookupResult.Found -and $path -like "account_values.*") {
-            $localPath = $path -replace "^account_values\.", ""
-            Write-Verbose "[Update MACs] account_values path '$path' not found - trying local value at '$localPath'"
-            $lookupResult = Get-PreferenceValue -Preferences $SecurePreferences -Path $localPath -Trace:$shouldTrace
-            $foundIn = "SecurePreferences (local fallback)"
-            if (-not $lookupResult.Found -and $null -ne $RegularPreferences) {
-                $lookupResult = Get-PreferenceValue -Preferences $RegularPreferences -Path $localPath -Trace:$shouldTrace
-                $foundIn = "RegularPreferences (local fallback)"
-            }
-        }
+        # NOTE: For account_values.* paths when not signed in, the browser expects NULL value
+        # (not the local value). The account_values section doesn't exist when not signed in,
+        # and the MAC should be calculated for null. Do NOT fall back to local values.
 
         if (-not $lookupResult.Found) {
             # Path doesn't exist in EITHER preferences file
@@ -4286,6 +4292,14 @@ function Update-AllMacs {
         # Found the path - recalculate MAC even if value is null
         # (null is a valid value that needs a MAC)
         $value = $lookupResult.Value
+
+        # WORKAROUND: PowerShell 5.1 converts [] to $null
+        # If the value is null but the raw JSON had [], use empty array for HMAC
+        if ($null -eq $value -and $emptyArrayPaths.ContainsKey($path)) {
+            Write-Verbose "[Update MACs] $path: value is null but raw JSON had [] - using empty array for HMAC"
+            $value = @()
+        }
+
         $newMac = Get-PreferenceHmac -SeedHex $SeedHex -DeviceId $DeviceId -Path $hmacPath -Value $value
 
         # Update MAC in nested structure
