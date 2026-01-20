@@ -3836,7 +3836,8 @@ function Set-BrowserPreferences {
             $null = New-Item -ItemType File -Path $firstRunPath -Force
         }
 
-        $json = $securePrefs | ConvertTo-Json -Depth 20
+        # CRITICAL: Use -InputObject instead of pipe to avoid PS 5.1 serialization bugs
+        $json = ConvertTo-Json -InputObject $securePrefs -Depth 20
         Set-Content -Path $securePrefsPath -Value $json -Encoding UTF8 -Force
 
         Write-Status "Initial preferences written (run again after first launch to set tracked prefs)" -Type Success
@@ -4023,7 +4024,8 @@ function Update-TrackedPreferences {
             Write-Verbose "[Regular Prefs] Pinned extensions to toolbar: $($existingPinned -join ', ')"
 
             # Write updated Regular Preferences
-            $regularPrefsUpdatedJson = $regularPrefsHash | ConvertTo-Json -Depth 30 -Compress
+            # CRITICAL: Use -InputObject instead of pipe to avoid PS 5.1 serialization bugs
+            $regularPrefsUpdatedJson = ConvertTo-Json -InputObject $regularPrefsHash -Depth 30 -Compress
             Set-Content -Path $regularPrefsPath -Value $regularPrefsUpdatedJson -Encoding UTF8 -Force
             Write-Verbose "[Regular Prefs] Updated Regular Preferences file"
         }
@@ -4164,7 +4166,9 @@ function Update-TrackedPreferences {
         # Write modified Secure Preferences
         # CRITICAL: Use -Compress to produce compact JSON without whitespace
         # Chromium's JSONWriter produces compact JSON; prettified JSON may cause issues
-        $json = $securePrefsHash | ConvertTo-Json -Depth 30 -Compress
+        # CRITICAL: Use -InputObject instead of pipe to avoid PS 5.1 serialization bugs
+        # Piping can cause arrays of strings to serialize as {"Length":N} objects
+        $json = ConvertTo-Json -InputObject $securePrefsHash -Depth 30 -Compress
         Set-Content -Path $SecurePrefsPath -Value $json -Encoding UTF8 -Force
 
         Write-Verbose "[Secure Prefs] File updated successfully"
@@ -4259,12 +4263,63 @@ function Convert-PSObjectToHashtable {
     <#
     .SYNOPSIS
         Convert PSCustomObject to hashtable (for PS 5.1 compatibility).
+    .DESCRIPTION
+        CRITICAL for PS 5.1: Arrays of primitives (strings, numbers, bools) must be
+        returned as-is without processing. Only arrays containing PSCustomObjects
+        or hashtables need recursive conversion.
+
+        Uses explicit foreach loop instead of pipeline to avoid PS 5.1 quirks
+        with array handling in pipelines that can cause strings to serialize as
+        {"Length":N} instead of "string".
     #>
     param([object]$InputObject)
 
+    # Null returns empty hashtable (for root-level calls)
     if ($null -eq $InputObject) { return @{} }
+
+    # Primitives - return as-is (MUST check these before array check!)
+    if ($InputObject -is [string]) { return $InputObject }
+    if ($InputObject -is [bool]) { return $InputObject }
+    if ($InputObject -is [int] -or $InputObject -is [int32] -or $InputObject -is [int64] -or
+        $InputObject -is [long] -or $InputObject -is [double] -or $InputObject -is [decimal] -or
+        $InputObject -is [float] -or $InputObject -is [single]) {
+        return $InputObject
+    }
+
+    # Hashtables - return as-is (already the right type)
     if ($InputObject -is [hashtable]) { return $InputObject }
-    if ($InputObject -is [array]) { return @($InputObject | ForEach-Object { Convert-PSObjectToHashtable -InputObject $_ }) }
+
+    # Arrays - check if they need conversion
+    if ($InputObject -is [array]) {
+        # Check if array contains objects that need conversion
+        $needsConversion = $false
+        foreach ($item in $InputObject) {
+            if ($null -ne $item) {
+                if ($item -is [PSCustomObject] -or $item -is [hashtable]) {
+                    $needsConversion = $true
+                    break
+                }
+            }
+        }
+
+        if (-not $needsConversion) {
+            # Array of primitives - return as-is
+            # CRITICAL: Use comma operator to preserve array in PS 5.1
+            return ,$InputObject
+        }
+
+        # Array contains objects - convert each element using explicit loop (not pipeline!)
+        # Pipeline can cause weird serialization issues in PS 5.1
+        $result = [System.Collections.ArrayList]::new()
+        foreach ($item in $InputObject) {
+            $converted = Convert-PSObjectToHashtable -InputObject $item
+            $null = $result.Add($converted)
+        }
+        # CRITICAL: Use comma operator to preserve array in PS 5.1
+        return ,$result.ToArray()
+    }
+
+    # PSCustomObject - convert to hashtable
     if ($InputObject -is [PSCustomObject]) {
         $hash = @{}
         foreach ($prop in $InputObject.PSObject.Properties) {
@@ -4272,6 +4327,8 @@ function Convert-PSObjectToHashtable {
         }
         return $hash
     }
+
+    # Unknown type - return as-is
     return $InputObject
 }
 

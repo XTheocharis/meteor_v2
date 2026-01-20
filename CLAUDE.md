@@ -44,6 +44,20 @@ $content = Get-Content .\meteor.ps1 -Raw
 3. **Telemetry**: DevTools Network tab should show no requests to datadoghq.com, sentry.io, etc.
 4. **New Tab**: Should open https://www.perplexity.ai/b/home
 
+### Browser DevTools Debugging
+```javascript
+// Check feature flags
+window.__meteorFeatureFlags?.getAll()
+
+// Verify SDK stubs are active (should return stub objects, not real SDKs)
+window.DD_RUM   // DataDog RUM stub
+window.Sentry   // Sentry stub
+window.mixpanel // Mixpanel stub
+
+// Access MCP API from service worker context (background page DevTools)
+await MeteorMCP.getServers()
+```
+
 ## Architecture
 
 The system uses 8 layers (0-7), all managed by `meteor.ps1` and configured in `config.json`:
@@ -198,6 +212,139 @@ The `pak_modifications.modifications` array is currently **empty**. The infrastr
 - Restores from backup when `-Force` is used to ensure clean state
 - Patterns are applied to UTF-8 text resources only (binary resources are skipped)
 
+## Chromium Source Reference
+
+The complete Chromium source code is available at `~/chromium/src` for reference during development. Use the Explore subagent to search this codebase when you need to understand Chromium internals such as:
+- Preference HMAC calculation (`services/preferences/tracked/pref_hash_calculator.cc`)
+- PAK file format (`ui/base/resource/data_pack.cc`)
+- Extension loading and CRX format (`extensions/browser/`)
+- Feature flags and command-line switches (`chrome/common/chrome_switches.cc`)
+
+## Script Organization
+
+`meteor.ps1` (~5300 lines) is organized into regions (collapsible in PowerShell ISE/VS Code):
+
+| Region | Lines | Key Functions |
+|--------|-------|---------------|
+| **Constants** | ~10 | `$script:MeteorVersion`, `$script:UserAgent` |
+| **Helper Functions** | ~100 | `Write-Status`, `Compare-Versions`, byte conversion utilities |
+| **Configuration** | ~150 | `Get-MeteorConfig`, `Resolve-MeteorPath`, path resolution |
+| **State Management** | ~80 | `Get-MeteorState`, `Save-MeteorState`, `Test-FileChanged`, SHA256 tracking |
+| **CRX Processing** | ~300 | `Get-CrxManifest`, `Export-CrxToDirectory`, `Get-ChromeExtensionCrx` |
+| **PAK Processing** | ~400 | `Read-PakFile`, `Write-PakFile`, `Get-PakResource`, `Set-PakResource`, `Export-PakResources` |
+| **Browser Installation** | ~350 | `Get-CometInstallation`, `Install-CometPortable`, `Test-CometUpdate`, `Get-7ZipPath` |
+| **uBlock Origin** | ~200 | `Get-UBlockOrigin`, auto-import.js generation, start.js patching |
+| **Extension Patching** | ~200 | `Initialize-PatchedExtensions`, manifest additions, service worker injection |
+| **Preferences Pre-seeding** | ~800 | HMAC calculation, MAC synchronization (see below) |
+| **Browser Launch** | ~100 | `Build-BrowserCommand`, `Start-Browser`, flag-switches block |
+| **Main** | ~400 | 6-step orchestration workflow |
+
+### Debug/Test Scripts
+
+**Root level:**
+- `test-mac-calculation.ps1` - Standalone HMAC calculation test with known values
+
+**In `test-data/`:**
+- `debug-registry-mac.ps1` - Inspects Windows Registry MAC entries at `HKCU:\SOFTWARE\Perplexity\Comet\PreferenceMACs`
+- `debug-mac.ps1` - Dumps MAC structures from Secure Preferences file
+- `verify-macs.ps1` - Compares calculated vs stored MACs to find mismatches
+- `compare-serialization.ps1` - Tests JSON serialization differences between PowerShell and Chromium
+- `debug-types.ps1` - PowerShell type inspection utilities for debugging
+- `debug-pdf-viewer.ps1` - PDF viewer extension debugging
+
+## CRX Processing
+
+CRX files are Chrome extension packages. Key operations:
+
+| Function | Purpose |
+|----------|---------|
+| `Get-CrxManifest` | Reads manifest.json from CRX without full extraction |
+| `Export-CrxToDirectory` | Extracts CRX to directory with optional key injection |
+| `Get-ChromeExtensionCrx` | Downloads CRX from Chrome Web Store update API |
+
+### CRX Format (v2/v3)
+```
+[4 bytes] Magic: "Cr24"
+[4 bytes] Version (2 or 3)
+[4 bytes] Public key length (v2) or header length (v3)
+[4 bytes] Signature length (v2 only)
+[...] Header/key/signature data
+[...] ZIP archive (extension files)
+```
+
+### Key Injection
+
+When extracting extensions, `-InjectKey` adds the original public key to `manifest.json`:
+```json
+{ "key": "BASE64_PUBLIC_KEY", ... }
+```
+
+This ensures consistent extension IDs across extractions (ID = first 16 bytes of SHA256(public_key), encoded as a-p).
+
+## HMAC-Based Secure Preferences
+
+Chromium protects certain preferences with HMAC-SHA256 signatures. Meteor must calculate valid MACs when modifying tracked preferences or the browser resets them.
+
+### Dual MAC Synchronization
+
+Comet uses **two independent MAC stores** that must stay synchronized:
+1. **Secure Preferences file** (`protection.macs` + `protection.super_mac`)
+2. **Windows Registry** (`HKCU:\SOFTWARE\Perplexity\Comet\PreferenceMACs\Default`)
+
+Each store uses a **different HMAC key**:
+- **File MACs**: Empty seed for non-Chrome builds (Comet is not `GOOGLE_CHROME_BRANDING`)
+- **Registry MACs**: Literal ASCII string `"ChromeRegistryHashStoreValidationSeed"`
+
+### MAC Calculation Formula
+
+```
+MAC = HMAC-SHA256(key, device_id + path + value_json)
+```
+
+Where:
+- `device_id` = Windows SID without RID (e.g., `S-1-5-21-123456789-987654321-555555555`)
+- `path` = Preference path (e.g., `extensions.ui.developer_mode`)
+- `value_json` = JSON-serialized value matching Chromium's format
+
+### Key Functions
+
+| Function | Purpose |
+|----------|---------|
+| `Get-WindowsSidWithoutRid` | Extracts machine SID for device ID |
+| `Get-PreferenceHmac` | Calculates file MAC (empty seed) |
+| `Get-RegistryPreferenceHmac` | Calculates registry MAC (literal seed) |
+| `Get-SuperMac` | Calculates global integrity MAC over all MACs |
+| `Update-AllMacs` | Recalculates all MACs after preference changes |
+| `Set-RegistryPreferenceMacs` | Writes MACs to Windows Registry |
+| `ConvertTo-ChromiumJson` | Normalizes JSON to match Chromium's format |
+| `ConvertTo-SortedObject` | Sorts keys alphabetically + prunes empty containers |
+
+### Split vs Atomic MACs
+
+Registry stores MACs in two modes:
+- **Atomic**: Direct values in `Default` key (e.g., `browser.show_home_button`)
+- **Split**: Hierarchical subkeys (e.g., `Default\extensions.settings\{extId}`)
+
+The `extensions.settings` prefix triggers split mode.
+
+### References
+
+- Paper: https://www.cse.chalmers.se/~andrei/cans20.pdf
+- Chromium source: `services/preferences/tracked/pref_hash_calculator.cc`
+- Device ID: `services/preferences/tracked/device_id_win.cc`
+
+## PowerShell 5.1 Compatibility
+
+The script must run on PowerShell 5.1 (Windows default). Key quirks:
+
+| Issue | Workaround |
+|-------|-----------|
+| `ConvertFrom-Json` converts `[]` to `$null` | Detect empty arrays in raw JSON before parsing |
+| Empty arrays unroll to `$null` in pipelines | Use comma operator: `return ,$result` |
+| Files without BOM read as ANSI | Ensure UTF-8 BOM (see linting commands) |
+| `PSCustomObject` not easily modifiable | Convert to hashtable with `Convert-PSObjectToHashtable` |
+| JSON key order not preserved | Use `[ordered]@{}` and `ConvertTo-SortedObject` |
+
 ## Critical Rules for Changes
 
 1. **DNR Rules**: Must maintain exactly 15 rules with sequential IDs 1-15
@@ -212,3 +359,6 @@ The `pak_modifications.modifications` array is currently **empty**. The infrastr
    - `ExtensionManifestV2Unsupported`
 5. **UTF-8 BOM Required**: `meteor.ps1` must have a UTF-8 BOM (byte order mark). PowerShell 5.1 reads files without BOM as ANSI, which corrupts the µ character in embedded uBlock JavaScript and causes parse errors. PSScriptAnalyzer warns via `PSUseBOMForUnicodeEncodedFile` if missing.
 6. **7-Zip Required**: Portable mode requires 7-Zip to be installed for extracting nested archives. The script checks standard installation paths and PATH.
+7. **Feature Flag Interception**: `content-script.js` intercepts Eppo SDK requests and returns mock config with local overrides. The `LOCAL_FEATURE_FLAGS` object in this file is the source of truth for forced feature flags.
+8. **MAC Synchronization**: When modifying tracked preferences, both file MACs AND registry MACs must be updated. Mismatches cause browser crashes or preference resets.
+9. **JSON Serialization**: Chromium uses specific JSON formatting (sorted keys, uppercase unicode escapes like `\u003C`, no escaping of `>` or `'`). Use `ConvertTo-ChromiumJson` for MAC calculation.
