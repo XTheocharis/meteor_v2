@@ -3900,12 +3900,15 @@ function Update-TrackedPreferences {
         # We must update registry MACs for ALL preferences that have file MACs
         $registryPrefs = @{}
         foreach ($path in $recalcResult.paths) {
-            # Look up the value for this path
+            # Look up the value for this path - check both Secure and Regular Preferences
             $lookupPath = $path
             if ($path -like "account_values.*") {
                 $lookupPath = $path -replace "^account_values\.", ""
             }
             $lookupResult = Get-PreferenceValue -Preferences $securePrefsHash -Path $lookupPath
+            if (-not $lookupResult.Found -and $null -ne $regularPrefsHash) {
+                $lookupResult = Get-PreferenceValue -Preferences $regularPrefsHash -Path $lookupPath
+            }
             if ($lookupResult.Found) {
                 # Include even null values - they need registry MACs too
                 $registryPrefs[$path] = $lookupResult.Value
