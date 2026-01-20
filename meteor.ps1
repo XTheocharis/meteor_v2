@@ -3119,64 +3119,68 @@ function Get-HmacSha256 {
     return ([BitConverter]::ToString($hash) -replace '-', '').ToUpper()
 }
 
-function Get-WindowsMachineGuid {
+function Get-WindowsSidWithoutRid {
     <#
     .SYNOPSIS
-        Get Windows MachineGuid from the registry.
+        Get Windows User SID without the RID (Relative ID) component.
     .DESCRIPTION
-        Chromium uses the MachineGuid from the Windows registry as the device identifier
-        for preference MAC calculation. This is NOT the user SID.
-
-        Registry path: HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Cryptography\MachineGuid
-
-        Reference: chrome/browser/prefs/tracked/pref_hash_calculator_helper_win.cc
-        See: https://chromium.googlesource.com/chromium/chromium/+/trunk/chrome/browser/prefs/tracked/pref_hash_calculator_helper_win.cc
+        Chromium uses the SID without the final component as the machine identifier.
+        Example: S-1-5-21-123456789-987654321-555555555-1001 → S-1-5-21-123456789-987654321-555555555
     #>
 
     try {
-        # Read MachineGuid from registry (use 64-bit registry view)
-        $regPath = "HKLM:\SOFTWARE\Microsoft\Cryptography"
-        $machineGuid = Get-ItemProperty -Path $regPath -Name "MachineGuid" -ErrorAction Stop
-        return $machineGuid.MachineGuid
+        # Method 1: Use .NET SecurityIdentifier
+        $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+        $sid = $identity.User.Value
+
+        # Remove the RID (last component after final dash)
+        $sidWithoutRid = $sid -replace '-\d+$', ''
+        return $sidWithoutRid
     }
     catch {
-        Write-Verbose "[MachineGuid] Registry read failed: $_"
+        Write-Verbose "[SID] .NET method failed: $_"
     }
 
     try {
-        # Fallback: Use reg.exe with 64-bit view
-        $output = & reg query "HKLM\SOFTWARE\Microsoft\Cryptography" /v MachineGuid /reg:64 2>$null
+        # Method 2: whoami /user
+        $output = & whoami /user /fo csv 2>$null
         if ($output) {
-            $match = $output | Select-String -Pattern "MachineGuid\s+REG_SZ\s+(.+)"
-            if ($match) {
-                return $match.Matches[0].Groups[1].Value.Trim()
+            $lines = $output -split "`n"
+            if ($lines.Count -gt 1) {
+                $sid = ($lines[1] -split ',')[1].Trim().Trim('"')
+                $sidWithoutRid = $sid -replace '-\d+$', ''
+                return $sidWithoutRid
             }
         }
     }
     catch {
-        Write-Verbose "[MachineGuid] reg.exe method failed: $_"
+        Write-Verbose "[SID] whoami method failed: $_"
     }
 
-    Write-Warning "[MachineGuid] Could not read Windows MachineGuid - MAC calculation will fail"
+    Write-Warning "[SID] Could not extract Windows SID - using empty device ID"
     return ""
 }
 
 function Get-ChromiumDeviceId {
     <#
     .SYNOPSIS
-        Get device ID for Chromium preference MAC calculation.
+        Get device ID for Chromium preference HMAC calculation.
     .DESCRIPTION
-        Chromium uses the Windows MachineGuid as the device identifier for preference
-        protection. This is read from the registry:
-          HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Cryptography\MachineGuid
+        According to Chromium source (services/preferences/tracked/device_id_win.cc),
+        the device ID is the raw machine SID used DIRECTLY without any transformation.
 
-        The MachineGuid is a GUID like: 12345678-1234-1234-1234-123456789abc
+        The old GenerateDeviceIdLikePrefMetricsServiceDid() function exists in the codebase
+        but is NOT used for preference protection. The PrefHashStoreImpl constructor
+        passes GenerateDeviceId() directly to PrefHashCalculator:
+          prefs_hash_calculator_(seed, GenerateDeviceId())
 
-        Reference: chrome/browser/prefs/tracked/pref_hash_calculator_helper_win.cc
+        See: https://chromium.googlesource.com/chromium/src/+/main/services/preferences/tracked/device_id_win.cc
+        See: https://chromium.googlesource.com/chromium/src/+/main/services/preferences/tracked/pref_hash_store_impl.cc
     #>
+    param([string]$RawMachineId)
 
-    # Get MachineGuid from registry - this is what Chromium uses
-    return Get-WindowsMachineGuid
+    # Device ID is the raw machine SID used directly - no transformation
+    return $RawMachineId
 }
 
 function Get-HmacSeedFromLocalState {
@@ -3342,16 +3346,13 @@ function ConvertTo-JsonForHmac {
 function Get-PreferenceHmac {
     <#
     .SYNOPSIS
-        Calculate MAC for a single preference (file-based).
+        Calculate HMAC for a single preference (file-based).
     .DESCRIPTION
-        SHA256(device_id + path + json_dict)
+        HMAC-SHA256(key=seed, message=device_id + path + json_dict)
         Returns uppercase hex string.
 
-        IMPORTANT: Chromium uses PLAIN SHA256, NOT HMAC!
-        Reference: pref_hash_calculator.cc - crypto::SHA256HashString()
-
         The message format matches Chromium's pref_hash_calculator.cc:
-          hash = SHA256(device_id + path + json_dict)
+          message = device_id + path + json_dict
 
         Where json_dict is a JSON object with the path as key:
           {"<path>": <value>}
@@ -3362,8 +3363,8 @@ function Get-PreferenceHmac {
         This wrapping makes the MAC more robust against dictionary
         serialization issues (path appears twice: explicitly and in dict).
 
-        NOTE: The seed parameter is kept for API compatibility but is NOT used
-        in the hash calculation. Chromium stores the seed but Calculate() ignores it.
+        For Google Chrome: seed is 64-byte value from IDR_PREF_HASH_SEED_BIN
+        For non-Chrome builds (Comet): seed is empty string, resulting in empty key
     #>
     param(
         [string]$SeedHex,
@@ -3371,6 +3372,18 @@ function Get-PreferenceHmac {
         [string]$Path,
         [object]$Value
     )
+
+    # Handle empty seed for non-Chrome builds
+    if ([string]::IsNullOrEmpty($SeedHex)) {
+        $seedBytes = [byte[]]@()
+    } else {
+        # Parse hex string into bytes (assumes 64 hex chars = 32 bytes)
+        $seedLength = $SeedHex.Length / 2
+        $seedBytes = [byte[]]::new($seedLength)
+        for ($i = 0; $i -lt $seedLength; $i++) {
+            $seedBytes[$i] = [Convert]::ToByte($SeedHex.Substring($i * 2, 2), 16)
+        }
+    }
 
     # Build message: device_id + path + json_dict (where json_dict is {"path":value})
     # Chromium wraps the value in a dict with path as key for robustness
@@ -3380,9 +3393,7 @@ function Get-PreferenceHmac {
     $message = $DeviceId + $Path + $jsonDict
     $messageBytes = [System.Text.Encoding]::UTF8.GetBytes($message)
 
-    # Chromium uses plain SHA256, NOT HMAC-SHA256
-    # Reference: crypto::SHA256HashString(device_id_ + path + message)
-    return Get-Sha256 -Message $messageBytes
+    return Get-HmacSha256 -Key $seedBytes -Message $messageBytes
 }
 
 # Registry MAC Constant - Used as literal ASCII bytes for Windows Registry MAC calculation
@@ -3437,16 +3448,16 @@ function Get-PreferenceHmacSeedFromPak {
 function Get-RegistryPreferenceHmac {
     <#
     .SYNOPSIS
-        Calculate registry MAC for a single preference.
+        Calculate HMAC for a single preference in Windows Registry.
     .DESCRIPTION
-        SHA256(device_id + path + json_dict)
+        HMAC-SHA256(key="ChromeRegistryHashStoreValidationSeed", message=device_id + path + json_dict)
         Returns uppercase hex string.
 
-        IMPORTANT: Chromium uses PLAIN SHA256, NOT HMAC!
-        Reference: pref_hash_calculator.cc - crypto::SHA256HashString()
+        The key is the literal ASCII string "ChromeRegistryHashStoreValidationSeed"
+        which Chromium uses for all registry-based preference MACs.
 
         The message format matches Chromium's pref_hash_calculator.cc:
-          hash = SHA256(device_id + path + json_dict)
+          message = device_id + path + json_dict
 
         Where json_dict is a JSON object with the path as key:
           {"<path>": <value>}
@@ -3454,15 +3465,16 @@ function Get-RegistryPreferenceHmac {
         For example, for browser.show_home_button = true:
           json_dict = {"browser.show_home_button":true}
 
-        NOTE: The registry seed "ChromeRegistryHashStoreValidationSeed" is passed
-        to PrefHashCalculator constructor but Calculate() ignores it and uses
-        plain SHA256. Both file and registry MACs use the same hash algorithm.
+        Reference: chrome/browser/prefs/tracked/pref_hash_calculator.cc
     #>
     param(
         [string]$DeviceId,
         [string]$Path,
         [object]$Value
     )
+
+    # Key is the literal ASCII bytes of the seed string
+    $seedBytes = [System.Text.Encoding]::ASCII.GetBytes($script:RegistryHashSeed)
 
     # Build message: device_id + path + json_dict (where json_dict is {"path":value})
     # Chromium wraps the value in a dict with path as key for robustness
@@ -3472,9 +3484,7 @@ function Get-RegistryPreferenceHmac {
     $message = $DeviceId + $Path + $jsonDict
     $messageBytes = [System.Text.Encoding]::UTF8.GetBytes($message)
 
-    # Chromium uses plain SHA256, NOT HMAC-SHA256
-    # Reference: crypto::SHA256HashString(device_id_ + path + message)
-    return Get-Sha256 -Message $messageBytes
+    return Get-HmacSha256 -Key $seedBytes -Message $messageBytes
 }
 
 function Set-RegistryPreferenceMacs {
@@ -3788,10 +3798,11 @@ function Update-TrackedPreferences {
             Write-Verbose "[Secure Prefs] Seed: $($seedHex.Substring(0, 32))..."
         }
 
-        # Get device ID (Windows MachineGuid from registry)
-        $deviceId = Get-ChromiumDeviceId
+        # Get device ID (Windows SID without RID)
+        $rawSid = Get-WindowsSidWithoutRid
+        $deviceId = Get-ChromiumDeviceId -RawMachineId $rawSid
 
-        Write-Verbose "[Secure Prefs] Device ID (MachineGuid): $deviceId"
+        Write-Verbose "[Secure Prefs] Device ID (raw SID): $deviceId"
 
         # Debug: Check original securePrefs BEFORE conversion
         Write-Verbose "[Secure Prefs] Original securePrefs type: $($securePrefs.GetType().FullName)"
