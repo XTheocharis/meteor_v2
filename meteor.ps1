@@ -3889,24 +3889,29 @@ function Update-TrackedPreferences {
         Get-FlattenedMacs -Node $macs -Path "" -Result $existingMacs
         Write-Verbose "[Secure Prefs] Found $($existingMacs.Count) existing MACs before modification"
 
-        # FIXED: Only recalculate MACs for paths Meteor actually modifies
-        # Previously, Update-AllMacs recalculated ALL 33+ MACs, but PowerShell's JSON
-        # serialization differs from Chromium's (unicode escaping, etc.), causing
-        # MAC mismatches for values we didn't even modify. This triggered the browser's
-        # "tracked_preferences_reset" detection for extensions.settings.* paths.
+        # CRITICAL: Recalculate ALL existing MACs, not just our target preferences
+        # The JSON round-trip through PowerShell (ConvertFrom-Json → ConvertTo-Json) may
+        # change the serialization of values we didn't modify (unicode escaping, key order,
+        # empty container handling, etc.). If we only update MACs for modified paths, the
+        # browser will detect that other values changed but their MACs didn't, triggering
+        # "tracked_preferences_reset".
         #
-        # The fix: Only update MACs for the specific paths in $prefsToModify.
-        # Preserve original MACs (written by Chromium) for everything else.
-        $updateResult = Update-ModifiedMacs -Macs $macs -ModifiedPaths $prefsToModify -SeedHex $seedHex -DeviceId $deviceId
+        # Our JSON serialization includes empty container pruning to match Chromium's
+        # PrefHashCalculator behavior.
+        $updateResult = Update-AllMacs -Macs $macs -SecurePreferences $securePrefsHash -RegularPreferences $regularPrefsHash -SeedHex $seedHex -DeviceId $deviceId -SecurePrefsRawJson $securePrefsJson
 
-        Write-Verbose "[Secure Prefs] Updated $($updateResult.updated) MACs for modified preferences only"
-        Write-Verbose "[Secure Prefs] Preserved original MACs for all other paths (extensions.settings.*, etc.)"
+        Write-Verbose "[Secure Prefs] Recalculated $($updateResult.recalculated) MACs, removed $($updateResult.removed) orphaned MACs"
+
+        # Log our specific target preferences
+        foreach ($path in $prefsToModify.Keys) {
+            $value = $prefsToModify[$path]
+            Write-Verbose "[Secure Prefs] Target pref: $path = $(ConvertTo-JsonForHmac $value)"
+        }
 
         # Check for account_values (signed-in users)
-        # account_values MACs are preserved as-is (we don't modify account-synced prefs)
         $hasAccountValues = $macs.ContainsKey('account_values')
         if ($hasAccountValues) {
-            Write-Verbose "[Secure Prefs] Found account_values section - preserved original MACs"
+            Write-Verbose "[Secure Prefs] Found account_values section - MACs were included in recalculation"
         }
 
         # Flatten all MACs for super_mac calculation
@@ -3951,10 +3956,10 @@ function Update-TrackedPreferences {
 
         Write-Verbose "[Secure Prefs] File updated successfully"
 
-        # CRITICAL: Also update Windows Registry MACs for the modified paths
+        # CRITICAL: Also update Windows Registry MACs for ALL recalculated paths
         # Comet stores duplicate MACs in registry using a DIFFERENT seed ("ChromeRegistryHashStoreValidationSeed")
         # If registry MACs don't match, browser detects tampering
-        # We only update registry MACs for the paths we actually modified
+        # We must update registry MACs for ALL preferences that have file MACs
         $registryPrefs = @{}
         foreach ($path in $updateResult.paths) {
             # Look up the value for this path - check both Secure and Regular Preferences
@@ -3998,7 +4003,8 @@ function Update-TrackedPreferences {
             Write-Verbose "[Registry MAC] WARNING: Failed to update registry MACs - browser may crash"
         }
 
-        Write-Status "Tracked preferences updated with valid HMACs (file: $($updateResult.updated), registry: $($registryPrefs.Count))" -Type Success
+        $removedInfo = if ($updateResult.removed -gt 0) { ", cleaned $($updateResult.removed) orphaned" } else { "" }
+        Write-Status "Tracked preferences updated with valid HMACs (file: $($updateResult.recalculated), registry: $($registryPrefs.Count)$removedInfo)" -Type Success
         return $true
     }
     catch {
