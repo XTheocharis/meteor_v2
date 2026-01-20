@@ -125,4 +125,62 @@ Write-Host "Without key:     $($dict2 | ConvertTo-Json -Compress)"
 Write-Host "With empty array: $($dict3 | ConvertTo-Json -Compress)"
 Write-Host ""
 
+# Test 9: Analyze the failing PDF Viewer extension
+Write-Host "=== Test 9: PDF Viewer extension deep dive ===" -ForegroundColor Yellow
+$testFile = Join-Path $PSScriptRoot "secure-preferences.json"
+$rawJson = Get-Content $testFile -Raw
+if (Test-Path $testFile) {
+    $prefs = Get-Content $testFile -Raw | ConvertFrom-Json
+    $pdfExt = $prefs.extensions.settings.mhjfbmdgcfjbbpaeojofohoefgiehjai
+    if ($pdfExt) {
+        Write-Host "PDF Viewer manifest.mime_types:"
+        $mt = $pdfExt.manifest.mime_types
+        Write-Host "  Value: $mt"
+        Write-Host "  Is null: $($null -eq $mt)"
+        if ($null -ne $mt) {
+            Write-Host "  Type: $($mt.GetType().FullName)"
+            Write-Host "  Is array: $($mt -is [array])"
+            Write-Host "  Is string: $($mt -is [string])"
+        }
+
+        Write-Host ""
+        Write-Host "PDF Viewer manifest.web_accessible_resources:"
+        $war = $pdfExt.manifest.web_accessible_resources
+        Write-Host "  Value: $war"
+        Write-Host "  Is null: $($null -eq $war)"
+        if ($null -ne $war) {
+            Write-Host "  Type: $($war.GetType().FullName)"
+            Write-Host "  Is array: $($war -is [array])"
+            Write-Host "  Is string: $($war -is [string])"
+        }
+
+        Write-Host ""
+        Write-Host "PDF Viewer manifest.permissions (check for nested objects):"
+        $perms = $pdfExt.manifest.permissions
+        if ($perms -is [array]) {
+            Write-Host "  Is array with $($perms.Count) items"
+            for ($i = 0; $i -lt $perms.Count; $i++) {
+                $item = $perms[$i]
+                $type = if ($null -eq $item) { "null" } else { $item.GetType().Name }
+                Write-Host "  [$i]: $type = $item"
+            }
+        }
+
+        # Check raw JSON for these fields
+        Write-Host ""
+        Write-Host "Raw JSON patterns:"
+        if ($rawJson -match '"mime_types"\s*:\s*"([^"]*)"') {
+            Write-Host "  mime_types is STRING in raw: $($Matches[1])"
+        } elseif ($rawJson -match '"mime_types"\s*:\s*\[') {
+            Write-Host "  mime_types is ARRAY in raw"
+        }
+        if ($rawJson -match '"web_accessible_resources"\s*:\s*"([^"]*)"') {
+            Write-Host "  web_accessible_resources is STRING in raw: $($Matches[1])"
+        } elseif ($rawJson -match '"web_accessible_resources"\s*:\s*\[') {
+            Write-Host "  web_accessible_resources is ARRAY in raw"
+        }
+    }
+}
+Write-Host ""
+
 Write-Host "=== Done ===" -ForegroundColor Cyan
