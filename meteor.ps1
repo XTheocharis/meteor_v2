@@ -3505,13 +3505,9 @@ function Set-RegistryPreferenceMacs {
     if ($DryRunMode) {
         Write-Status "Would set registry MACs at: $regPath" -Type Detail
         foreach ($path in $PreferencesToSet.Keys) {
-            # For account_values entries, HMAC path should be without the prefix
-            # but registry value name uses the full path
-            $hmacPath = $path
-            if ($path -like "account_values.*") {
-                $hmacPath = $path -replace "^account_values\.", ""
-            }
-            $mac = Get-RegistryPreferenceHmac -DeviceId $DeviceId -Path $hmacPath -Value $PreferencesToSet[$path]
+            # Use FULL path for HMAC calculation (including account_values prefix if present)
+            # This matches Chromium behavior where account_values.X and X have different MACs
+            $mac = Get-RegistryPreferenceHmac -DeviceId $DeviceId -Path $path -Value $PreferencesToSet[$path]
             Write-Verbose "[Registry MAC] Would set $path = $($mac.Substring(0, 16))..."
         }
         return $true
@@ -3526,13 +3522,9 @@ function Set-RegistryPreferenceMacs {
 
         foreach ($path in $PreferencesToSet.Keys) {
             $value = $PreferencesToSet[$path]
-            # For account_values entries, HMAC path should be without the prefix
-            # but registry value name uses the full path
-            $hmacPath = $path
-            if ($path -like "account_values.*") {
-                $hmacPath = $path -replace "^account_values\.", ""
-            }
-            $mac = Get-RegistryPreferenceHmac -DeviceId $DeviceId -Path $hmacPath -Value $value
+            # Use FULL path for HMAC calculation (including account_values prefix if present)
+            # This matches Chromium behavior where account_values.X and X have different MACs
+            $mac = Get-RegistryPreferenceHmac -DeviceId $DeviceId -Path $path -Value $value
 
             # Set the registry value (uses full path including account_values prefix)
             Set-ItemProperty -Path $regPath -Name $path -Value $mac -Type String -Force
@@ -3959,12 +3951,13 @@ function Update-TrackedPreferences {
         $registryPrefs = @{}
         foreach ($path in $recalcResult.paths) {
             # Look up the value for this path - check both Secure and Regular Preferences
+            # For account_values.*, value is stored at the path WITHOUT the prefix
             $lookupPath = $path
-            $hmacPath = $path
             if ($path -like "account_values.*") {
                 $lookupPath = $path -replace "^account_values\.", ""
-                $hmacPath = $lookupPath
             }
+            # Note: MAC is calculated using FULL path (including account_values prefix)
+            # in Set-RegistryPreferenceMacs, but value lookup uses stripped path
             $lookupResult = Get-PreferenceValue -Preferences $securePrefsHash -Path $lookupPath
             if (-not $lookupResult.Found -and $null -ne $regularPrefsHash) {
                 $lookupResult = Get-PreferenceValue -Preferences $regularPrefsHash -Path $lookupPath
@@ -4208,15 +4201,17 @@ function Update-AllMacs {
         # Save original MAC for comparison
         $originalMac = $existingMacs[$path]
 
-        # For account_values entries, the HMAC path should be the preference path
-        # without the account_values prefix. The prefix is just the storage location
-        # in the macs tree, not part of the HMAC message.
+        # For account_values entries:
+        # - VALUE lookup uses the path WITHOUT account_values prefix (actual pref location)
+        # - HMAC calculation uses the FULL path including account_values prefix
+        # This matches Chromium's behavior where account_values.X and X have DIFFERENT MACs
         $lookupPath = $path
-        $hmacPath = $path
+        $hmacPath = $path  # ALWAYS use full path for HMAC
         if ($path -like "account_values.*") {
-            # For account_values.foo.bar, both lookup AND HMAC use foo.bar
+            # Strip prefix only for value lookup - the actual preference value is stored
+            # at browser.show_home_button, not account_values.browser.show_home_button
             $lookupPath = $path -replace "^account_values\.", ""
-            $hmacPath = $lookupPath
+            # But keep $hmacPath = $path (full path) for MAC calculation
         }
 
         # Look up the actual value - check Secure Preferences first, then Regular Preferences
