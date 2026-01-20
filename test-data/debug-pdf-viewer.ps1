@@ -411,6 +411,99 @@ if ($noPruneMac -eq $expectedMac) {
 }
 
 Write-Host ""
+
+# ============================================================================
+# TEST: USE RAW JSON DIRECTLY (NO PARSING)
+# ============================================================================
+
+Write-Host "=== TEST: RAW JSON BYTES DIRECTLY ===" -ForegroundColor Yellow
+
+# Calculate MAC using the raw bytes extracted from the file (no parsing)
+$rawMessage = $deviceId + $ExtPath + $rawExtJson
+$rawDirectMac = Get-HmacSha256 -Key $seed -Message $rawMessage
+
+Write-Host "Raw JSON direct MAC: $rawDirectMac"
+Write-Host "Expected MAC:        $expectedMac"
+
+if ($rawDirectMac -eq $expectedMac) {
+    Write-Host "RAW DIRECT MAC MATCHES!" -ForegroundColor Green
+} else {
+    Write-Host "Raw direct doesn't match - the stored MAC may have been calculated from different data" -ForegroundColor Yellow
+}
+
+Write-Host ""
+
+# ============================================================================
+# COMPARE NO-PRUNE VS RAW BYTE-BY-BYTE
+# ============================================================================
+
+Write-Host "=== NO-PRUNE VS RAW COMPARISON ===" -ForegroundColor Yellow
+
+$minLen2 = [Math]::Min($noPruneJson.Length, $rawExtJson.Length)
+$firstDiff2 = -1
+for ($i = 0; $i -lt $minLen2; $i++) {
+    if ($noPruneJson[$i] -ne $rawExtJson[$i]) {
+        $firstDiff2 = $i
+        break
+    }
+}
+
+if ($firstDiff2 -eq -1 -and $noPruneJson.Length -ne $rawExtJson.Length) {
+    $firstDiff2 = $minLen2
+}
+
+if ($firstDiff2 -eq -1) {
+    Write-Host "No-prune JSON matches raw exactly!" -ForegroundColor Green
+} else {
+    Write-Host "First difference at position $firstDiff2" -ForegroundColor Red
+
+    $start2 = [Math]::Max(0, $firstDiff2 - 30)
+    $end2 = [Math]::Min($firstDiff2 + 50, [Math]::Min($noPruneJson.Length, $rawExtJson.Length))
+
+    Write-Host ""
+    Write-Host "No-prune JSON:" -ForegroundColor Cyan
+    $snippet2 = $noPruneJson.Substring($start2, [Math]::Min($end2 - $start2, $noPruneJson.Length - $start2))
+    Write-Host "  ...$snippet2..."
+
+    Write-Host ""
+    Write-Host "Raw JSON:" -ForegroundColor Cyan
+    $snippet3 = $rawExtJson.Substring($start2, [Math]::Min($end2 - $start2, $rawExtJson.Length - $start2))
+    Write-Host "  ...$snippet3..."
+
+    Write-Host ""
+    if ($firstDiff2 -lt $noPruneJson.Length) {
+        Write-Host "  No-prune char: '$($noPruneJson[$firstDiff2])' (0x$([int][char]$noPruneJson[$firstDiff2] | ForEach-Object { $_.ToString('X2') }))"
+    }
+    if ($firstDiff2 -lt $rawExtJson.Length) {
+        Write-Host "  Raw char:      '$($rawExtJson[$firstDiff2])' (0x$([int][char]$rawExtJson[$firstDiff2] | ForEach-Object { $_.ToString('X2') }))"
+    }
+}
+
+Write-Host ""
+
+# ============================================================================
+# CHECK: DID POWERSHELL CHANGE EMPTY ARRAYS TO NULL?
+# ============================================================================
+
+Write-Host "=== POWERSHELL EMPTY ARRAY HANDLING ===" -ForegroundColor Yellow
+
+$testFields = @("commands", "content_settings", "disable_reasons", "events", "preferences", "incognito_preferences", "regular_only_preferences")
+
+foreach ($field in $testFields) {
+    $val = $extValue.$field
+    if ($null -eq $val) {
+        Write-Host "  $field : NULL (PowerShell converted to null)" -ForegroundColor Red
+    } elseif ($val -is [array]) {
+        Write-Host "  $field : array[$($val.Count)]" -ForegroundColor $(if ($val.Count -eq 0) { "Yellow" } else { "Gray" })
+    } elseif ($val -is [PSCustomObject]) {
+        $propCount = $val.PSObject.Properties.Count
+        Write-Host "  $field : object{$propCount props}" -ForegroundColor $(if ($propCount -eq 0) { "Yellow" } else { "Gray" })
+    } else {
+        Write-Host "  $field : $($val.GetType().Name) = $val" -ForegroundColor Gray
+    }
+}
+
+Write-Host ""
 Write-Host "=" * 80 -ForegroundColor Cyan
 Write-Host "DONE" -ForegroundColor Cyan
 Write-Host "=" * 80 -ForegroundColor Cyan
