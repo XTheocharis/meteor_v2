@@ -4296,7 +4296,7 @@ function Update-AllMacs {
         # WORKAROUND: PowerShell 5.1 converts [] to $null
         # If the value is null but the raw JSON had [], use empty array for HMAC
         if ($null -eq $value -and $emptyArrayPaths.ContainsKey($path)) {
-            Write-Verbose "[Update MACs] $path: value is null but raw JSON had [] - using empty array for HMAC"
+            Write-Verbose "[Update MACs] ${path}: value is null but raw JSON had [] - using empty array for HMAC"
             $value = @()
         }
 
