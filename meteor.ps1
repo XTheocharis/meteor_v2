@@ -3831,7 +3831,7 @@ function Update-TrackedPreferences {
         # This ensures ALL MACs are valid for current preference values.
         $recalcResult = Update-AllMacs -Macs $macs -Preferences $securePrefsHash -SeedHex $seedHex -DeviceId $deviceId
 
-        Write-Verbose "[Secure Prefs] Recalculated $($recalcResult.recalculated) MACs, skipped $($recalcResult.skipped)"
+        Write-Verbose "[Secure Prefs] Recalculated $($recalcResult.recalculated) MACs, removed $($recalcResult.removed) orphaned MACs"
 
         # Log our specific target preferences
         foreach ($path in $prefsToModify.Keys) {
@@ -3903,7 +3903,8 @@ function Update-TrackedPreferences {
             Write-Verbose "[Registry MAC] WARNING: Failed to update registry MACs - browser may crash"
         }
 
-        Write-Status "Tracked preferences updated with valid HMACs (file: $($recalcResult.recalculated), registry: $($registryPrefs.Count))" -Type Success
+        $removedInfo = if ($recalcResult.removed -gt 0) { ", cleaned $($recalcResult.removed) orphaned" } else { "" }
+        Write-Status "Tracked preferences updated with valid HMACs (file: $($recalcResult.recalculated), registry: $($registryPrefs.Count)$removedInfo)" -Type Success
         return $true
     }
     catch {
@@ -4059,7 +4060,7 @@ function Get-PreferenceValue {
 function Update-AllMacs {
     <#
     .SYNOPSIS
-        Recalculate MACs for ALL preferences that have existing MACs.
+        Recalculate MACs for ALL preferences and remove orphaned MACs.
     .DESCRIPTION
         When Meteor patches extensions or other data changes, the existing MACs
         become invalid because they were calculated for the old values.
@@ -4067,8 +4068,12 @@ function Update-AllMacs {
         This function:
         1. Gets all existing MAC paths from the MACs structure
         2. For each path, looks up the ACTUAL current value in the preferences
-        3. Recalculates the MAC using the correct formula
-        4. Updates the MAC in the structure
+        3. If the preference exists: recalculates the MAC using the correct formula
+        4. If the preference does NOT exist: REMOVES the orphaned MAC entry
+
+        Removing orphaned MACs is critical - the browser fails validation when
+        it finds a MAC for a preference that doesn't exist, causing Settings
+        crashes and "reset" warnings.
 
         This ensures ALL MACs match their current values, preventing
         "tracked_preferences_reset" entries for ANY preference.
@@ -4083,8 +4088,9 @@ function Update-AllMacs {
     .OUTPUTS
         Hashtable with:
         - recalculated: Count of MACs that were recalculated
-        - skipped: Count of MACs skipped (value not found)
+        - removed: Count of orphaned MACs that were removed
         - paths: Array of paths that were recalculated
+        - removedPaths: Array of paths that were removed
     #>
     param(
         [hashtable]$Macs,
@@ -4119,11 +4125,35 @@ function Update-AllMacs {
         $lookupResult = Get-PreferenceValue -Preferences $Preferences -Path $lookupPath -Trace:$shouldTrace
 
         if (-not $lookupResult.Found) {
-            # Path doesn't exist in preferences - skip it
-            Write-Verbose "[Update MACs] Skipped $path - path not found at $lookupPath"
+            # Path doesn't exist in preferences - REMOVE the orphaned MAC
+            # Orphaned MACs cause validation failures when the browser can't find
+            # the corresponding preference value to validate against
+            Write-Verbose "[Update MACs] Removing orphaned MAC: $path (preference not found at $lookupPath)"
             $skipped++
             $skippedPaths += $path
             $traceCount++
+
+            # Remove the MAC from the nested structure
+            $parts = $path -split '\.'
+            $current = $Macs
+            for ($i = 0; $i -lt $parts.Count - 1; $i++) {
+                $part = $parts[$i]
+                if ($current -is [hashtable] -and $current.ContainsKey($part)) {
+                    $current = $current[$part]
+                }
+                else {
+                    # Parent path doesn't exist, nothing to remove
+                    $current = $null
+                    break
+                }
+            }
+            if ($null -ne $current -and $current -is [hashtable]) {
+                $leafKey = $parts[-1]
+                if ($current.ContainsKey($leafKey)) {
+                    $current.Remove($leafKey)
+                    Write-Verbose "[Update MACs]   -> Removed MAC entry for '$leafKey'"
+                }
+            }
             continue
         }
 
@@ -4149,9 +4179,9 @@ function Update-AllMacs {
         Write-Verbose "[Update MACs] $path = $($newMac.Substring(0, 16))..."
     }
 
-    # Log summary of skipped paths for debugging
+    # Log summary of removed orphaned MACs
     if ($skippedPaths.Count -gt 0) {
-        Write-Verbose "[Update MACs] === SKIPPED PATHS SUMMARY ($($skippedPaths.Count) total) ==="
+        Write-Verbose "[Update MACs] === REMOVED ORPHANED MACs ($($skippedPaths.Count) total) ==="
         foreach ($sp in ($skippedPaths | Select-Object -First 10)) {
             Write-Verbose "[Update MACs]   - $sp"
         }
@@ -4161,10 +4191,10 @@ function Update-AllMacs {
     }
 
     return @{
-        recalculated  = $recalculated
-        skipped       = $skipped
-        paths         = $recalculatedPaths
-        skippedPaths  = $skippedPaths
+        recalculated   = $recalculated
+        removed        = $skipped
+        paths          = $recalculatedPaths
+        removedPaths   = $skippedPaths
     }
 }
 
