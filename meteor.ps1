@@ -3675,17 +3675,25 @@ function Get-SuperMac {
     .SYNOPSIS
         Calculate super_mac (global integrity check).
     .DESCRIPTION
-        Concatenate all individual MACs in sorted key order, then:
-        HMAC-SHA256(key=seed, message=concat_macs)
+        According to Chromium source (pref_hash_store_impl.cc):
+            contents_->SetSuperMac(outer_->ComputeMac("", hashes_dict));
 
-        For non-Chrome builds with empty seed, uses empty key.
+        Where ComputeMac calls:
+            HMAC-SHA256(seed, device_id + path + value_json)
+
+        For super_mac:
+            path = "" (empty string)
+            value_json = JSON serialization of the nested macs dictionary
+
+        The message format is: device_id + "" + json(macs_dict)
     #>
     param(
         [string]$SeedHex,
-        [hashtable]$PathsAndMacs
+        [string]$DeviceId,
+        [hashtable]$MacsTree  # Nested macs structure (not flattened)
     )
 
-    # Handle empty seed for non-Chrome builds
+    # Handle empty seed for non-Chrome builds (Comet uses empty seed)
     if ([string]::IsNullOrEmpty($SeedHex)) {
         $seedBytes = [byte[]]@()
     } else {
@@ -3696,15 +3704,15 @@ function Get-SuperMac {
         }
     }
 
-    # Sort paths and concatenate path+MAC pairs
-    # Chromium format: path1 + mac1 + path2 + mac2 + ... (sorted by path)
-    $sortedPaths = $PathsAndMacs.Keys | Sort-Object
-    $macString = ""
-    foreach ($path in $sortedPaths) {
-        $macString += $path + $PathsAndMacs[$path]
-    }
+    # Serialize the macs tree to JSON (Chromium style)
+    # The macs tree is the nested structure like: { homepage: "MAC", browser: { show_home_button: "MAC" }, ... }
+    $macsJson = ConvertTo-JsonForHmac -Value $MacsTree
 
-    $messageBytes = [System.Text.Encoding]::UTF8.GetBytes($macString)
+    # Build message: device_id + path + value_json
+    # For super_mac: path is empty string ""
+    $message = $DeviceId + "" + $macsJson
+
+    $messageBytes = [System.Text.Encoding]::UTF8.GetBytes($message)
     return Get-HmacSha256 -Key $seedBytes -Message $messageBytes
 }
 
@@ -3968,6 +3976,52 @@ function Update-TrackedPreferences {
             $current[$parts[-1]] = $value
         }
 
+        # Enable incognito access for uBlock Origin and AdGuard Extra
+        # This setting is in extensions.settings.{id}.incognito and IS tracked with SPLIT MAC
+        # The MAC will be recalculated automatically since we recalculate all extension MACs
+        $extensionsToEnableIncognito = @(
+            "cjpalhdlnbpafiamejdnhcphjbkeiagm",  # uBlock Origin
+            "gkeojjjcdcopjkbelgbcpckplegclfeg"   # AdGuard Extra
+        )
+        if ($securePrefsHash.ContainsKey('extensions') -and $securePrefsHash['extensions'].ContainsKey('settings')) {
+            $extSettings = $securePrefsHash['extensions']['settings']
+            foreach ($extId in $extensionsToEnableIncognito) {
+                if ($extSettings.ContainsKey($extId)) {
+                    $extSettings[$extId]['incognito'] = $true
+                    Write-Verbose "[Secure Prefs] Enabled incognito for extension $extId"
+                }
+            }
+        }
+
+        # Pin uBlock Origin to toolbar in Regular Preferences
+        # This setting (extensions.pinned_extensions) is NOT tracked by MAC system
+        if ($null -ne $regularPrefsHash) {
+            $extensionsToPinToToolbar = @(
+                "cjpalhdlnbpafiamejdnhcphjbkeiagm"   # uBlock Origin
+            )
+            if (-not $regularPrefsHash.ContainsKey('extensions')) {
+                $regularPrefsHash['extensions'] = @{}
+            }
+            # Get existing pinned extensions or create new list
+            $existingPinned = @()
+            if ($regularPrefsHash['extensions'].ContainsKey('pinned_extensions')) {
+                $existingPinned = @($regularPrefsHash['extensions']['pinned_extensions'])
+            }
+            # Add our extensions if not already pinned
+            foreach ($extId in $extensionsToPinToToolbar) {
+                if ($existingPinned -notcontains $extId) {
+                    $existingPinned += $extId
+                }
+            }
+            $regularPrefsHash['extensions']['pinned_extensions'] = $existingPinned
+            Write-Verbose "[Regular Prefs] Pinned extensions to toolbar: $($existingPinned -join ', ')"
+
+            # Write updated Regular Preferences
+            $regularPrefsUpdatedJson = $regularPrefsHash | ConvertTo-Json -Depth 30 -Compress
+            Set-Content -Path $regularPrefsPath -Value $regularPrefsUpdatedJson -Encoding UTF8 -Force
+            Write-Verbose "[Regular Prefs] Updated Regular Preferences file"
+        }
+
         # Get existing MACs structure - debug what we have BEFORE any modification
         Write-Verbose "[Secure Prefs] securePrefsHash has 'protection' key: $($securePrefsHash.ContainsKey('protection'))"
         if ($securePrefsHash.ContainsKey('protection')) {
@@ -4037,12 +4091,13 @@ function Update-TrackedPreferences {
             Write-Verbose "[Secure Prefs] Found account_values section - MACs were included in recalculation"
         }
 
-        # Flatten all MACs for super_mac calculation
+        # Flatten MACs to count them (for logging only)
         $allMacs = @{}
         Get-FlattenedMacs -Node $macs -Path "" -Result $allMacs
 
-        # Calculate new super_mac
-        $superMac = Get-SuperMac -SeedHex $seedHex -PathsAndMacs $allMacs
+        # Calculate new super_mac using the NESTED macs structure
+        # Chromium formula: HMAC-SHA256(seed, device_id + "" + json(macs_dict))
+        $superMac = Get-SuperMac -SeedHex $seedHex -DeviceId $deviceId -MacsTree $macs
         $securePrefsHash['protection']['super_mac'] = $superMac
 
         Write-Verbose "[Secure Prefs] Calculated super_mac from $($allMacs.Count) MACs: $($superMac.Substring(0, 16))..."
