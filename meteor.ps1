@@ -3566,7 +3566,15 @@ function Set-RegistryPreferenceMacs {
         Comet stores authoritative MACs at:
         HKCU:\SOFTWARE\Perplexity\Comet\PreferenceMACs\Default
 
-        Each preference path becomes a registry value name with the MAC as data.
+        Chromium uses two storage modes:
+        1. Atomic MACs: Direct values in Default key (e.g., "browser.show_home_button")
+        2. Split MACs: Values in subkeys (e.g., Default\extensions.settings\{extId})
+
+        Split paths like "extensions.settings.xxx" are stored as:
+        - Key: PreferenceMACs\Default\extensions.settings
+        - Value name: xxx
+        - Value data: MAC
+
         This must be synchronized with Secure Preferences MACs or browser crashes.
     .PARAMETER DeviceId
         The device ID calculated from Windows SID.
@@ -3583,13 +3591,39 @@ function Set-RegistryPreferenceMacs {
 
     $regPath = "HKCU:\SOFTWARE\Perplexity\Comet\PreferenceMACs\Default"
 
+    # Known split prefixes - these use hierarchical subkey structure
+    # Determined by Chromium's pref_hash_filter.cc tracked split preferences
+    $splitPrefixes = @(
+        "extensions.settings"
+    )
+
+    function Test-IsSplitPath {
+        param([string]$Path)
+        foreach ($prefix in $splitPrefixes) {
+            if ($Path.StartsWith("$prefix.")) {
+                return @{
+                    IsSplit = $true
+                    Prefix = $prefix
+                    Suffix = $Path.Substring($prefix.Length + 1)
+                }
+            }
+        }
+        return @{ IsSplit = $false }
+    }
+
     if ($DryRunMode) {
         Write-Status "Would set registry MACs at: $regPath" -Type Detail
         foreach ($path in $PreferencesToSet.Keys) {
             # Use FULL path for HMAC calculation (including account_values prefix if present)
             # This matches Chromium behavior where account_values.X and X have different MACs
             $mac = Get-RegistryPreferenceHmac -DeviceId $DeviceId -Path $path -Value $PreferencesToSet[$path]
-            Write-Verbose "[Registry MAC] Would set $path = $($mac.Substring(0, 16))..."
+            $splitInfo = Test-IsSplitPath -Path $path
+            if ($splitInfo.IsSplit) {
+                Write-Verbose "[Registry MAC] Would set (split) $($splitInfo.Prefix)\$($splitInfo.Suffix) = $($mac.Substring(0, 16))..."
+            }
+            else {
+                Write-Verbose "[Registry MAC] Would set (atomic) $path = $($mac.Substring(0, 16))..."
+            }
         }
         return $true
     }
@@ -3607,9 +3641,24 @@ function Set-RegistryPreferenceMacs {
             # This matches Chromium behavior where account_values.X and X have different MACs
             $mac = Get-RegistryPreferenceHmac -DeviceId $DeviceId -Path $path -Value $value
 
-            # Set the registry value (uses full path including account_values prefix)
-            Set-ItemProperty -Path $regPath -Name $path -Value $mac -Type String -Force
-            Write-Verbose "[Registry MAC] Set $path = $($mac.Substring(0, 16))..."
+            $splitInfo = Test-IsSplitPath -Path $path
+
+            if ($splitInfo.IsSplit) {
+                # Split MAC: Write to subkey structure
+                # e.g., extensions.settings.xxx -> Default\extensions.settings\xxx
+                $subkeyPath = Join-Path $regPath $splitInfo.Prefix
+                if (-not (Test-Path $subkeyPath)) {
+                    New-Item -Path $subkeyPath -Force | Out-Null
+                    Write-Verbose "[Registry MAC] Created subkey: $subkeyPath"
+                }
+                Set-ItemProperty -Path $subkeyPath -Name $splitInfo.Suffix -Value $mac -Type String -Force
+                Write-Verbose "[Registry MAC] Set (split) $($splitInfo.Prefix)\$($splitInfo.Suffix) = $($mac.Substring(0, 16))..."
+            }
+            else {
+                # Atomic MAC: Write directly to Default key
+                Set-ItemProperty -Path $regPath -Name $path -Value $mac -Type String -Force
+                Write-Verbose "[Registry MAC] Set (atomic) $path = $($mac.Substring(0, 16))..."
+            }
         }
 
         Write-Verbose "[Registry MAC] Updated $($PreferencesToSet.Count) registry MACs"
