@@ -3841,11 +3841,26 @@ function Set-BrowserPreferences {
     # Comet uses empty seed for file MACs (non-Chrome branded build)
     $seedHex = ""
 
-    # Tracked preferences to set
+    # Extension IDs for incognito and pinning
+    $uBlockId = "cjpalhdlnbpafiamejdnhcphjbkeiagm"
+    $adGuardExtraId = "gkeojjjcdcopjkbelgbcpckplegclfeg"
+
+    # Tracked preferences to set (atomic MACs)
     $trackedPrefs = @{
         "extensions.ui.developer_mode"    = $true
         "browser.show_home_button"        = $true
         "bookmark_bar.show_apps_shortcut" = $false
+    }
+
+    # Extension settings with incognito enabled (split MACs)
+    # These are tracked under extensions.settings.{extId} with split MAC structure
+    $extensionSettings = @{
+        $uBlockId = @{
+            incognito = $true
+        }
+        $adGuardExtraId = @{
+            incognito = $true
+        }
     }
 
     # Untracked preferences (no MAC needed)
@@ -3858,6 +3873,9 @@ function Set-BrowserPreferences {
             metrics_allowed      = $false
         }
     }
+
+    # Extensions to pin to toolbar (for Regular Preferences)
+    $extensionsToPinToToolbar = @($uBlockId)
 
     # Build the Secure Preferences structure
     $securePrefs = $untrackedPrefs.Clone()
@@ -3879,7 +3897,19 @@ function Set-BrowserPreferences {
         $current[$parts[-1]] = $value
     }
 
-    # Calculate MACs for tracked preferences
+    # Add extension settings to the structure
+    if (-not $securePrefs.ContainsKey('extensions')) {
+        $securePrefs['extensions'] = @{}
+    }
+    if (-not $securePrefs['extensions'].ContainsKey('settings')) {
+        $securePrefs['extensions']['settings'] = @{}
+    }
+    foreach ($extId in $extensionSettings.Keys) {
+        $securePrefs['extensions']['settings'][$extId] = $extensionSettings[$extId]
+        Write-Verbose "[Secure Prefs] Added extension settings for $extId"
+    }
+
+    # Calculate MACs for tracked preferences (atomic MACs)
     $macs = @{}
     foreach ($path in $trackedPrefs.Keys) {
         $value = $trackedPrefs[$path]
@@ -3897,6 +3927,25 @@ function Set-BrowserPreferences {
         }
         $current[$parts[-1]] = $mac
         Write-Verbose "[Secure Prefs] Calculated MAC for $path = $($mac.Substring(0, 16))..."
+    }
+
+    # Calculate MACs for extension settings (split MACs)
+    # These are stored under extensions.settings.{extId} in the macs structure
+    if (-not $macs.ContainsKey('extensions')) {
+        $macs['extensions'] = @{}
+    }
+    if (-not $macs['extensions'].ContainsKey('settings')) {
+        $macs['extensions']['settings'] = @{}
+    }
+    foreach ($extId in $extensionSettings.Keys) {
+        $extSettings = $extensionSettings[$extId]
+        $path = "extensions.settings.$extId"
+        $mac = Get-PreferenceHmac -SeedHex $seedHex -DeviceId $deviceId -Path $path -Value $extSettings
+        $macs['extensions']['settings'][$extId] = $mac
+        Write-Verbose "[Secure Prefs] Calculated split MAC for $path = $($mac.Substring(0, 16))..."
+
+        # Also add to trackedPrefs for registry MAC calculation
+        $trackedPrefs[$path] = $extSettings
     }
 
     # Calculate super_mac
@@ -3921,6 +3970,17 @@ function Set-BrowserPreferences {
         Set-Content -Path $securePrefsPath -Value $json -Encoding UTF8 -Force
         Write-Verbose "[Secure Prefs] Wrote Secure Preferences to: $securePrefsPath"
 
+        # Write Regular Preferences (for pinned extensions - not tracked by MAC)
+        $regularPrefsPath = Join-Path $profilePath "Preferences"
+        $regularPrefs = @{
+            extensions = @{
+                pinned_extensions = $extensionsToPinToToolbar
+            }
+        }
+        $regularJson = ConvertTo-Json -InputObject $regularPrefs -Depth 30 -Compress
+        Set-Content -Path $regularPrefsPath -Value $regularJson -Encoding UTF8 -Force
+        Write-Verbose "[Regular Prefs] Wrote Regular Preferences with pinned extensions to: $regularPrefsPath"
+
         # Set registry MACs (uses different seed: "ChromeRegistryHashStoreValidationSeed")
         $registryResult = Set-RegistryPreferenceMacs -DeviceId $deviceId -PreferencesToSet $trackedPrefs
         if ($registryResult) {
@@ -3930,7 +3990,7 @@ function Set-BrowserPreferences {
             Write-Verbose "[Registry MAC] WARNING: Failed to set registry MACs"
         }
 
-        Write-Status "First-run preferences with tracked prefs and valid MACs written successfully" -Type Success
+        Write-Status "First-run preferences with tracked prefs, extension settings, and pinning written successfully" -Type Success
         return $true
     }
     catch {
