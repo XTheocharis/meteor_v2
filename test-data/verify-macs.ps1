@@ -3,15 +3,29 @@
     Verifies MAC calculations against browser-generated values.
 
 .DESCRIPTION
-    Loads browser-captured test data and compares our calculated MACs against
-    the browser's actual MACs. Helps identify JSON serialization differences.
+    Reads live browser data from .meteor\User Data and Windows registry to verify
+    our MAC calculations match the browser's actual MACs.
+
+.PARAMETER DataPath
+    Path to the .meteor directory (default: .\.meteor relative to meteor_v2 root)
+
+.PARAMETER Verbose
+    Show JSON values for all MACs, not just failures.
+
+.PARAMETER ShowValues
+    Show full JSON values for failed MACs.
+
+.PARAMETER FilterPath
+    Only test paths containing this substring.
 
 .NOTES
     Run from the meteor_v2 directory:
     .\test-data\verify-macs.ps1
+    .\test-data\verify-macs.ps1 -DataPath "D:\CustomPath\.meteor"
 #>
 
 param(
+    [string]$DataPath = "",
     [switch]$Verbose,
     [switch]$ShowValues,
     [string]$FilterPath = ""
@@ -23,37 +37,36 @@ $ErrorActionPreference = "Stop"
 # CONFIGURATION
 # ============================================================================
 
-$TestDataDir = Join-Path $PSScriptRoot ""
-$BrowserStateFile = Join-Path $TestDataDir "browser-state.json"
-$SecurePrefsFile = Join-Path $TestDataDir "secure-preferences.json"
-
-# ============================================================================
-# LOAD TEST DATA
-# ============================================================================
-
-Write-Host "=" * 80 -ForegroundColor Cyan
-Write-Host "MAC CALCULATION VERIFICATION" -ForegroundColor Cyan
-Write-Host "=" * 80 -ForegroundColor Cyan
-Write-Host ""
-
-if (-not (Test-Path $BrowserStateFile)) {
-    Write-Host "ERROR: $BrowserStateFile not found" -ForegroundColor Red
-    exit 1
+# Default to .meteor in parent directory (meteor_v2\.meteor)
+if ([string]::IsNullOrEmpty($DataPath)) {
+    $DataPath = Join-Path (Split-Path $PSScriptRoot -Parent) ".meteor"
 }
 
-if (-not (Test-Path $SecurePrefsFile)) {
-    Write-Host "ERROR: $SecurePrefsFile not found" -ForegroundColor Red
-    exit 1
+$SecurePrefsFile = Join-Path $DataPath "User Data\Default\Secure Preferences"
+$RegistryPath = "HKCU:\Software\Perplexity\Comet\PreferenceMACs\Default"
+
+# MAC seeds - empty for Comet (non-Chrome branded), standard seed for registry
+$FileMacSeed = ""  # Comet uses empty string
+$RegistryMacSeed = "ChromeRegistryHashStoreValidationSeed"
+
+# ============================================================================
+# GET DEVICE ID (Windows SID)
+# ============================================================================
+
+function Get-DeviceId {
+    <#
+    .SYNOPSIS
+        Get the current user's Windows SID, which Chromium uses as the device ID.
+    #>
+    try {
+        $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+        return $currentUser.User.Value
+    }
+    catch {
+        Write-Host "ERROR: Failed to get Windows SID: $_" -ForegroundColor Red
+        exit 1
+    }
 }
-
-$browserState = Get-Content $BrowserStateFile -Raw | ConvertFrom-Json
-$securePrefs = Get-Content $SecurePrefsFile -Raw | ConvertFrom-Json
-$securePrefsRaw = Get-Content $SecurePrefsFile -Raw
-
-Write-Host "Device ID: $($browserState.device_id)"
-Write-Host "File MAC Seed: '$($browserState.file_mac_seed)' (empty = Comet)"
-Write-Host "Registry MAC Seed: '$($browserState.registry_mac_seed)'"
-Write-Host ""
 
 # ============================================================================
 # MAC CALCULATION FUNCTIONS
@@ -93,10 +106,22 @@ function ConvertTo-SortedAndPruned {
         return $null
     }
     elseif ($Value -is [array]) {
-        # Process array items (but don't prune items from arrays)
+        # Process array items AND prune empty dicts/arrays from the list
+        # (Chromium's RemoveEmptyValueListEntries does this)
         $result = @()
         foreach ($item in $Value) {
-            $result += ConvertTo-SortedAndPruned -Value $item
+            $childValue = ConvertTo-SortedAndPruned -Value $item
+            # PRUNE: Skip empty arrays and empty dicts/ordered dicts from list items
+            if ($childValue -is [array] -and $childValue.Count -eq 0) {
+                continue
+            }
+            if ($childValue -is [hashtable] -and $childValue.Count -eq 0) {
+                continue
+            }
+            if ($childValue -is [System.Collections.Specialized.OrderedDictionary] -and $childValue.Count -eq 0) {
+                continue
+            }
+            $result += $childValue
         }
         # CRITICAL: Use comma operator to prevent PowerShell from unrolling empty arrays to $null
         return ,$result
@@ -314,13 +339,107 @@ function Test-RawJsonHasEmptyArray {
     return $RawJson -match $pattern
 }
 
+function Get-MacsFromNestedObject {
+    <#
+    .SYNOPSIS
+        Recursively extract all MAC paths and values from a nested PSCustomObject.
+    .DESCRIPTION
+        The protection.macs structure mirrors the preference structure:
+        protection.macs.extensions.settings.{id} = "MAC"
+        This becomes path "extensions.settings.{id}"
+    #>
+    param(
+        [PSCustomObject]$Object,
+        [string]$Prefix = ""
+    )
+
+    $results = @{}
+
+    if ($null -eq $Object) {
+        return $results
+    }
+
+    foreach ($prop in $Object.PSObject.Properties) {
+        $name = $prop.Name
+        $value = $prop.Value
+        $path = if ($Prefix) { "$Prefix.$name" } else { $name }
+
+        if ($value -is [PSCustomObject]) {
+            # Recurse into nested objects
+            $nested = Get-MacsFromNestedObject -Object $value -Prefix $path
+            foreach ($key in $nested.Keys) {
+                $results[$key] = $nested[$key]
+            }
+        }
+        elseif ($value -is [string]) {
+            # This is a MAC value
+            $results[$path] = $value
+        }
+    }
+
+    return $results
+}
+
 # ============================================================================
-# RUN VERIFICATION
+# LOAD DATA
 # ============================================================================
 
-$deviceId = $browserState.device_id
-$fileSeed = $browserState.file_mac_seed
-$registrySeed = $browserState.registry_mac_seed
+Write-Host "=" * 80 -ForegroundColor Cyan
+Write-Host "MAC CALCULATION VERIFICATION (Live Data)" -ForegroundColor Cyan
+Write-Host "=" * 80 -ForegroundColor Cyan
+Write-Host ""
+
+# Get device ID
+$deviceId = Get-DeviceId
+Write-Host "Device ID (SID): $deviceId"
+Write-Host "File MAC Seed: '$FileMacSeed' (empty = Comet)"
+Write-Host "Registry MAC Seed: '$RegistryMacSeed'"
+Write-Host ""
+
+# Check for Secure Preferences file
+if (-not (Test-Path $SecurePrefsFile)) {
+    Write-Host "ERROR: Secure Preferences not found at: $SecurePrefsFile" -ForegroundColor Red
+    Write-Host "Make sure you have run meteor.ps1 at least once to create the browser profile." -ForegroundColor Yellow
+    exit 1
+}
+
+Write-Host "Reading: $SecurePrefsFile"
+
+$securePrefsRaw = Get-Content $SecurePrefsFile -Raw -Encoding UTF8
+$securePrefs = $securePrefsRaw | ConvertFrom-Json
+
+# Extract file MACs from protection.macs
+$fileMacs = @{}
+if ($securePrefs.protection -and $securePrefs.protection.macs) {
+    $fileMacs = Get-MacsFromNestedObject -Object $securePrefs.protection.macs
+}
+
+Write-Host "Found $($fileMacs.Count) file MACs in Secure Preferences"
+
+# Read registry MACs
+$registryMacs = @{}
+if (Test-Path $RegistryPath) {
+    Write-Host "Reading: $RegistryPath"
+    $regProps = Get-ItemProperty -Path $RegistryPath -ErrorAction SilentlyContinue
+    if ($regProps) {
+        foreach ($prop in $regProps.PSObject.Properties) {
+            # Skip PowerShell metadata properties
+            if ($prop.Name -match '^PS') { continue }
+            $registryMacs[$prop.Name] = $prop.Value
+        }
+    }
+    Write-Host "Found $($registryMacs.Count) registry MACs"
+}
+else {
+    Write-Host "Registry path not found: $RegistryPath" -ForegroundColor Yellow
+    Write-Host "Registry MACs will be skipped." -ForegroundColor Yellow
+}
+
+Write-Host ""
+
+# ============================================================================
+# FILE MACs VERIFICATION
+# ============================================================================
 
 $totalTests = 0
 $passedTests = 0
@@ -331,16 +450,11 @@ Write-Host "FILE MACs VERIFICATION" -ForegroundColor Yellow
 Write-Host "=" * 80 -ForegroundColor Yellow
 Write-Host ""
 
-foreach ($prop in $browserState.file_macs.PSObject.Properties) {
-    $path = $prop.Name
-
-    # Skip metadata
-    if ($path -eq "_description") { continue }
-
+foreach ($path in ($fileMacs.Keys | Sort-Object)) {
     # Apply filter if specified
     if ($FilterPath -and $path -notlike "*$FilterPath*") { continue }
 
-    $expectedMac = $prop.Value
+    $expectedMac = $fileMacs[$path]
 
     # Get the actual value from secure preferences
     $value = Get-PrefValue -Root $securePrefs -Path $path
@@ -354,7 +468,7 @@ foreach ($prop in $browserState.file_macs.PSObject.Properties) {
     }
 
     # Calculate MAC
-    $calculatedMac = Calculate-Mac -Seed $fileSeed -DeviceId $deviceId -Path $path -Value $value
+    $calculatedMac = Calculate-Mac -Seed $FileMacSeed -DeviceId $deviceId -Path $path -Value $value
 
     $totalTests++
     $match = $calculatedMac -eq $expectedMac
@@ -392,6 +506,10 @@ foreach ($prop in $browserState.file_macs.PSObject.Properties) {
     }
 }
 
+# ============================================================================
+# REGISTRY MACs VERIFICATION
+# ============================================================================
+
 Write-Host ""
 Write-Host "=" * 80 -ForegroundColor Yellow
 Write-Host "REGISTRY MACs VERIFICATION" -ForegroundColor Yellow
@@ -400,17 +518,13 @@ Write-Host ""
 
 $regPassedTests = 0
 $regTotalTests = 0
+$regFailedTests = @()
 
-foreach ($prop in $browserState.registry_macs.PSObject.Properties) {
-    $path = $prop.Name
-
-    # Skip metadata
-    if ($path -eq "_description") { continue }
-
+foreach ($path in ($registryMacs.Keys | Sort-Object)) {
     # Apply filter if specified
     if ($FilterPath -and $path -notlike "*$FilterPath*") { continue }
 
-    $expectedMac = $prop.Value
+    $expectedMac = $registryMacs[$path]
 
     # Get the actual value from secure preferences
     $value = Get-PrefValue -Root $securePrefs -Path $path
@@ -424,7 +538,7 @@ foreach ($prop in $browserState.registry_macs.PSObject.Properties) {
     }
 
     # Calculate MAC with registry seed
-    $calculatedMac = Calculate-Mac -Seed $registrySeed -DeviceId $deviceId -Path $path -Value $value
+    $calculatedMac = Calculate-Mac -Seed $RegistryMacSeed -DeviceId $deviceId -Path $path -Value $value
 
     $regTotalTests++
     $match = $calculatedMac -eq $expectedMac
@@ -437,6 +551,13 @@ foreach ($prop in $browserState.registry_macs.PSObject.Properties) {
     else {
         $status = "[FAIL]"
         $color = "Red"
+        $regFailedTests += @{
+            Path = $path
+            Expected = $expectedMac
+            Calculated = $calculatedMac
+            Value = $value
+            ValueJson = (ConvertTo-JsonForHmac -Value $value)
+        }
     }
 
     Write-Host "$status $path" -ForegroundColor $color
@@ -491,7 +612,31 @@ if ($failedTests.Count -gt 0 -and $ShowValues) {
     }
 }
 
+if ($regFailedTests.Count -gt 0 -and $ShowValues) {
+    Write-Host "=" * 80 -ForegroundColor Red
+    Write-Host "FAILED REGISTRY MACs - DETAILED VALUES" -ForegroundColor Red
+    Write-Host "=" * 80 -ForegroundColor Red
+    Write-Host ""
+
+    foreach ($failed in $regFailedTests) {
+        Write-Host "Path: $($failed.Path)" -ForegroundColor Yellow
+        Write-Host "Value JSON:" -ForegroundColor White
+        Write-Host $failed.ValueJson
+        Write-Host ""
+        Write-Host "Expected MAC:   $($failed.Expected)" -ForegroundColor DarkGray
+        Write-Host "Calculated MAC: $($failed.Calculated)" -ForegroundColor DarkGray
+        Write-Host ""
+        Write-Host "-" * 40
+        Write-Host ""
+    }
+}
+
 if ($fileFailed -gt 0 -or $regFailed -gt 0) {
     Write-Host "HINT: Run with -ShowValues to see full JSON values for failed MACs" -ForegroundColor Yellow
     Write-Host "HINT: Run with -FilterPath 'extensions.settings' to focus on specific paths" -ForegroundColor Yellow
+}
+
+# Exit with error code if any failures
+if ($fileFailed -gt 0 -or $regFailed -gt 0) {
+    exit 1
 }
