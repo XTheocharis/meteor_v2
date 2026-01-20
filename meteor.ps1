@@ -3886,9 +3886,10 @@ function Update-TrackedPreferences {
             if ($path -like "account_values.*") {
                 $lookupPath = $path -replace "^account_values\.", ""
             }
-            $value = Get-PreferenceValue -Preferences $securePrefsHash -Path $lookupPath
-            if ($null -ne $value) {
-                $registryPrefs[$path] = $value
+            $lookupResult = Get-PreferenceValue -Preferences $securePrefsHash -Path $lookupPath
+            if ($lookupResult.Found) {
+                # Include even null values - they need registry MACs too
+                $registryPrefs[$path] = $lookupResult.Value
             }
         }
 
@@ -3994,10 +3995,14 @@ function Get-PreferenceValue {
         Get a preference value from a nested hashtable using a dotted path.
     .DESCRIPTION
         Given a path like "extensions.ui.developer_mode", navigates the hashtable
-        and returns the value at that path, or $null if not found.
+        and returns a result object indicating whether the path was found and its value.
 
         IMPORTANT: This assumes dots are path separators. Keys containing literal
         dots will NOT be found correctly (e.g., "foo.bar" as a single key name).
+    .OUTPUTS
+        Hashtable with:
+        - Found: $true if path exists (even if value is $null), $false if not found
+        - Value: The value at the path (may be $null if the value is literally null)
     #>
     param(
         [hashtable]$Preferences,
@@ -4009,44 +4014,46 @@ function Get-PreferenceValue {
     $current = $Preferences
     $tracePath = ""
 
-    foreach ($part in $parts) {
+    for ($i = 0; $i -lt $parts.Count; $i++) {
+        $part = $parts[$i]
+        $isLast = ($i -eq $parts.Count - 1)
         $tracePath = if ($tracePath) { "$tracePath.$part" } else { $part }
 
         if ($null -eq $current) {
             if ($Trace) { Write-Verbose "[GetPrefValue] FAIL at '$tracePath': current is null" }
-            return $null
+            return @{ Found = $false; Value = $null }
         }
         if ($current -is [hashtable]) {
             if ($current.ContainsKey($part)) {
                 $current = $current[$part]
-                if ($Trace) { Write-Verbose "[GetPrefValue] OK at '$tracePath': found in hashtable" }
+                if ($Trace) { Write-Verbose "[GetPrefValue] OK at '$tracePath': found in hashtable$(if ($isLast -and $null -eq $current) { ' (value is null)' })" }
             }
             else {
                 if ($Trace) {
                     $availableKeys = ($current.Keys | Select-Object -First 5) -join ", "
                     Write-Verbose "[GetPrefValue] FAIL at '$tracePath': key '$part' not in hashtable (available: $availableKeys...)"
                 }
-                return $null
+                return @{ Found = $false; Value = $null }
             }
         }
         elseif ($current -is [PSCustomObject]) {
             $prop = $current.PSObject.Properties[$part]
             if ($prop) {
                 $current = $prop.Value
-                if ($Trace) { Write-Verbose "[GetPrefValue] OK at '$tracePath': found in PSCustomObject" }
+                if ($Trace) { Write-Verbose "[GetPrefValue] OK at '$tracePath': found in PSCustomObject$(if ($isLast -and $null -eq $current) { ' (value is null)' })" }
             }
             else {
                 if ($Trace) { Write-Verbose "[GetPrefValue] FAIL at '$tracePath': property '$part' not in PSCustomObject" }
-                return $null
+                return @{ Found = $false; Value = $null }
             }
         }
         else {
             if ($Trace) { Write-Verbose "[GetPrefValue] FAIL at '$tracePath': current is $($current.GetType().Name), not traversable" }
-            return $null
+            return @{ Found = $false; Value = $null }
         }
     }
 
-    return $current
+    return @{ Found = $true; Value = $current }
 }
 
 function Update-AllMacs {
@@ -4109,19 +4116,20 @@ function Update-AllMacs {
 
         # Look up the actual value (trace first few failures for debugging)
         $shouldTrace = ($traceCount -lt $maxTrace)
-        $value = Get-PreferenceValue -Preferences $Preferences -Path $lookupPath -Trace:$shouldTrace
+        $lookupResult = Get-PreferenceValue -Preferences $Preferences -Path $lookupPath -Trace:$shouldTrace
 
-        if ($null -eq $value) {
-            # Value not found - might be a complex type or removed preference
-            # Keep the existing MAC
-            Write-Verbose "[Update MACs] Skipped $path - value not found at $lookupPath"
+        if (-not $lookupResult.Found) {
+            # Path doesn't exist in preferences - skip it
+            Write-Verbose "[Update MACs] Skipped $path - path not found at $lookupPath"
             $skipped++
             $skippedPaths += $path
             $traceCount++
             continue
         }
 
-        # Recalculate MAC using correct format
+        # Found the path - recalculate MAC even if value is null
+        # (null is a valid value that needs a MAC)
+        $value = $lookupResult.Value
         $newMac = Get-PreferenceHmac -SeedHex $SeedHex -DeviceId $DeviceId -Path $hmacPath -Value $value
 
         # Update MAC in nested structure
