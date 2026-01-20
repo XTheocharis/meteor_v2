@@ -99,4 +99,30 @@ if (Test-Path $testFile) {
 }
 Write-Host ""
 
+# Test 7: Array unrolling issue
+Write-Host "=== Test 7: Array unrolling in functions ===" -ForegroundColor Yellow
+function ReturnEmptyArray { return @() }
+function ReturnEmptyArrayWithComma { return ,@() }
+$result1 = ReturnEmptyArray
+$result2 = ReturnEmptyArrayWithComma
+Write-Host "ReturnEmptyArray result:"
+Write-Host "  Is null: $($null -eq $result1)"
+Write-Host "  Type: $(if ($null -eq $result1) { 'NULL' } else { $result1.GetType().FullName })"
+Write-Host "ReturnEmptyArrayWithComma result:"
+Write-Host "  Is null: $($null -eq $result2)"
+Write-Host "  Type: $(if ($null -eq $result2) { 'NULL' } else { $result2.GetType().FullName })"
+Write-Host "  Is array: $($result2 -is [array])"
+Write-Host "  Count: $(if ($result2 -is [array]) { $result2.Count } else { 'N/A' })"
+Write-Host ""
+
+# Test 8: What does null become when put in OrderedDictionary and serialized?
+Write-Host "=== Test 8: Null vs empty in serialization ===" -ForegroundColor Yellow
+$dict1 = [ordered]@{api=$null}
+$dict2 = [ordered]@{}  # No api key at all
+$dict3 = [ordered]@{api=@()}  # Empty array
+Write-Host "With null value: $($dict1 | ConvertTo-Json -Compress)"
+Write-Host "Without key:     $($dict2 | ConvertTo-Json -Compress)"
+Write-Host "With empty array: $($dict3 | ConvertTo-Json -Compress)"
+Write-Host ""
+
 Write-Host "=== Done ===" -ForegroundColor Cyan
