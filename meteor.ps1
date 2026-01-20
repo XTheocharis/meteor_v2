@@ -3319,7 +3319,7 @@ function ConvertTo-JsonForHmac {
     param([object]$Value)
 
     if ($null -eq $Value) {
-        return "null"
+        return ""  # Chromium uses empty string for null values, not "null"
     }
     if ($Value -is [bool]) {
         if ($Value) { return "true" } else { return "false" }

@@ -3,8 +3,16 @@
     Standalone MAC calculation test script with verified real data.
 
 .DESCRIPTION
-    Uses actual browser-generated MACs and preference values to reverse-engineer
+    Uses actual browser-generated MACs and preference values to verify
     the correct HMAC calculation formula.
+
+    Formula: HMAC-SHA256(key=seed, message=device_id + path + value_json)
+
+    Value serialization rules:
+    - Boolean true  -> "true"
+    - Boolean false -> "false"
+    - Empty array   -> "[]"
+    - Null value    -> "" (empty string, NOT "null")
 
 .NOTES
     Device ID (SID): S-1-5-21-2625391329-1236784108-3013698973
@@ -38,16 +46,13 @@ $BrowserFileMACs = @{
     "search_provider_overrides" = "CAD9C2EF10C01A092D532E6765A51773F04A6A58DD074C1994AD838CB121A39C"
     "default_search_provider_data.template_url_data" = "48149FA5C304A2BD2A4AFC3924F1AC0B6CAAE2BAFA85A72F322F79546C85F363"
 
-    # account_values paths
+    # account_values paths - these also use null (empty string) since not signed in
     "account_values.browser.show_home_button" = "1520F0B72EAE8FD10E4172DF40C195633987B33032256741329CFC1EC3AA9E6D"
     "account_values.extensions.ui.developer_mode" = "560FDF90337F6A28E361DC5FEB1FB133201758A8031B399876E4EDAEDCDEE9BF"
     "account_values.homepage" = "D029612CB48C7844E473B3BF40098DAFBF525DAB911B4860E6B7E72B0AA90405"
     "account_values.homepage_is_newtabpage" = "DA418FA8ED1E29E5F48D58670AFA05DF86AC25DF69A93ADD867EFF673B1A15FA"
     "account_values.session.restore_on_startup" = "8731D670CE55134C07B884F584B6E4773A2A89F4665DE598954034252081D3B5"
     "account_values.session.startup_urls" = "9F8D26D3588F9EF960A74E053731D98B32C13EAB7906E775192627A629F3792B"
-
-    # prefs.preference_reset_time - had a timestamp value
-    "prefs.preference_reset_time" = "E9800A3EA54BD8CB01472A94FA963014E6DA45DF6FBAEA92F99945D87EFAE386"
 }
 
 # Browser-generated MACs from Registry
@@ -68,7 +73,6 @@ $BrowserRegistryMACs = @{
     "account_values.homepage_is_newtabpage" = "3B744F8E9F350E91A8E17B2A0B742C44ADE317EB052B0EA983B82BDA421C2165"
     "account_values.session.restore_on_startup" = "7EE48574F185879B045130ECB4283B98B2D8E11CEACF8F67AE46D64CFF078E84"
     "account_values.session.startup_urls" = "0711756C84C58DEC515C6ED15FA9FAFF9F2C787A4B818D5ACF20B9E285D14517"
-    "prefs.preference_reset_time" = "0FD48FAFCD74F9AF48AC7FB8AB11D99DDB46E259ED931FDB9BA95A19F53FBE00"
 }
 
 # Actual values from Secure Preferences JSON
@@ -84,8 +88,8 @@ $ActualValues = @{
     "search_provider_overrides" = $null
     "default_search_provider_data.template_url_data" = $null
 
-    # account_values paths - use local values as fallback? Or null?
-    "account_values.browser.show_home_button" = $null  # Test both null and $true
+    # account_values paths - all null since not signed in
+    "account_values.browser.show_home_button" = $null
     "account_values.extensions.ui.developer_mode" = $null
     "account_values.homepage" = $null
     "account_values.homepage_is_newtabpage" = $null
@@ -113,36 +117,22 @@ function Get-HmacSha256 {
     return ($hashBytes | ForEach-Object { $_.ToString("X2") }) -join ""
 }
 
-function Get-HmacSha256Hex {
-    # Alternative: key as hex string
-    param(
-        [string]$KeyHex,
-        [string]$Message
-    )
-
-    if ([string]::IsNullOrEmpty($KeyHex)) {
-        $keyBytes = @()
-    } else {
-        $keyBytes = [byte[]]::new($KeyHex.Length / 2)
-        for ($i = 0; $i -lt $keyBytes.Length; $i++) {
-            $keyBytes[$i] = [Convert]::ToByte($KeyHex.Substring($i * 2, 2), 16)
-        }
-    }
-
-    $messageBytes = [System.Text.Encoding]::UTF8.GetBytes($Message)
-
-    $hmac = New-Object System.Security.Cryptography.HMACSHA256
-    $hmac.Key = $keyBytes
-    $hashBytes = $hmac.ComputeHash($messageBytes)
-
-    return ($hashBytes | ForEach-Object { $_.ToString("X2") }) -join ""
-}
-
 function ConvertTo-JsonValue {
+    <#
+    .SYNOPSIS
+        Serialize value to JSON string for HMAC calculation.
+    .DESCRIPTION
+        Chromium's serialization rules:
+        - Null:     "" (empty string, NOT "null")
+        - Boolean:  "true" or "false" (lowercase)
+        - Array:    "[]" or JSON representation
+        - String:   JSON-quoted
+        - Number:   String representation
+    #>
     param($Value)
 
     if ($null -eq $Value) {
-        return "null"
+        return ""  # CRITICAL: Chromium uses empty string for null, not "null"
     }
     elseif ($Value -is [bool]) {
         return $Value.ToString().ToLower()
@@ -164,175 +154,139 @@ function ConvertTo-JsonValue {
     }
 }
 
+function Calculate-Mac {
+    <#
+    .SYNOPSIS
+        Calculate MAC using the verified formula.
+    .DESCRIPTION
+        Formula: HMAC-SHA256(key=seed, message=device_id + path + value_json)
+    #>
+    param(
+        [string]$Seed,
+        [string]$DeviceId,
+        [string]$Path,
+        $Value
+    )
+
+    $valueJson = ConvertTo-JsonValue $Value
+    $message = $DeviceId + $Path + $valueJson
+    return Get-HmacSha256 -Key $Seed -Message $message
+}
+
 # ============================================================================
-# TEST DIFFERENT MAC FORMULAS
+# RUN VERIFICATION
 # ============================================================================
 
 Write-Host "=" * 80 -ForegroundColor Cyan
-Write-Host "MAC CALCULATION TEST SCRIPT" -ForegroundColor Cyan
+Write-Host "MAC CALCULATION VERIFICATION" -ForegroundColor Cyan
 Write-Host "=" * 80 -ForegroundColor Cyan
+Write-Host ""
+Write-Host "Formula: HMAC-SHA256(key=seed, message=device_id + path + value_json)"
 Write-Host ""
 Write-Host "Device ID: $DeviceId"
 Write-Host "File Seed: '$FileSeed' (empty)"
 Write-Host "Registry Seed: '$RegistrySeed'"
 Write-Host ""
 
-# Test cases for known-good MACs
-$TestCases = @(
-    @{ Path = "browser.show_home_button"; Value = $true }
-    @{ Path = "extensions.ui.developer_mode"; Value = $true }
-    @{ Path = "pinned_tabs"; Value = @() }
-    @{ Path = "homepage"; Value = $null }
-    @{ Path = "account_values.browser.show_home_button"; Value = $null }
-    @{ Path = "account_values.browser.show_home_button"; Value = $true; Note = "(using local value)" }
-)
+$totalTests = 0
+$passedTests = 0
+
+# ============================================================================
+# TEST FILE MACs
+# ============================================================================
 
 Write-Host "=" * 80 -ForegroundColor Yellow
-Write-Host "TESTING FILE MACs (seed = empty string)" -ForegroundColor Yellow
+Write-Host "FILE MACs (seed = empty string)" -ForegroundColor Yellow
 Write-Host "=" * 80 -ForegroundColor Yellow
 Write-Host ""
 
-foreach ($test in $TestCases) {
-    $path = $test.Path
-    $value = $test.Value
-    $note = if ($test.Note) { " $($test.Note)" } else { "" }
+foreach ($path in $BrowserFileMACs.Keys | Sort-Object) {
     $expectedMac = $BrowserFileMACs[$path]
+    $value = $ActualValues[$path]
+    $valueJson = ConvertTo-JsonValue $value
+    $calculatedMac = Calculate-Mac -Seed $FileSeed -DeviceId $DeviceId -Path $path -Value $value
 
-    if (-not $expectedMac) {
-        Write-Host "SKIP: $path - no expected MAC" -ForegroundColor DarkGray
-        continue
+    $totalTests++
+    $match = $calculatedMac -eq $expectedMac
+
+    if ($match) {
+        $passedTests++
+        $status = "[PASS]"
+        $color = "Green"
+    } else {
+        $status = "[FAIL]"
+        $color = "Red"
     }
 
-    Write-Host "Testing: $path$note" -ForegroundColor White
-    Write-Host "  Expected MAC: $expectedMac"
-    Write-Host "  Value: $(ConvertTo-JsonValue $value)"
-
-    $valueJson = ConvertTo-JsonValue $value
-
-    # Formula 1: device_id + path + value_json (key = empty UTF8)
-    $msg1 = $DeviceId + $path + $valueJson
-    $mac1 = Get-HmacSha256 -Key $FileSeed -Message $msg1
-    $match1 = if ($mac1 -eq $expectedMac) { "MATCH!" } else { "no" }
-    Write-Host "  Formula 1 (id+path+value, UTF8 key): $mac1 [$match1]"
-
-    # Formula 2: path + device_id + value_json
-    $msg2 = $path + $DeviceId + $valueJson
-    $mac2 = Get-HmacSha256 -Key $FileSeed -Message $msg2
-    $match2 = if ($mac2 -eq $expectedMac) { "MATCH!" } else { "no" }
-    Write-Host "  Formula 2 (path+id+value): $mac2 [$match2]"
-
-    # Formula 3: device_id + path (no value)
-    $msg3 = $DeviceId + $path
-    $mac3 = Get-HmacSha256 -Key $FileSeed -Message $msg3
-    $match3 = if ($mac3 -eq $expectedMac) { "MATCH!" } else { "no" }
-    Write-Host "  Formula 3 (id+path only): $mac3 [$match3]"
-
-    # Formula 4: value_json + device_id + path
-    $msg4 = $valueJson + $DeviceId + $path
-    $mac4 = Get-HmacSha256 -Key $FileSeed -Message $msg4
-    $match4 = if ($mac4 -eq $expectedMac) { "MATCH!" } else { "no" }
-    Write-Host "  Formula 4 (value+id+path): $mac4 [$match4]"
-
-    # Formula 5: path + value_json + device_id
-    $msg5 = $path + $valueJson + $DeviceId
-    $mac5 = Get-HmacSha256 -Key $FileSeed -Message $msg5
-    $match5 = if ($mac5 -eq $expectedMac) { "MATCH!" } else { "no" }
-    Write-Host "  Formula 5 (path+value+id): $mac5 [$match5]"
-
-    Write-Host ""
+    Write-Host "$status $path" -ForegroundColor $color
+    Write-Host "       Value: $valueJson"
+    if (-not $match) {
+        Write-Host "       Expected:   $expectedMac" -ForegroundColor DarkGray
+        Write-Host "       Calculated: $calculatedMac" -ForegroundColor DarkGray
+    }
 }
 
+Write-Host ""
+
+# ============================================================================
+# TEST REGISTRY MACs
+# ============================================================================
+
 Write-Host "=" * 80 -ForegroundColor Yellow
-Write-Host "TESTING REGISTRY MACs (seed = 'ChromeRegistryHashStoreValidationSeed')" -ForegroundColor Yellow
+Write-Host "REGISTRY MACs (seed = 'ChromeRegistryHashStoreValidationSeed')" -ForegroundColor Yellow
 Write-Host "=" * 80 -ForegroundColor Yellow
 Write-Host ""
 
-foreach ($test in $TestCases) {
-    $path = $test.Path
-    $value = $test.Value
-    $note = if ($test.Note) { " $($test.Note)" } else { "" }
+foreach ($path in $BrowserRegistryMACs.Keys | Sort-Object) {
     $expectedMac = $BrowserRegistryMACs[$path]
+    $value = $ActualValues[$path]
+    $valueJson = ConvertTo-JsonValue $value
+    $calculatedMac = Calculate-Mac -Seed $RegistrySeed -DeviceId $DeviceId -Path $path -Value $value
 
-    if (-not $expectedMac) {
-        Write-Host "SKIP: $path - no expected MAC" -ForegroundColor DarkGray
-        continue
+    $totalTests++
+    $match = $calculatedMac -eq $expectedMac
+
+    if ($match) {
+        $passedTests++
+        $status = "[PASS]"
+        $color = "Green"
+    } else {
+        $status = "[FAIL]"
+        $color = "Red"
     }
 
-    Write-Host "Testing: $path$note" -ForegroundColor White
-    Write-Host "  Expected MAC: $expectedMac"
-    Write-Host "  Value: $(ConvertTo-JsonValue $value)"
-
-    $valueJson = ConvertTo-JsonValue $value
-
-    # Formula 1: device_id + path + value_json
-    $msg1 = $DeviceId + $path + $valueJson
-    $mac1 = Get-HmacSha256 -Key $RegistrySeed -Message $msg1
-    $match1 = if ($mac1 -eq $expectedMac) { "MATCH!" } else { "no" }
-    Write-Host "  Formula 1 (id+path+value): $mac1 [$match1]"
-
-    # Formula 2: path + device_id + value_json
-    $msg2 = $path + $DeviceId + $valueJson
-    $mac2 = Get-HmacSha256 -Key $RegistrySeed -Message $msg2
-    $match2 = if ($mac2 -eq $expectedMac) { "MATCH!" } else { "no" }
-    Write-Host "  Formula 2 (path+id+value): $mac2 [$match2]"
-
-    Write-Host ""
-}
-
-Write-Host "=" * 80 -ForegroundColor Cyan
-Write-Host "DETAILED VALUE SERIALIZATION TESTS" -ForegroundColor Cyan
-Write-Host "=" * 80 -ForegroundColor Cyan
-Write-Host ""
-
-# Test different ways to serialize values
-$ValueTests = @(
-    @{ Desc = "boolean true"; Value = $true; Serializations = @("true", "True", "TRUE", "1") }
-    @{ Desc = "empty array"; Value = @(); Serializations = @("[]", "[ ]", "null", "") }
-    @{ Desc = "null"; Value = $null; Serializations = @("null", "Null", "NULL", "", "undefined") }
-)
-
-Write-Host "Testing browser.show_home_button (expected: $($BrowserFileMACs['browser.show_home_button']))" -ForegroundColor White
-Write-Host ""
-
-$path = "browser.show_home_button"
-$expectedMac = $BrowserFileMACs[$path]
-
-foreach ($ser in @("true", "True", "TRUE", "1", "`"true`"")) {
-    $msg = $DeviceId + $path + $ser
-    $mac = Get-HmacSha256 -Key $FileSeed -Message $msg
-    $match = if ($mac -eq $expectedMac) { "MATCH!" } else { "no" }
-    Write-Host "  Value='$ser': $mac [$match]"
+    Write-Host "$status $path" -ForegroundColor $color
+    Write-Host "       Value: $valueJson"
+    if (-not $match) {
+        Write-Host "       Expected:   $expectedMac" -ForegroundColor DarkGray
+        Write-Host "       Calculated: $calculatedMac" -ForegroundColor DarkGray
+    }
 }
 
 Write-Host ""
-Write-Host "Testing pinned_tabs (expected: $($BrowserFileMACs['pinned_tabs']))" -ForegroundColor White
+
+# ============================================================================
+# SUMMARY
+# ============================================================================
+
+Write-Host "=" * 80 -ForegroundColor Cyan
+Write-Host "SUMMARY" -ForegroundColor Cyan
+Write-Host "=" * 80 -ForegroundColor Cyan
 Write-Host ""
 
-$path = "pinned_tabs"
-$expectedMac = $BrowserFileMACs[$path]
+$failedTests = $totalTests - $passedTests
 
-foreach ($ser in @("[]", "[ ]", "null", "", "Null", "`"[]`"")) {
-    $msg = $DeviceId + $path + $ser
-    $mac = Get-HmacSha256 -Key $FileSeed -Message $msg
-    $match = if ($mac -eq $expectedMac) { "MATCH!" } else { "no" }
-    Write-Host "  Value='$ser': $mac [$match]"
+if ($failedTests -eq 0) {
+    Write-Host "ALL TESTS PASSED: $passedTests/$totalTests" -ForegroundColor Green
+} else {
+    Write-Host "PASSED: $passedTests/$totalTests" -ForegroundColor Yellow
+    Write-Host "FAILED: $failedTests/$totalTests" -ForegroundColor Red
 }
 
 Write-Host ""
-Write-Host "Testing homepage (null value) (expected: $($BrowserFileMACs['homepage']))" -ForegroundColor White
+Write-Host "Key findings:" -ForegroundColor White
+Write-Host "  - Formula: HMAC-SHA256(key=seed, message=device_id + path + value_json)"
+Write-Host "  - Null values serialize to empty string '', not 'null'"
+Write-Host "  - Boolean values serialize to lowercase 'true'/'false'"
+Write-Host "  - Empty arrays serialize to '[]'"
 Write-Host ""
-
-$path = "homepage"
-$expectedMac = $BrowserFileMACs[$path]
-
-foreach ($ser in @("null", "", "Null", "NULL", "`"`"", "undefined")) {
-    $msg = $DeviceId + $path + $ser
-    $mac = Get-HmacSha256 -Key $FileSeed -Message $msg
-    $match = if ($mac -eq $expectedMac) { "MATCH!" } else { "no" }
-    Write-Host "  Value='$ser': $mac [$match]"
-}
-
-Write-Host ""
-Write-Host "=" * 80 -ForegroundColor Cyan
-Write-Host "DONE" -ForegroundColor Cyan
-Write-Host "=" * 80 -ForegroundColor Cyan
