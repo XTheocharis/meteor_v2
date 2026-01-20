@@ -36,6 +36,10 @@
     Defaults to .meteor subdirectory in the script's directory.
     This enables fully portable operation - no system-wide installation required.
 
+.PARAMETER SkipPak
+    Skip PAK unpacking/patching/repacking stage for faster testing.
+    Use this when iterating on non-PAK changes (e.g., preferences, extensions).
+
 .PARAMETER Verbose
     Enable verbose output for debugging.
 
@@ -62,6 +66,10 @@
 .EXAMPLE
     .\Meteor.ps1 -DataPath "D:\PortableApps\Comet"
     Run with custom data directory for portable operation.
+
+.EXAMPLE
+    .\Meteor.ps1 -SkipPak -Verbose
+    Run without PAK processing for faster preference/extension testing.
 #>
 
 # Suppress PSScriptAnalyzer warnings for internal helper functions
@@ -79,6 +87,7 @@
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'VerifyPak', Justification = 'Used in Main function')]
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'PakPath', Justification = 'Used in Main function')]
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'DataPath', Justification = 'Used in Main function')]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'SkipPak', Justification = 'Used in Main function')]
 [CmdletBinding()]
 param(
     [Parameter()]
@@ -100,7 +109,10 @@ param(
     [string]$PakPath,
 
     [Parameter()]
-    [string]$DataPath
+    [string]$DataPath,
+
+    [Parameter()]
+    [switch]$SkipPak
 )
 
 Set-StrictMode -Version Latest
@@ -3070,10 +3082,31 @@ function Initialize-PakModifications {
 # Source: services/preferences/tracked/pref_hash_calculator.cc
 # ============================================================================
 
+function Get-Sha256 {
+    <#
+    .SYNOPSIS
+        Calculate plain SHA256 and return as uppercase hex string.
+    .DESCRIPTION
+        Used for Chromium preference MAC calculation. Chromium uses plain SHA256
+        (not HMAC) for individual preference MACs via crypto::SHA256HashString().
+        Reference: chromium/src/components/prefs/pref_hash_calculator.cc
+    #>
+    param(
+        [byte[]]$Message
+    )
+
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    $hash = $sha256.ComputeHash($Message)
+    $sha256.Dispose()
+    return ([BitConverter]::ToString($hash) -replace '-', '').ToUpper()
+}
+
 function Get-HmacSha256 {
     <#
     .SYNOPSIS
         Calculate HMAC-SHA256 and return as uppercase hex string.
+    .DESCRIPTION
+        Used for Registry MACs which use HMAC with the literal seed string.
     #>
     param(
         [byte[]]$Key,
@@ -3313,13 +3346,16 @@ function ConvertTo-JsonForHmac {
 function Get-PreferenceHmac {
     <#
     .SYNOPSIS
-        Calculate HMAC for a single preference (file-based).
+        Calculate MAC for a single preference (file-based).
     .DESCRIPTION
-        HMAC-SHA256(key=seed, message=device_id + path + json_dict)
+        SHA256(device_id + path + json_dict)
         Returns uppercase hex string.
 
+        IMPORTANT: Chromium uses PLAIN SHA256, NOT HMAC!
+        Reference: pref_hash_calculator.cc - crypto::SHA256HashString()
+
         The message format matches Chromium's pref_hash_calculator.cc:
-          message = device_id + path + json_dict
+          hash = SHA256(device_id + path + json_dict)
 
         Where json_dict is a JSON object with the path as key:
           {"<path>": <value>}
@@ -3330,8 +3366,8 @@ function Get-PreferenceHmac {
         This wrapping makes the MAC more robust against dictionary
         serialization issues (path appears twice: explicitly and in dict).
 
-        For Google Chrome: seed is 64-byte value from IDR_PREF_HASH_SEED_BIN
-        For non-Chrome builds (Comet): seed is empty string, resulting in empty key
+        NOTE: The seed parameter is kept for API compatibility but is NOT used
+        in the hash calculation. Chromium stores the seed but Calculate() ignores it.
     #>
     param(
         [string]$SeedHex,
@@ -3339,18 +3375,6 @@ function Get-PreferenceHmac {
         [string]$Path,
         [object]$Value
     )
-
-    # Handle empty seed for non-Chrome builds
-    if ([string]::IsNullOrEmpty($SeedHex)) {
-        $seedBytes = [byte[]]@()
-    } else {
-        # Parse hex string into bytes (assumes 64 hex chars = 32 bytes)
-        $seedLength = $SeedHex.Length / 2
-        $seedBytes = [byte[]]::new($seedLength)
-        for ($i = 0; $i -lt $seedLength; $i++) {
-            $seedBytes[$i] = [Convert]::ToByte($SeedHex.Substring($i * 2, 2), 16)
-        }
-    }
 
     # Build message: device_id + path + json_dict (where json_dict is {"path":value})
     # Chromium wraps the value in a dict with path as key for robustness
@@ -3360,7 +3384,9 @@ function Get-PreferenceHmac {
     $message = $DeviceId + $Path + $jsonDict
     $messageBytes = [System.Text.Encoding]::UTF8.GetBytes($message)
 
-    return Get-HmacSha256 -Key $seedBytes -Message $messageBytes
+    # Chromium uses plain SHA256, NOT HMAC-SHA256
+    # Reference: crypto::SHA256HashString(device_id_ + path + message)
+    return Get-Sha256 -Message $messageBytes
 }
 
 # Registry MAC Constant - Used as literal ASCII bytes for Windows Registry MAC calculation
@@ -3417,11 +3443,14 @@ function Get-RegistryPreferenceHmac {
     .SYNOPSIS
         Calculate registry MAC for a single preference.
     .DESCRIPTION
-        HMAC-SHA256(key=ASCII("ChromeRegistryHashStoreValidationSeed"), message=device_id + path + json_dict)
+        SHA256(device_id + path + json_dict)
         Returns uppercase hex string.
 
+        IMPORTANT: Chromium uses PLAIN SHA256, NOT HMAC!
+        Reference: pref_hash_calculator.cc - crypto::SHA256HashString()
+
         The message format matches Chromium's pref_hash_calculator.cc:
-          message = device_id + path + json_dict
+          hash = SHA256(device_id + path + json_dict)
 
         Where json_dict is a JSON object with the path as key:
           {"<path>": <value>}
@@ -3429,18 +3458,15 @@ function Get-RegistryPreferenceHmac {
         For example, for browser.show_home_button = true:
           json_dict = {"browser.show_home_button":true}
 
-        The registry uses a different HMAC key than the Secure Preferences file:
-        - Registry: Literal ASCII string "ChromeRegistryHashStoreValidationSeed" (37 bytes)
-        - File: Empty seed for non-Chrome builds (Comet)
+        NOTE: The registry seed "ChromeRegistryHashStoreValidationSeed" is passed
+        to PrefHashCalculator constructor but Calculate() ignores it and uses
+        plain SHA256. Both file and registry MACs use the same hash algorithm.
     #>
     param(
         [string]$DeviceId,
         [string]$Path,
         [object]$Value
     )
-
-    # Use literal ASCII bytes of the seed string
-    $seedBytes = [System.Text.Encoding]::ASCII.GetBytes($script:RegistryHashSeed)
 
     # Build message: device_id + path + json_dict (where json_dict is {"path":value})
     # Chromium wraps the value in a dict with path as key for robustness
@@ -3450,7 +3476,9 @@ function Get-RegistryPreferenceHmac {
     $message = $DeviceId + $Path + $jsonDict
     $messageBytes = [System.Text.Encoding]::UTF8.GetBytes($message)
 
-    return Get-HmacSha256 -Key $seedBytes -Message $messageBytes
+    # Chromium uses plain SHA256, NOT HMAC-SHA256
+    # Reference: crypto::SHA256HashString(device_id_ + path + message)
+    return Get-Sha256 -Message $messageBytes
 }
 
 function Set-RegistryPreferenceMacs {
@@ -4874,8 +4902,11 @@ function Main {
             Write-Status "Extension patching failed" -Type Error
         }
 
-        # PAK modifications (if enabled)
-        if ($config.pak_modifications.enabled) {
+        # PAK modifications (if enabled and not skipped)
+        if ($SkipPak) {
+            Write-Status "Skipping PAK modifications (-SkipPak specified)" -Type Detail
+        }
+        elseif ($config.pak_modifications.enabled) {
             Initialize-PakModifications -CometDir $comet.Directory -PakConfig $config.pak_modifications -PatchedResourcesPath $patchedResourcesPath -DryRunMode:$DryRun
         }
     }

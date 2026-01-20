@@ -20,6 +20,7 @@ Meteor v2 is a privacy-focused enhancement system for the Comet browser (Chromiu
 .\meteor.ps1 -DataPath "D:\MyComet"  # Use custom directory for browser + user data
 .\meteor.ps1 -VerifyPak       # Verify PAK patches are applied (auto-detects PAK location)
 .\meteor.ps1 -VerifyPak -PakPath "C:\path\to\resources.pak"  # Verify specific PAK file
+.\meteor.ps1 -SkipPak         # Skip PAK processing for faster preference/extension testing
 .\meteor.ps1 -Verbose         # Enable verbose output (PowerShell common parameter)
 ```
 
