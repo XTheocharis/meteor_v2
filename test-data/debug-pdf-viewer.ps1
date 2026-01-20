@@ -290,6 +290,127 @@ if ($rawExtJson -match '"permissions":\s*\[([^\]]+)\]') {
 }
 
 Write-Host ""
+
+# ============================================================================
+# DETAILED FIELD-BY-FIELD COMPARISON
+# ============================================================================
+
+Write-Host "=== FIELD-BY-FIELD COMPARISON ===" -ForegroundColor Yellow
+Write-Host ""
+
+# Parse both JSONs to compare structure
+$rawParsed = $rawExtJson | ConvertFrom-Json
+$ourParsed = $ourJson | ConvertFrom-Json
+
+function Compare-Objects {
+    param($Path, $Raw, $Ours)
+
+    if ($null -eq $Raw -and $null -eq $Ours) { return }
+
+    if ($null -eq $Raw -and $null -ne $Ours) {
+        Write-Host "  EXTRA in ours: $Path" -ForegroundColor Red
+        return
+    }
+
+    if ($null -ne $Raw -and $null -eq $Ours) {
+        Write-Host "  MISSING in ours: $Path" -ForegroundColor Red
+        if ($Raw -is [array]) {
+            Write-Host "    Raw value: [$($Raw.Count) items]" -ForegroundColor Gray
+        } elseif ($Raw -is [PSCustomObject]) {
+            Write-Host "    Raw value: {$($Raw.PSObject.Properties.Count) props}" -ForegroundColor Gray
+        } else {
+            Write-Host "    Raw value: $Raw" -ForegroundColor Gray
+        }
+        return
+    }
+
+    if ($Raw -is [PSCustomObject] -and $Ours -is [PSCustomObject]) {
+        $rawProps = @($Raw.PSObject.Properties.Name)
+        $ourProps = @($Ours.PSObject.Properties.Name)
+
+        foreach ($prop in $rawProps) {
+            if ($prop -notin $ourProps) {
+                Write-Host "  MISSING in ours: $Path.$prop" -ForegroundColor Red
+                $val = $Raw.$prop
+                if ($val -is [array]) {
+                    Write-Host "    Raw value: [$($val.Count) items] $($val -join ', ')" -ForegroundColor Gray
+                } elseif ($val -is [PSCustomObject]) {
+                    Write-Host "    Raw value: {object}" -ForegroundColor Gray
+                } else {
+                    Write-Host "    Raw value: $val" -ForegroundColor Gray
+                }
+            } else {
+                Compare-Objects -Path "$Path.$prop" -Raw $Raw.$prop -Ours $Ours.$prop
+            }
+        }
+
+        foreach ($prop in $ourProps) {
+            if ($prop -notin $rawProps) {
+                Write-Host "  EXTRA in ours: $Path.$prop" -ForegroundColor Yellow
+            }
+        }
+    }
+    elseif ($Raw -is [array] -and $Ours -is [array]) {
+        if ($Raw.Count -ne $Ours.Count) {
+            Write-Host "  ARRAY SIZE DIFF: $Path (raw=$($Raw.Count), ours=$($Ours.Count))" -ForegroundColor Red
+        }
+    }
+}
+
+Write-Host "Comparing parsed structures..." -ForegroundColor Cyan
+Compare-Objects -Path "root" -Raw $rawParsed -Ours $ourParsed
+
+Write-Host ""
+
+# ============================================================================
+# TEST: WHAT IF WE DON'T PRUNE?
+# ============================================================================
+
+Write-Host "=== TEST: MAC WITHOUT PRUNING ===" -ForegroundColor Yellow
+
+function ConvertTo-SortedNoPrune {
+    param($Value)
+
+    if ($null -eq $Value) {
+        return $null
+    }
+    elseif ($Value -is [array]) {
+        $result = @()
+        foreach ($item in $Value) {
+            $result += ConvertTo-SortedNoPrune -Value $item
+        }
+        return ,$result
+    }
+    elseif ($Value -is [PSCustomObject]) {
+        $sorted = [ordered]@{}
+        foreach ($prop in ($Value.PSObject.Properties | Sort-Object Name)) {
+            $sorted[$prop.Name] = ConvertTo-SortedNoPrune -Value $prop.Value
+        }
+        return $sorted
+    }
+    else {
+        return $Value
+    }
+}
+
+$sortedNoPrune = ConvertTo-SortedNoPrune -Value $extValue
+$noPruneJson = ConvertTo-Json -InputObject $sortedNoPrune -Compress -Depth 20
+$noPruneJson = ConvertTo-ChromiumJson -Json $noPruneJson
+
+Write-Host "No-prune JSON length: $($noPruneJson.Length) chars"
+
+$noPruneMessage = $deviceId + $ExtPath + $noPruneJson
+$noPruneMac = Get-HmacSha256 -Key $seed -Message $noPruneMessage
+
+Write-Host "No-prune MAC: $noPruneMac"
+
+if ($noPruneMac -eq $expectedMac) {
+    Write-Host "NO-PRUNE MAC MATCHES! Chromium does NOT prune for this extension." -ForegroundColor Green
+} else {
+    Write-Host "No-prune MAC doesn't match either." -ForegroundColor Gray
+}
+
+Write-Host ""
 Write-Host "=" * 80 -ForegroundColor Cyan
 Write-Host "DONE" -ForegroundColor Cyan
 Write-Host "=" * 80 -ForegroundColor Cyan
