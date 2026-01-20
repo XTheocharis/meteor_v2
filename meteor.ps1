@@ -5050,6 +5050,442 @@ function Start-Browser {
 
 #endregion
 
+#region Main Workflow Steps
+
+function Initialize-CometInstallation {
+    <#
+    .SYNOPSIS
+        Step 0: Check and install Comet browser.
+    .DESCRIPTION
+        Finds existing Comet installation or downloads/extracts a new one.
+        Handles both portable and system installation modes.
+    .OUTPUTS
+        Hashtable with Comet installation info and version, or $null on failure.
+    #>
+    param(
+        [PSCustomObject]$Config,
+        [string]$MeteorDataPath,
+        [switch]$PortableMode,
+        [switch]$Force,
+        [switch]$DryRunMode
+    )
+
+    Write-Status "Step 0: Checking Comet Installation" -Type Step
+
+    if ($PortableMode) {
+        Write-Status "Portable mode enabled - data path: $MeteorDataPath" -Type Detail
+    }
+
+    # Check for existing installation (portable path first if in portable mode)
+    $comet = Get-CometInstallation -DataPath $(if ($PortableMode) { $MeteorDataPath } else { $null })
+
+    # In portable mode, we need a portable installation - don't use system-wide fallback
+    if ($PortableMode -and $comet -and -not $comet.Portable) {
+        Write-Status "Found system installation but portable mode is enabled - extracting portable version..." -Type Info
+        $comet = $null
+    }
+
+    # Force re-download/extract in portable mode when -Force is used
+    if ($Force -and $PortableMode -and $comet) {
+        Write-Status "Force mode - re-downloading Comet browser..." -Type Info
+        $comet = $null
+    }
+
+    if (-not $comet) {
+        if ($PortableMode) {
+            $comet = Install-CometPortable -DownloadUrl $Config.comet.download_url -TargetDir $MeteorDataPath -DryRunMode:$DryRunMode
+        }
+        else {
+            $comet = Install-Comet -DownloadUrl $Config.comet.download_url -DryRunMode:$DryRunMode
+        }
+    }
+
+    if (-not $comet -and -not $DryRunMode) {
+        Write-Status "Could not find or install Comet browser" -Type Error
+        return $null
+    }
+
+    $cometVersion = $null
+    if ($comet) {
+        Write-Status "Comet found: $($comet.Executable)" -Type Success
+        if ($comet.Portable) {
+            Write-Status "Mode: Portable" -Type Detail
+        }
+        $cometVersion = Get-CometVersion -ExePath $comet.Executable
+        Write-Status "Version: $cometVersion" -Type Detail
+
+        # Set registry values for Comet update system
+        if ($cometVersion) {
+            $null = Set-CometRegistryValues -Version $cometVersion -DryRunMode:$DryRunMode
+        }
+    }
+
+    return @{
+        Comet = $comet
+        CometVersion = $cometVersion
+    }
+}
+
+function Update-CometBrowser {
+    <#
+    .SYNOPSIS
+        Step 1: Check for and apply Comet browser updates.
+    .OUTPUTS
+        Hashtable with updated Comet installation info and version.
+    #>
+    param(
+        [PSCustomObject]$Config,
+        [hashtable]$Comet,
+        [string]$CometVersion,
+        [string]$MeteorDataPath,
+        [switch]$PortableMode,
+        [switch]$DryRunMode
+    )
+
+    Write-Status "Step 1: Checking for Comet Updates" -Type Step
+
+    if (-not $Config.comet.auto_update -or -not $Comet) {
+        Write-Status "Auto-update disabled or Comet not installed" -Type Detail
+        return @{ Comet = $Comet; CometVersion = $CometVersion }
+    }
+
+    $updateInfo = Test-CometUpdate -CurrentVersion $CometVersion -DownloadUrl $Config.comet.download_url
+
+    if ($updateInfo) {
+        Write-Status "Update available: $($updateInfo.Version) (current: $CometVersion)" -Type Warning
+        if (-not $DryRunMode) {
+            Write-Status "Downloading Comet update..." -Type Info
+            $newComet = if ($PortableMode) {
+                Install-CometPortable -DownloadUrl $Config.comet.download_url -TargetDir $MeteorDataPath -DryRunMode:$DryRunMode
+            }
+            else {
+                Install-Comet -DownloadUrl $Config.comet.download_url -DryRunMode:$DryRunMode
+            }
+
+            if ($newComet) {
+                $Comet = $newComet
+                $CometVersion = Get-CometVersion -ExePath $Comet.Executable
+                Write-Status "Updated to version: $CometVersion" -Type Success
+                if ($CometVersion) {
+                    $null = Set-CometRegistryValues -Version $CometVersion -DryRunMode:$DryRunMode
+                }
+            }
+        }
+        else {
+            Write-Status "Would download and install Comet $($updateInfo.Version)" -Type DryRun
+        }
+    }
+    else {
+        Write-Status "Comet is up to date" -Type Success
+    }
+
+    return @{ Comet = $Comet; CometVersion = $CometVersion }
+}
+
+function Update-BundledExtensions {
+    <#
+    .SYNOPSIS
+        Step 2: Check for and download bundled extension updates.
+    .OUTPUTS
+        $true if any extensions were updated, $false otherwise.
+    #>
+    param(
+        [PSCustomObject]$Config,
+        [hashtable]$Comet,
+        [switch]$DryRunMode
+    )
+
+    Write-Status "Step 2: Checking for Extension Updates" -Type Step
+
+    if (-not $Config.extensions.check_updates -or -not $Comet) {
+        Write-Status "Extension update checking disabled" -Type Detail
+        return $false
+    }
+
+    $extensionsUpdated = $false
+    $defaultAppsDir = Join-Path $Comet.Directory "default_apps"
+
+    if (-not (Test-Path $defaultAppsDir)) {
+        return $false
+    }
+
+    $crxFiles = Get-ChildItem -Path $defaultAppsDir -Filter "*.crx" -ErrorAction SilentlyContinue
+    foreach ($crx in $crxFiles) {
+        $manifest = Get-CrxManifest -CrxPath $crx.FullName
+        if (-not $manifest) { continue }
+
+        $extId = if ($manifest.key) {
+            $keyBytes = [Convert]::FromBase64String($manifest.key)
+            $hash = [System.Security.Cryptography.SHA256]::Create().ComputeHash($keyBytes)
+            $idChars = $hash[0..15] | ForEach-Object { [char](97 + ($_ % 26)) }
+            -join $idChars
+        }
+        else { $null }
+
+        $updateUrl = $manifest.update_url
+        $currentVersion = $manifest.version
+
+        if (-not ($extId -and $updateUrl -and $currentVersion)) { continue }
+
+        Write-Status "Checking $($manifest.name)..." -Type Detail
+        $extUpdate = Get-ExtensionUpdateInfo -UpdateUrl $updateUrl -ExtensionId $extId -CurrentVersion $currentVersion
+
+        if ($extUpdate -and $extUpdate.Version -and $extUpdate.Codebase) {
+            $comparison = Compare-Versions -Version1 $extUpdate.Version -Version2 $currentVersion
+            if ($comparison -gt 0) {
+                Write-Status "  Update available: $currentVersion -> $($extUpdate.Version)" -Type Info
+                if (-not $DryRunMode) {
+                    try {
+                        $tempCrx = Join-Path $env:TEMP "meteor_ext_$(Get-Random).crx"
+                        $null = Invoke-MeteorWebRequest -Uri $extUpdate.Codebase -Mode Download -OutFile $tempCrx -TimeoutSec 120
+                        Copy-Item -Path $tempCrx -Destination $crx.FullName -Force
+                        Remove-Item -Path $tempCrx -Force -ErrorAction SilentlyContinue
+                        Write-Status "  Updated $($manifest.name) to $($extUpdate.Version)" -Type Success
+                        $extensionsUpdated = $true
+                    }
+                    catch {
+                        Write-Status "  Failed to update: $_" -Type Error
+                    }
+                }
+                else {
+                    Write-Status "  Would download from $($extUpdate.Codebase)" -Type DryRun
+                }
+            }
+            else {
+                Write-Status "  Up to date ($currentVersion)" -Type Detail
+            }
+        }
+        else {
+            Write-Status "  Up to date ($currentVersion)" -Type Detail
+        }
+    }
+
+    return $extensionsUpdated
+}
+
+function Test-SetupRequired {
+    <#
+    .SYNOPSIS
+        Step 3: Detect if extension patching is required.
+    .OUTPUTS
+        $true if setup is required, $false otherwise.
+    #>
+    param(
+        [hashtable]$Comet,
+        [hashtable]$State,
+        [string]$PatchedExtPath,
+        [switch]$Force,
+        [switch]$ExtensionsUpdated
+    )
+
+    Write-Status "Step 3: Detecting Changes" -Type Step
+
+    $needsSetup = $Force -or $ExtensionsUpdated -or -not (Test-Path $PatchedExtPath)
+
+    if (-not $needsSetup -and $Comet) {
+        $defaultAppsDir = Join-Path $Comet.Directory "default_apps"
+        if (Test-Path $defaultAppsDir) {
+            # Check active CRX files
+            $crxFiles = Get-ChildItem -Path $defaultAppsDir -Filter "*.crx" -ErrorAction SilentlyContinue
+            foreach ($crx in $crxFiles) {
+                if (Test-FileChanged -FilePath $crx.FullName -State $State) {
+                    Write-Status "Changed: $($crx.Name)" -Type Detail
+                    $needsSetup = $true
+                }
+            }
+            # Check backed-up CRX files
+            $backupFiles = Get-ChildItem -Path $defaultAppsDir -Filter "*.crx.meteor-backup" -ErrorAction SilentlyContinue
+            foreach ($crx in $backupFiles) {
+                if (Test-FileChanged -FilePath $crx.FullName -State $State) {
+                    Write-Status "Changed: $($crx.Name)" -Type Detail
+                    $needsSetup = $true
+                }
+            }
+        }
+    }
+
+    if ($needsSetup) {
+        Write-Status "Setup required" -Type Info
+    }
+    else {
+        Write-Status "No changes detected - using cached setup" -Type Success
+    }
+
+    return $needsSetup
+}
+
+function Initialize-Extensions {
+    <#
+    .SYNOPSIS
+        Step 4: Extract and patch bundled extensions.
+    .DESCRIPTION
+        Extracts CRX files, applies patches, clears caches, and backs up originals.
+        Also applies PAK modifications if enabled.
+    #>
+    param(
+        [PSCustomObject]$Config,
+        [hashtable]$Comet,
+        [hashtable]$State,
+        [string]$PatchedExtPath,
+        [string]$PatchesPath,
+        [string]$PatchedResourcesPath,
+        [string]$UserDataPath,
+        [switch]$PortableMode,
+        [switch]$NeedsSetup,
+        [switch]$SkipPak,
+        [switch]$DryRunMode
+    )
+
+    Write-Status "Step 4: Extracting and Patching" -Type Step
+
+    if (-not $NeedsSetup -or -not $Comet) {
+        Write-Status "Using existing patched extensions" -Type Detail
+        return
+    }
+
+    $setupResult = Initialize-PatchedExtensions `
+        -CometDir $Comet.Directory `
+        -OutputDir $PatchedExtPath `
+        -PatchesDir $PatchesPath `
+        -PatchConfig $Config.extensions.patch_config `
+        -DryRunMode:$DryRunMode
+
+    if (-not $setupResult) {
+        Write-Status "Extension patching failed" -Type Error
+        return
+    }
+
+    Write-Status "Extensions patched successfully" -Type Success
+
+    # Update state with new hashes
+    if (-not $DryRunMode) {
+        $defaultAppsDir = Join-Path $Comet.Directory "default_apps"
+        if (Test-Path $defaultAppsDir) {
+            $crxFiles = Get-ChildItem -Path $defaultAppsDir -Filter "*.crx" -ErrorAction SilentlyContinue
+            foreach ($crx in $crxFiles) {
+                Update-FileHash -FilePath $crx.FullName -State $State
+            }
+            $backupFiles = Get-ChildItem -Path $defaultAppsDir -Filter "*.crx.meteor-backup" -ErrorAction SilentlyContinue
+            foreach ($crx in $backupFiles) {
+                Update-FileHash -FilePath $crx.FullName -State $State
+            }
+        }
+    }
+
+    # Clear Comet's CRX caches
+    $cachePaths = @()
+    if ($PortableMode -and $UserDataPath) {
+        $cachePaths += (Join-Path $UserDataPath "extensions_crx_cache")
+        $cachePaths += (Join-Path $UserDataPath "component_crx_cache")
+    }
+    else {
+        $cachePaths += (Join-Path $env:LOCALAPPDATA "Perplexity\Comet\User Data\extensions_crx_cache")
+        $cachePaths += (Join-Path $env:LOCALAPPDATA "Perplexity\Comet\User Data\component_crx_cache")
+    }
+
+    foreach ($crxCachePath in $cachePaths) {
+        if (Test-Path $crxCachePath) {
+            if ($DryRunMode) {
+                Write-Status "Would clear: $crxCachePath" -Type Detail
+            }
+            else {
+                Remove-Item -Path $crxCachePath -Recurse -Force -ErrorAction SilentlyContinue
+                Write-Status "Cleared: $(Split-Path -Leaf $crxCachePath)" -Type Detail
+            }
+        }
+    }
+
+    # Disable bundled extensions
+    $defaultAppsDir = Join-Path $Comet.Directory "default_apps"
+    if (Test-Path $defaultAppsDir) {
+        # Clear external_extensions.json
+        $extJsonPath = Join-Path $defaultAppsDir "external_extensions.json"
+        $extJsonBackup = "$extJsonPath.meteor-backup"
+        if (Test-Path $extJsonPath) {
+            if ($DryRunMode) {
+                Write-Status "Would clear external_extensions.json" -Type Detail
+            }
+            else {
+                if (-not (Test-Path $extJsonBackup)) {
+                    Copy-Item -Path $extJsonPath -Destination $extJsonBackup -Force
+                }
+                Set-Content -Path $extJsonPath -Value "{}" -Encoding UTF8
+                Write-Status "Cleared external_extensions.json" -Type Detail
+            }
+        }
+
+        # Backup .crx files
+        $crxFilesToBackup = Get-ChildItem -Path $defaultAppsDir -Filter "*.crx" -ErrorAction SilentlyContinue
+        foreach ($crx in $crxFilesToBackup) {
+            $backupPath = "$($crx.FullName).meteor-backup"
+            if (-not (Test-Path $backupPath)) {
+                if ($DryRunMode) {
+                    Write-Status "Would backup: $($crx.Name)" -Type Detail
+                }
+                else {
+                    Move-Item -Path $crx.FullName -Destination $backupPath -Force
+                    Write-Status "Backed up: $($crx.Name)" -Type Detail
+                }
+            }
+        }
+    }
+
+    # PAK modifications
+    if ($SkipPak) {
+        Write-Status "Skipping PAK modifications (-SkipPak specified)" -Type Detail
+    }
+    elseif ($Config.pak_modifications.enabled) {
+        Initialize-PakModifications -CometDir $Comet.Directory -PakConfig $Config.pak_modifications -PatchedResourcesPath $PatchedResourcesPath -DryRunMode:$DryRunMode
+    }
+}
+
+function Initialize-AdBlockExtensions {
+    <#
+    .SYNOPSIS
+        Step 5/5.5: Download and configure ad-blocking extensions.
+    .OUTPUTS
+        Hashtable with UBlockPath and AdGuardExtraPath (may be $null if disabled).
+    #>
+    param(
+        [PSCustomObject]$Config,
+        [string]$UBlockPath,
+        [string]$AdGuardExtraPath,
+        [switch]$Force,
+        [switch]$DryRunMode
+    )
+
+    # Step 5: uBlock Origin
+    Write-Status "Step 5: Checking uBlock Origin" -Type Step
+
+    $resultUBlockPath = $UBlockPath
+    if ($Config.ublock.enabled) {
+        $null = Get-UBlockOrigin -OutputDir $UBlockPath -UBlockConfig $Config.ublock -DryRunMode:$DryRunMode -ForceDownload:$Force
+    }
+    else {
+        Write-Status "uBlock Origin disabled in config" -Type Detail
+        $resultUBlockPath = $null
+    }
+
+    # Step 5.5: AdGuard Extra
+    Write-Status "Step 5.5: Checking AdGuard Extra" -Type Step
+
+    $resultAdGuardPath = $AdGuardExtraPath
+    if ($Config.adguard_extra.enabled) {
+        $null = Get-AdGuardExtra -OutputDir $AdGuardExtraPath -AdGuardConfig $Config.adguard_extra -DryRunMode:$DryRunMode -ForceDownload:$Force
+    }
+    else {
+        Write-Status "AdGuard Extra disabled in config" -Type Detail
+        $resultAdGuardPath = $null
+    }
+
+    return @{
+        UBlockPath = $resultUBlockPath
+        AdGuardExtraPath = $resultAdGuardPath
+    }
+}
+
+#endregion
+
 #region Main
 
 function Main {
@@ -5192,332 +5628,52 @@ function Main {
     # ═══════════════════════════════════════════════════════════════
     # Step 0: Comet Installation
     # ═══════════════════════════════════════════════════════════════
-    Write-Status "Step 0: Checking Comet Installation" -Type Step
-
-    if ($portableMode) {
-        Write-Status "Portable mode enabled - data path: $meteorDataPath" -Type Detail
-    }
-
-    # Check for existing installation (portable path first if in portable mode)
-    $comet = Get-CometInstallation -DataPath $(if ($portableMode) { $meteorDataPath } else { $null })
-
-    # In portable mode, we need a portable installation - don't use system-wide fallback
-    if ($portableMode -and $comet -and -not $comet.Portable) {
-        Write-Status "Found system installation but portable mode is enabled - extracting portable version..." -Type Info
-        $comet = $null
-    }
-
-    # Force re-download/extract in portable mode when -Force is used
-    if ($Force -and $portableMode -and $comet) {
-        Write-Status "Force mode - re-downloading Comet browser..." -Type Info
-        $comet = $null
-    }
-
-    if (-not $comet) {
-        if ($portableMode) {
-            # Portable installation - extract directly
-            $comet = Install-CometPortable -DownloadUrl $config.comet.download_url -TargetDir $meteorDataPath -DryRunMode:$DryRun
-        }
-        else {
-            # System installation - use installer
-            $comet = Install-Comet -DownloadUrl $config.comet.download_url -DryRunMode:$DryRun
-        }
-    }
-
-    if (-not $comet -and -not $DryRun) {
-        Write-Status "Could not find or install Comet browser" -Type Error
+    $installResult = Initialize-CometInstallation -Config $config -MeteorDataPath $meteorDataPath -PortableMode:$portableMode -Force:$Force -DryRunMode:$DryRun
+    if ($null -eq $installResult -and -not $DryRun) {
         exit 1
     }
-
-    if ($comet) {
-        Write-Status "Comet found: $($comet.Executable)" -Type Success
-        if ($comet.Portable) {
-            Write-Status "Mode: Portable" -Type Detail
-        }
-        $cometVersion = Get-CometVersion -ExePath $comet.Executable
-        Write-Status "Version: $cometVersion" -Type Detail
-
-        # Set registry values for Comet update system
-        if ($cometVersion) {
-            Set-CometRegistryValues -Version $cometVersion -DryRunMode:$DryRun
-        }
-    }
+    $comet = $installResult.Comet
+    $cometVersion = $installResult.CometVersion
 
     # ═══════════════════════════════════════════════════════════════
     # Step 1: Comet Update Check
     # ═══════════════════════════════════════════════════════════════
-    Write-Status "Step 1: Checking for Comet Updates" -Type Step
-
-    if ($config.comet.auto_update -and $comet) {
-        $updateInfo = Test-CometUpdate -CurrentVersion $cometVersion -DownloadUrl $config.comet.download_url
-
-        if ($updateInfo) {
-            Write-Status "Update available: $($updateInfo.Version) (current: $cometVersion)" -Type Warning
-            if (-not $DryRun) {
-                Write-Status "Downloading Comet update..." -Type Info
-                if ($portableMode) {
-                    $newComet = Install-CometPortable -DownloadUrl $config.comet.download_url -TargetDir $meteorDataPath -DryRunMode:$DryRun
-                }
-                else {
-                    $newComet = Install-Comet -DownloadUrl $config.comet.download_url -DryRunMode:$DryRun
-                }
-                if ($newComet) {
-                    $comet = $newComet
-                    $cometVersion = Get-CometVersion -ExePath $comet.Executable
-                    Write-Status "Updated to version: $cometVersion" -Type Success
-                    # Update registry with new version
-                    if ($cometVersion) {
-                        Set-CometRegistryValues -Version $cometVersion -DryRunMode:$DryRun
-                    }
-                }
-            }
-            else {
-                Write-Status "Would download and install Comet $($updateInfo.Version)" -Type DryRun
-            }
-        }
-        else {
-            Write-Status "Comet is up to date" -Type Success
-        }
-    }
-    else {
-        Write-Status "Auto-update disabled or Comet not installed" -Type Detail
-    }
+    $updateResult = Update-CometBrowser -Config $config -Comet $comet -CometVersion $cometVersion -MeteorDataPath $meteorDataPath -PortableMode:$portableMode -DryRunMode:$DryRun
+    $comet = $updateResult.Comet
+    $cometVersion = $updateResult.CometVersion
 
     # ═══════════════════════════════════════════════════════════════
     # Step 2: Extension Update Check
     # ═══════════════════════════════════════════════════════════════
-    Write-Status "Step 2: Checking for Extension Updates" -Type Step
-
-    $extensionsUpdated = $false
-    if ($config.extensions.check_updates -and $comet) {
-        $defaultAppsDir = Join-Path $comet.Directory "default_apps"
-        if (Test-Path $defaultAppsDir) {
-            $crxFiles = Get-ChildItem -Path $defaultAppsDir -Filter "*.crx" -ErrorAction SilentlyContinue
-            foreach ($crx in $crxFiles) {
-                $manifest = Get-CrxManifest -CrxPath $crx.FullName
-                if (-not $manifest) { continue }
-
-                $extId = if ($manifest.key) {
-                    # Generate extension ID from public key
-                    $keyBytes = [Convert]::FromBase64String($manifest.key)
-                    $hash = [System.Security.Cryptography.SHA256]::Create().ComputeHash($keyBytes)
-                    $idChars = $hash[0..15] | ForEach-Object { [char](97 + ($_ % 26)) }
-                    -join $idChars
-                }
-                else { $null }
-
-                $updateUrl = $manifest.update_url
-                $currentVersion = $manifest.version
-
-                if ($extId -and $updateUrl -and $currentVersion) {
-                    Write-Status "Checking $($manifest.name)..." -Type Detail
-                    $extUpdate = Get-ExtensionUpdateInfo -UpdateUrl $updateUrl -ExtensionId $extId -CurrentVersion $currentVersion
-
-                    if ($extUpdate -and $extUpdate.Version -and $extUpdate.Codebase) {
-                        $comparison = Compare-Versions -Version1 $extUpdate.Version -Version2 $currentVersion
-                        if ($comparison -gt 0) {
-                            Write-Status "  Update available: $currentVersion -> $($extUpdate.Version)" -Type Info
-                            if (-not $DryRun) {
-                                try {
-                                    $tempCrx = Join-Path $env:TEMP "meteor_ext_$(Get-Random).crx"
-                                    $null = Invoke-MeteorWebRequest -Uri $extUpdate.Codebase -Mode Download -OutFile $tempCrx -TimeoutSec 120
-                                    Copy-Item -Path $tempCrx -Destination $crx.FullName -Force
-                                    Remove-Item -Path $tempCrx -Force -ErrorAction SilentlyContinue
-                                    Write-Status "  Updated $($manifest.name) to $($extUpdate.Version)" -Type Success
-                                    $extensionsUpdated = $true
-                                }
-                                catch {
-                                    Write-Status "  Failed to update: $_" -Type Error
-                                }
-                            }
-                            else {
-                                Write-Status "  Would download from $($extUpdate.Codebase)" -Type DryRun
-                            }
-                        }
-                        else {
-                            Write-Status "  Up to date ($currentVersion)" -Type Detail
-                        }
-                    }
-                    else {
-                        Write-Status "  Up to date ($currentVersion)" -Type Detail
-                    }
-                }
-            }
-        }
-    }
-    else {
-        Write-Status "Extension update checking disabled" -Type Detail
-    }
+    $extensionsUpdated = Update-BundledExtensions -Config $config -Comet $comet -DryRunMode:$DryRun
 
     # ═══════════════════════════════════════════════════════════════
     # Step 3: Change Detection
     # ═══════════════════════════════════════════════════════════════
-    Write-Status "Step 3: Detecting Changes" -Type Step
-
-    $needsSetup = $Force -or $extensionsUpdated -or -not (Test-Path $patchedExtPath)
-
-    if (-not $needsSetup -and $comet) {
-        # Check if source files have changed (both .crx and .crx.meteor-backup)
-        $defaultAppsDir = Join-Path $comet.Directory "default_apps"
-        if (Test-Path $defaultAppsDir) {
-            # Check active CRX files
-            $crxFiles = Get-ChildItem -Path $defaultAppsDir -Filter "*.crx" -ErrorAction SilentlyContinue
-            foreach ($crx in $crxFiles) {
-                if (Test-FileChanged -FilePath $crx.FullName -State $state) {
-                    Write-Status "Changed: $($crx.Name)" -Type Detail
-                    $needsSetup = $true
-                }
-            }
-            # Check backed-up CRX files
-            $backupFiles = Get-ChildItem -Path $defaultAppsDir -Filter "*.crx.meteor-backup" -ErrorAction SilentlyContinue
-            foreach ($crx in $backupFiles) {
-                if (Test-FileChanged -FilePath $crx.FullName -State $state) {
-                    Write-Status "Changed: $($crx.Name)" -Type Detail
-                    $needsSetup = $true
-                }
-            }
-        }
-    }
-
-    if ($needsSetup) {
-        Write-Status "Setup required" -Type Info
-    }
-    else {
-        Write-Status "No changes detected - using cached setup" -Type Success
-    }
+    $needsSetup = Test-SetupRequired -Comet $comet -State $state -PatchedExtPath $patchedExtPath -Force:$Force -ExtensionsUpdated:$extensionsUpdated
 
     # ═══════════════════════════════════════════════════════════════
     # Step 4: Extract & Patch
     # ═══════════════════════════════════════════════════════════════
-    Write-Status "Step 4: Extracting and Patching" -Type Step
-
-    if ($needsSetup -and $comet) {
-        $setupResult = Initialize-PatchedExtensions `
-            -CometDir $comet.Directory `
-            -OutputDir $patchedExtPath `
-            -PatchesDir $patchesPath `
-            -PatchConfig $config.extensions.patch_config `
-            -DryRunMode:$DryRun
-
-        if ($setupResult) {
-            Write-Status "Extensions patched successfully" -Type Success
-
-            # Update state with new hashes (track both .crx and .crx.meteor-backup)
-            if (-not $DryRun) {
-                $defaultAppsDir = Join-Path $comet.Directory "default_apps"
-                if (Test-Path $defaultAppsDir) {
-                    $crxFiles = Get-ChildItem -Path $defaultAppsDir -Filter "*.crx" -ErrorAction SilentlyContinue
-                    foreach ($crx in $crxFiles) {
-                        Update-FileHash -FilePath $crx.FullName -State $state
-                    }
-                    $backupFiles = Get-ChildItem -Path $defaultAppsDir -Filter "*.crx.meteor-backup" -ErrorAction SilentlyContinue
-                    foreach ($crx in $backupFiles) {
-                        Update-FileHash -FilePath $crx.FullName -State $state
-                    }
-                }
-            }
-
-            # Clear Comet's CRX caches to ensure it loads our patched extensions
-            $cachePaths = @()
-            if ($portableMode -and $userDataPath) {
-                # Portable mode: only use portable path
-                $cachePaths += (Join-Path $userDataPath "extensions_crx_cache")
-                $cachePaths += (Join-Path $userDataPath "component_crx_cache")
-            }
-            else {
-                # System mode: use system paths
-                $cachePaths += (Join-Path $env:LOCALAPPDATA "Perplexity\Comet\User Data\extensions_crx_cache")
-                $cachePaths += (Join-Path $env:LOCALAPPDATA "Perplexity\Comet\User Data\component_crx_cache")
-            }
-
-            foreach ($crxCachePath in $cachePaths) {
-                if (Test-Path $crxCachePath) {
-                    if ($DryRun) {
-                        Write-Status "Would clear: $crxCachePath" -Type Detail
-                    }
-                    else {
-                        Remove-Item -Path $crxCachePath -Recurse -Force -ErrorAction SilentlyContinue
-                        Write-Status "Cleared: $(Split-Path -Leaf $crxCachePath)" -Type Detail
-                    }
-                }
-            }
-
-            # Disable bundled extensions to prevent conflicts
-            $defaultAppsDir = Join-Path $comet.Directory "default_apps"
-            if (Test-Path $defaultAppsDir) {
-                # Clear external_extensions.json (backup first)
-                $extJsonPath = Join-Path $defaultAppsDir "external_extensions.json"
-                $extJsonBackup = "$extJsonPath.meteor-backup"
-                if (Test-Path $extJsonPath) {
-                    if ($DryRun) {
-                        Write-Status "Would clear external_extensions.json" -Type Detail
-                    }
-                    else {
-                        if (-not (Test-Path $extJsonBackup)) {
-                            Copy-Item -Path $extJsonPath -Destination $extJsonBackup -Force
-                        }
-                        Set-Content -Path $extJsonPath -Value "{}" -Encoding UTF8
-                        Write-Status "Cleared external_extensions.json" -Type Detail
-                    }
-                }
-
-                # Backup .crx files to .crx.meteor-backup
-                $crxFilesToBackup = Get-ChildItem -Path $defaultAppsDir -Filter "*.crx" -ErrorAction SilentlyContinue
-                foreach ($crx in $crxFilesToBackup) {
-                    $backupPath = "$($crx.FullName).meteor-backup"
-                    if (-not (Test-Path $backupPath)) {
-                        if ($DryRun) {
-                            Write-Status "Would backup: $($crx.Name)" -Type Detail
-                        }
-                        else {
-                            Move-Item -Path $crx.FullName -Destination $backupPath -Force
-                            Write-Status "Backed up: $($crx.Name)" -Type Detail
-                        }
-                    }
-                }
-            }
-        }
-        else {
-            Write-Status "Extension patching failed" -Type Error
-        }
-
-        # PAK modifications (if enabled and not skipped)
-        if ($SkipPak) {
-            Write-Status "Skipping PAK modifications (-SkipPak specified)" -Type Detail
-        }
-        elseif ($config.pak_modifications.enabled) {
-            Initialize-PakModifications -CometDir $comet.Directory -PakConfig $config.pak_modifications -PatchedResourcesPath $patchedResourcesPath -DryRunMode:$DryRun
-        }
-    }
-    else {
-        Write-Status "Using existing patched extensions" -Type Detail
-    }
+    Initialize-Extensions `
+        -Config $config `
+        -Comet $comet `
+        -State $state `
+        -PatchedExtPath $patchedExtPath `
+        -PatchesPath $patchesPath `
+        -PatchedResourcesPath $patchedResourcesPath `
+        -UserDataPath $userDataPath `
+        -PortableMode:$portableMode `
+        -NeedsSetup:$needsSetup `
+        -SkipPak:$SkipPak `
+        -DryRunMode:$DryRun
 
     # ═══════════════════════════════════════════════════════════════
-    # Step 5: uBlock Origin
+    # Step 5 & 5.5: Ad-blocking Extensions
     # ═══════════════════════════════════════════════════════════════
-    Write-Status "Step 5: Checking uBlock Origin" -Type Step
-
-    if ($config.ublock.enabled) {
-        $null = Get-UBlockOrigin -OutputDir $ublockPath -UBlockConfig $config.ublock -DryRunMode:$DryRun -ForceDownload:$Force
-    }
-    else {
-        Write-Status "uBlock Origin disabled in config" -Type Detail
-        $ublockPath = $null
-    }
-
-    # ═══════════════════════════════════════════════════════════════
-    # Step 5.5: AdGuard Extra
-    # ═══════════════════════════════════════════════════════════════
-    Write-Status "Step 5.5: Checking AdGuard Extra" -Type Step
-
-    if ($config.adguard_extra.enabled) {
-        $null = Get-AdGuardExtra -OutputDir $adguardExtraPath -AdGuardConfig $config.adguard_extra -DryRunMode:$DryRun -ForceDownload:$Force
-    }
-    else {
-        Write-Status "AdGuard Extra disabled in config" -Type Detail
-        $adguardExtraPath = $null
-    }
+    $adBlockResult = Initialize-AdBlockExtensions -Config $config -UBlockPath $ublockPath -AdGuardExtraPath $adguardExtraPath -Force:$Force -DryRunMode:$DryRun
+    $ublockPath = $adBlockResult.UBlockPath
+    $adguardExtraPath = $adBlockResult.AdGuardExtraPath
 
     # Save state
     if (-not $DryRun) {
