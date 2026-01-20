@@ -3760,10 +3760,14 @@ function Build-MacsTree {
 function Set-BrowserPreferences {
     <#
     .SYNOPSIS
-        Write initial Secure Preferences file (untracked prefs only).
+        Write Secure Preferences file with tracked preferences and valid MACs.
     .DESCRIPTION
-        Writes only untracked preferences on first run. Tracked preferences
-        require HMAC protection which needs the 64-byte seed from resources.pak.
+        On first run: Creates Secure Preferences with tracked preferences, calculates
+        valid HMACs (file + registry), and sets up the protection.macs structure.
+        Comet (non-Chrome branded) uses an EMPTY seed for file MACs, so we can
+        calculate them immediately without waiting for browser initialization.
+
+        On subsequent runs: Updates existing tracked preferences and recalculates MACs.
     #>
     param(
         [string]$BrowserPath,
@@ -3815,8 +3819,8 @@ function Set-BrowserPreferences {
         return $result
     }
 
-    # First run - just write untracked preferences
-    # Tracked preferences need Chromium's seed which doesn't exist yet
+    # First run - create tracked preferences with valid MACs
+    # Comet (non-Chrome branded) uses EMPTY seed for file MACs, so we can calculate them now
     if (-not (Test-Path $effectiveUserDataPath)) {
         $null = New-Item -ItemType Directory -Path $effectiveUserDataPath -Force
     }
@@ -3824,9 +3828,28 @@ function Set-BrowserPreferences {
         $null = New-Item -ItemType Directory -Path $profilePath -Force
     }
 
-    Write-Verbose "[Secure Prefs] First run - writing untracked preferences only"
+    Write-Verbose "[Secure Prefs] First run - creating tracked preferences with valid MACs"
 
-    $securePrefs = @{
+    # Get device ID for MAC calculation
+    $deviceId = Get-WindowsSidWithoutRid
+    if (-not $deviceId) {
+        Write-Status "Failed to get device ID for MAC calculation" -Type Warning
+        return $false
+    }
+    Write-Verbose "[Secure Prefs] Device ID: $deviceId"
+
+    # Comet uses empty seed for file MACs (non-Chrome branded build)
+    $seedHex = ""
+
+    # Tracked preferences to set
+    $trackedPrefs = @{
+        "extensions.ui.developer_mode"    = $true
+        "browser.show_home_button"        = $true
+        "bookmark_bar.show_apps_shortcut" = $false
+    }
+
+    # Untracked preferences (no MAC needed)
+    $untrackedPrefs = @{
         sync       = @{
             managed = $true
         }
@@ -3836,16 +3859,78 @@ function Set-BrowserPreferences {
         }
     }
 
+    # Build the Secure Preferences structure
+    $securePrefs = $untrackedPrefs.Clone()
+
+    # Add tracked preferences to the structure
+    foreach ($path in $trackedPrefs.Keys) {
+        $value = $trackedPrefs[$path]
+        $parts = $path -split '\.'
+
+        # Navigate/create nested structure
+        $current = $securePrefs
+        for ($i = 0; $i -lt $parts.Count - 1; $i++) {
+            $part = $parts[$i]
+            if (-not $current.ContainsKey($part)) {
+                $current[$part] = @{}
+            }
+            $current = $current[$part]
+        }
+        $current[$parts[-1]] = $value
+    }
+
+    # Calculate MACs for tracked preferences
+    $macs = @{}
+    foreach ($path in $trackedPrefs.Keys) {
+        $value = $trackedPrefs[$path]
+        $mac = Get-PreferenceHmac -SeedHex $seedHex -DeviceId $deviceId -Path $path -Value $value
+
+        # Build nested MAC structure (e.g., "extensions.ui.developer_mode" -> macs.extensions.ui.developer_mode)
+        $parts = $path -split '\.'
+        $current = $macs
+        for ($i = 0; $i -lt $parts.Count - 1; $i++) {
+            $part = $parts[$i]
+            if (-not $current.ContainsKey($part)) {
+                $current[$part] = @{}
+            }
+            $current = $current[$part]
+        }
+        $current[$parts[-1]] = $mac
+        Write-Verbose "[Secure Prefs] Calculated MAC for $path = $($mac.Substring(0, 16))..."
+    }
+
+    # Calculate super_mac
+    $superMac = Get-SuperMac -SeedHex $seedHex -DeviceId $deviceId -MacsTree $macs
+    Write-Verbose "[Secure Prefs] Calculated super_mac = $($superMac.Substring(0, 16))..."
+
+    # Add protection structure
+    $securePrefs['protection'] = @{
+        macs      = $macs
+        super_mac = $superMac
+    }
+
     try {
+        # Create First Run sentinel
         if (-not (Test-Path $firstRunPath)) {
             $null = New-Item -ItemType File -Path $firstRunPath -Force
         }
 
+        # Write Secure Preferences
         # CRITICAL: Use -InputObject instead of pipe to avoid PS 5.1 serialization bugs
-        $json = ConvertTo-Json -InputObject $securePrefs -Depth 20
+        $json = ConvertTo-Json -InputObject $securePrefs -Depth 30 -Compress
         Set-Content -Path $securePrefsPath -Value $json -Encoding UTF8 -Force
+        Write-Verbose "[Secure Prefs] Wrote Secure Preferences to: $securePrefsPath"
 
-        Write-Status "Initial preferences written (run again after first launch to set tracked prefs)" -Type Success
+        # Set registry MACs (uses different seed: "ChromeRegistryHashStoreValidationSeed")
+        $registryResult = Set-RegistryPreferenceMacs -DeviceId $deviceId -PreferencesToSet $trackedPrefs
+        if ($registryResult) {
+            Write-Verbose "[Registry MAC] Registry MACs set successfully"
+        }
+        else {
+            Write-Verbose "[Registry MAC] WARNING: Failed to set registry MACs"
+        }
+
+        Write-Status "First-run preferences with tracked prefs and valid MACs written successfully" -Type Success
         return $true
     }
     catch {
