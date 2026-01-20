@@ -3889,24 +3889,24 @@ function Update-TrackedPreferences {
         Get-FlattenedMacs -Node $macs -Path "" -Result $existingMacs
         Write-Verbose "[Secure Prefs] Found $($existingMacs.Count) existing MACs before modification"
 
-        # CRITICAL: Recalculate ALL existing MACs, not just our target preferences
-        # When Meteor patches extensions or other data changes, the existing MACs
-        # become invalid because they were calculated for the old values.
-        # This ensures ALL MACs are valid for current preference values.
-        $recalcResult = Update-AllMacs -Macs $macs -SecurePreferences $securePrefsHash -RegularPreferences $regularPrefsHash -SeedHex $seedHex -DeviceId $deviceId -SecurePrefsRawJson $securePrefsJson
+        # FIXED: Only recalculate MACs for paths Meteor actually modifies
+        # Previously, Update-AllMacs recalculated ALL 33+ MACs, but PowerShell's JSON
+        # serialization differs from Chromium's (unicode escaping, etc.), causing
+        # MAC mismatches for values we didn't even modify. This triggered the browser's
+        # "tracked_preferences_reset" detection for extensions.settings.* paths.
+        #
+        # The fix: Only update MACs for the specific paths in $prefsToModify.
+        # Preserve original MACs (written by Chromium) for everything else.
+        $updateResult = Update-ModifiedMacs -Macs $macs -ModifiedPaths $prefsToModify -SeedHex $seedHex -DeviceId $deviceId
 
-        Write-Verbose "[Secure Prefs] Recalculated $($recalcResult.recalculated) MACs, removed $($recalcResult.removed) orphaned MACs"
-
-        # Log our specific target preferences
-        foreach ($path in $prefsToModify.Keys) {
-            $value = $prefsToModify[$path]
-            Write-Verbose "[Secure Prefs] Target pref: $path = $(ConvertTo-JsonForHmac $value)"
-        }
+        Write-Verbose "[Secure Prefs] Updated $($updateResult.updated) MACs for modified preferences only"
+        Write-Verbose "[Secure Prefs] Preserved original MACs for all other paths (extensions.settings.*, etc.)"
 
         # Check for account_values (signed-in users)
+        # account_values MACs are preserved as-is (we don't modify account-synced prefs)
         $hasAccountValues = $macs.ContainsKey('account_values')
         if ($hasAccountValues) {
-            Write-Verbose "[Secure Prefs] Found account_values section - MACs were included in recalculation"
+            Write-Verbose "[Secure Prefs] Found account_values section - preserved original MACs"
         }
 
         # Flatten all MACs for super_mac calculation
@@ -4151,6 +4151,85 @@ function Get-PreferenceValue {
     }
 
     return @{ Found = $true; Value = $current }
+}
+
+function Update-ModifiedMacs {
+    <#
+    .SYNOPSIS
+        Update MACs ONLY for specific paths that Meteor modifies.
+    .DESCRIPTION
+        This function replaces Update-AllMacs to avoid JSON serialization mismatches.
+
+        The problem: PowerShell's JSON serialization produces different output than
+        Chromium's serializer (different unicode escaping, key ordering quirks, etc.).
+        When we recalculate MACs for ALL paths, we get mismatches even for values we
+        didn't modify, causing the browser to detect "tampering" and reset preferences.
+
+        The solution: Only recalculate MACs for the specific paths Meteor modifies.
+        Preserve original MACs for everything else.
+
+    .PARAMETER Macs
+        The existing MACs hashtable structure (nested, e.g., protection.macs).
+    .PARAMETER ModifiedPaths
+        Hashtable of path => value pairs that Meteor actually modified.
+    .PARAMETER SeedHex
+        The HMAC seed (empty for non-Chrome builds).
+    .PARAMETER DeviceId
+        The device ID (raw Windows SID).
+    .OUTPUTS
+        Hashtable with:
+        - updated: Count of MACs that were updated
+        - paths: Array of paths that were updated
+    #>
+    param(
+        [hashtable]$Macs,
+        [hashtable]$ModifiedPaths,
+        [string]$SeedHex,
+        [string]$DeviceId
+    )
+
+    $updated = 0
+    $updatedPaths = @()
+
+    foreach ($path in $ModifiedPaths.Keys) {
+        $value = $ModifiedPaths[$path]
+
+        # Calculate new MAC for this path
+        $newMac = Get-PreferenceHmac -SeedHex $SeedHex -DeviceId $DeviceId -Path $path -Value $value
+
+        # Navigate to the right place in the nested MACs structure and set the new MAC
+        $parts = $path -split '\.'
+        $current = $Macs
+
+        # Navigate/create nested structure
+        for ($i = 0; $i -lt $parts.Count - 1; $i++) {
+            $part = $parts[$i]
+            if (-not $current.ContainsKey($part)) {
+                $current[$part] = @{}
+            }
+            $current = $current[$part]
+        }
+
+        $lastPart = $parts[-1]
+
+        # Get original MAC for logging
+        $originalMac = if ($current.ContainsKey($lastPart)) { $current[$lastPart] } else { "(none)" }
+
+        # Set the new MAC
+        $current[$lastPart] = $newMac
+        $updated++
+        $updatedPaths += $path
+
+        Write-Verbose "[Update MACs] $path = $($newMac.Substring(0, 32))... (value: $(ConvertTo-JsonForHmac $value))"
+        if ($originalMac -ne "(none)" -and $originalMac -ne $newMac) {
+            Write-Verbose "[Update MACs]   Changed from: $($originalMac.Substring(0, 32))..."
+        }
+    }
+
+    return @{
+        updated = $updated
+        paths   = $updatedPaths
+    }
 }
 
 function Update-AllMacs {
