@@ -296,6 +296,112 @@ if ($null -ne $extValue) {
 }
 
 Write-Host ""
+
+# ============================================================================
+# PART 7: NORMALIZED JSON COMPARISON
+# ============================================================================
+
+Write-Host "=== PART 7: NORMALIZED JSON COMPARISON ===" -ForegroundColor Yellow
+Write-Host ""
+
+# ConvertTo-ChromiumJson function (from meteor.ps1)
+function ConvertTo-ChromiumJson {
+    param([string]$Json)
+    if ([string]::IsNullOrEmpty($Json)) { return $Json }
+    $result = [regex]::Replace($Json, '\\u([0-9a-fA-F]{4})', {
+        param($match)
+        "\u" + $match.Groups[1].Value.ToUpper()
+    })
+    $result = $result -replace '\\u003E', '>'
+    return $result
+}
+
+# ConvertTo-SortedAndPruned function
+function ConvertTo-SortedAndPruned {
+    param($Value)
+    if ($null -eq $Value) { return $null }
+    elseif ($Value -is [array]) {
+        $result = @()
+        foreach ($item in $Value) {
+            $result += ConvertTo-SortedAndPruned -Value $item
+        }
+        return $result
+    }
+    elseif ($Value -is [PSCustomObject]) {
+        $sorted = [ordered]@{}
+        foreach ($prop in ($Value.PSObject.Properties | Sort-Object Name)) {
+            $childValue = ConvertTo-SortedAndPruned -Value $prop.Value
+            # PRUNE: Skip empty arrays and empty objects
+            if ($childValue -is [array] -and $childValue.Count -eq 0) { continue }
+            if ($childValue -is [hashtable] -and $childValue.Count -eq 0) { continue }
+            if ($childValue -is [System.Collections.Specialized.OrderedDictionary] -and $childValue.Count -eq 0) { continue }
+            $sorted[$prop.Name] = $childValue
+        }
+        return $sorted
+    }
+    else { return $Value }
+}
+
+if ($null -ne $extValue) {
+    # Get our serialized JSON (sorted, pruned, normalized)
+    $pruned = ConvertTo-SortedAndPruned -Value $extValue
+    $ourJson = ConvertTo-Json -InputObject $pruned -Compress -Depth 20
+    $ourJsonNormalized = ConvertTo-ChromiumJson -Json $ourJson
+
+    Write-Host "Our serialized JSON length: $($ourJsonNormalized.Length) chars" -ForegroundColor Cyan
+    Write-Host "Raw JSON length:            $($rawExtJson.Length) chars" -ForegroundColor Cyan
+    Write-Host ""
+
+    # Find first difference
+    $minLen = [Math]::Min($ourJsonNormalized.Length, $rawExtJson.Length)
+    $firstDiff = -1
+    for ($i = 0; $i -lt $minLen; $i++) {
+        if ($ourJsonNormalized[$i] -ne $rawExtJson[$i]) {
+            $firstDiff = $i
+            break
+        }
+    }
+
+    if ($firstDiff -eq -1 -and $ourJsonNormalized.Length -ne $rawExtJson.Length) {
+        $firstDiff = $minLen
+    }
+
+    if ($firstDiff -eq -1) {
+        Write-Host "JSON MATCHES EXACTLY!" -ForegroundColor Green
+    } else {
+        Write-Host "FIRST DIFFERENCE at position $firstDiff" -ForegroundColor Red
+        Write-Host ""
+
+        # Show context around difference
+        $start = [Math]::Max(0, $firstDiff - 30)
+        $end = [Math]::Min($ourJsonNormalized.Length, $firstDiff + 30)
+
+        Write-Host "Our JSON around diff:" -ForegroundColor Green
+        $snippet = $ourJsonNormalized.Substring($start, [Math]::Min($end - $start, $ourJsonNormalized.Length - $start))
+        Write-Host "  ...$snippet..."
+        Write-Host "        $(' ' * ($firstDiff - $start))^" -ForegroundColor Red
+
+        $end = [Math]::Min($rawExtJson.Length, $firstDiff + 30)
+        Write-Host ""
+        Write-Host "Raw JSON around diff:" -ForegroundColor Green
+        $snippet = $rawExtJson.Substring($start, [Math]::Min($end - $start, $rawExtJson.Length - $start))
+        Write-Host "  ...$snippet..."
+        Write-Host "        $(' ' * ($firstDiff - $start))^" -ForegroundColor Red
+
+        Write-Host ""
+        Write-Host "Character values at diff position:" -ForegroundColor Cyan
+        if ($firstDiff -lt $ourJsonNormalized.Length) {
+            $ourChar = $ourJsonNormalized[$firstDiff]
+            Write-Host "  Our:  '$ourChar' (0x$([int][char]$ourChar | ForEach-Object { $_.ToString("X2") }))"
+        }
+        if ($firstDiff -lt $rawExtJson.Length) {
+            $rawChar = $rawExtJson[$firstDiff]
+            Write-Host "  Raw:  '$rawChar' (0x$([int][char]$rawChar | ForEach-Object { $_.ToString("X2") }))"
+        }
+    }
+}
+
+Write-Host ""
 Write-Host "=" * 80 -ForegroundColor Cyan
 Write-Host "DONE" -ForegroundColor Cyan
 Write-Host "=" * 80 -ForegroundColor Cyan

@@ -141,6 +141,35 @@ function ConvertTo-SortedAndPruned {
     }
 }
 
+function ConvertTo-ChromiumJson {
+    <#
+    .SYNOPSIS
+        Normalize PowerShell JSON to match Chromium's JSONWriter format.
+    .DESCRIPTION
+        PowerShell's ConvertTo-Json uses different unicode escaping than Chromium:
+        - PowerShell: \u003c (lowercase), \u003e (escaped >)
+        - Chromium:   \u003C (uppercase), > (not escaped)
+
+        This function normalizes the JSON string to match Chromium's format.
+    #>
+    param([string]$Json)
+
+    if ([string]::IsNullOrEmpty($Json)) {
+        return $Json
+    }
+
+    # Step 1: Convert all lowercase unicode escapes to uppercase
+    $result = [regex]::Replace($Json, '\\u([0-9a-fA-F]{4})', {
+        param($match)
+        "\u" + $match.Groups[1].Value.ToUpper()
+    })
+
+    # Step 2: Unescape > (Chromium doesn't escape it)
+    $result = $result -replace '\\u003E', '>'
+
+    return $result
+}
+
 function ConvertTo-JsonForHmac {
     <#
     .SYNOPSIS
@@ -155,6 +184,7 @@ function ConvertTo-JsonForHmac {
         - Number:   String representation
 
         CRITICAL: Chromium prunes empty Dict and List values before MAC calculation!
+        CRITICAL: Unicode escaping must match Chromium's format (uppercase hex, > not escaped)
     #>
     param($Value)
 
@@ -170,7 +200,8 @@ function ConvertTo-JsonForHmac {
         }
         # Sort and prune, then serialize
         $pruned = ConvertTo-SortedAndPruned -Value $Value
-        return (ConvertTo-Json -InputObject $pruned -Compress -Depth 20)
+        $json = ConvertTo-Json -InputObject $pruned -Compress -Depth 20
+        return ConvertTo-ChromiumJson -Json $json
     }
     elseif ($Value -is [hashtable] -or $Value -is [PSCustomObject]) {
         # Sort and prune empty containers, then serialize
@@ -182,18 +213,21 @@ function ConvertTo-JsonForHmac {
         if ($pruned -is [System.Collections.Specialized.OrderedDictionary] -and $pruned.Count -eq 0) {
             return "{}"
         }
-        return (ConvertTo-Json -InputObject $pruned -Compress -Depth 20)
+        $json = ConvertTo-Json -InputObject $pruned -Compress -Depth 20
+        return ConvertTo-ChromiumJson -Json $json
     }
     elseif ($Value -is [string]) {
         # JSON-encode the string (adds quotes and escapes)
-        return (ConvertTo-Json -InputObject $Value -Compress)
+        $json = ConvertTo-Json -InputObject $Value -Compress
+        return ConvertTo-ChromiumJson -Json $json
     }
     elseif ($Value -is [int] -or $Value -is [long] -or $Value -is [double]) {
         return $Value.ToString()
     }
     else {
         $pruned = ConvertTo-SortedAndPruned -Value $Value
-        return (ConvertTo-Json -InputObject $pruned -Compress -Depth 20)
+        $json = ConvertTo-Json -InputObject $pruned -Compress -Depth 20
+        return ConvertTo-ChromiumJson -Json $json
     }
 }
 
