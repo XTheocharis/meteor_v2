@@ -242,7 +242,13 @@
   },
   "pak_modifications": {
     "enabled": true,
-    "modifications": []
+    "modifications": [
+      {
+        "pattern": "!isPerplexityInternalUser",
+        "replacement": " isPerplexityInternalUser",
+        "description": "Flip internal user check to show Perplexity service workers in chrome://inspect for non-internal users"
+      }
+    ]
   },
   "ublock": {
     "enabled": true,
