@@ -490,8 +490,8 @@ function Test-MeteorConfig {
     }
 
     # Check extensions has required settings
-    if (-not $Config.extensions.PSObject.Properties.Name -contains 'sources') {
-        throw "Config validation failed: missing 'extensions.sources'"
+    if (-not $Config.extensions.PSObject.Properties.Name -contains 'bundled') {
+        throw "Config validation failed: missing 'extensions.bundled'"
     }
 
     return $true
@@ -5177,8 +5177,8 @@ function Build-BrowserCommand {
     # Build extension list
     $extensions = [System.Collections.ArrayList]@()
 
-    # Add patched extensions
-    foreach ($extName in $Config.extensions.sources) {
+    # Add patched extensions (use bundled keys as directory names)
+    foreach ($extName in $Config.extensions.bundled.PSObject.Properties.Name) {
         $extDir = Join-Path $ExtPath $extName
         if (Test-Path $extDir) {
             [void]$extensions.Add($extDir)
