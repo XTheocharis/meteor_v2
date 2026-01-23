@@ -112,7 +112,10 @@ param(
     [string]$DataPath,
 
     [Parameter()]
-    [switch]$SkipPak
+    [switch]$SkipPak,
+
+    [Parameter()]
+    [switch]$Proxy
 )
 
 Set-StrictMode -Version Latest
@@ -5142,7 +5145,8 @@ function Build-BrowserCommand {
         [string]$ExtPath,
         [string]$UBlockPath,
         [string]$AdGuardExtraPath,
-        [string]$UserDataPath
+        [string]$UserDataPath,
+        [switch]$UseProxy
     )
 
     $cmd = [System.Collections.ArrayList]@()
@@ -5153,6 +5157,11 @@ function Build-BrowserCommand {
     # Add user data directory if specified (for portable mode)
     if ($UserDataPath) {
         [void]$cmd.Add("--user-data-dir=`"$UserDataPath`"")
+    }
+
+    # Add proxy server if specified
+    if ($UseProxy) {
+        [void]$cmd.Add("--proxy-server=http://127.0.0.1:8888")
     }
 
     # Add profile directory if specified
@@ -6017,7 +6026,7 @@ function Main {
         $cometDir = if ($comet) { $comet.Directory } else { $null }
         $null = Set-BrowserPreferences -BrowserPath $browserExe -UserDataPath $browserUserDataPath -ProfileName $profileName -CometDir $cometDir -DryRunMode:$DryRun
 
-        $cmd = Build-BrowserCommand -Config $config -BrowserExe $browserExe -ExtPath $patchedExtPath -UBlockPath $ublockPath -AdGuardExtraPath $adguardExtraPath -UserDataPath $browserUserDataPath
+        $cmd = Build-BrowserCommand -Config $config -BrowserExe $browserExe -ExtPath $patchedExtPath -UBlockPath $ublockPath -AdGuardExtraPath $adguardExtraPath -UserDataPath $browserUserDataPath -UseProxy:$Proxy
 
         $proc = Start-Browser -Command $cmd -DryRunMode:$DryRun
 
