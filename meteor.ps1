@@ -2876,7 +2876,7 @@ function Initialize-PatchedExtensions {
 
             if ($DryRunMode) {
                 Write-Status "Would fetch from: $updateUrl (current: $currentVersion)" -Type Detail
-                $extensionsToProcess[$extName] = @{ OutputDir = $extOutputDir; FromServer = $true }
+                $extensionsToProcess[$extName] = @{ OutputDir = $extOutputDir; FromServer = $true; NeedsFallback = $false }
                 continue
             }
 
@@ -2891,7 +2891,7 @@ function Initialize-PatchedExtensions {
                 -InjectKey
 
             if ($result) {
-                $extensionsToProcess[$extName] = @{ OutputDir = $extOutputDir; FromServer = $true; Version = $result.Version }
+                $extensionsToProcess[$extName] = @{ OutputDir = $extOutputDir; FromServer = $true; NeedsFallback = $false; Version = $result.Version }
             }
             else {
                 Write-Status "  Server fetch failed, will try local fallback" -Type Warning
