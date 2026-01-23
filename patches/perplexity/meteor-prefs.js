@@ -89,7 +89,7 @@
     // Extensions
     'extensions.ui.developer_mode': true,
     'extensions.unpublished_availability': 1,  // 1 = enabled
-    'extensions.block_external_extensions': false
+    'extensions.block_external_extensions': false,
 
     // Feedback & Sync
     'feedback_allowed': false,

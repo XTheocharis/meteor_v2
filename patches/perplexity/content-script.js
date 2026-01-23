@@ -212,7 +212,87 @@
   };
 
   // ============================================================================
-  // SECTION 2: LOCAL FEATURE FLAG OVERRIDES
+  // SECTION 2: EPPO OVERRIDES VIA LOCALSTORAGE
+  // ============================================================================
+
+  // The SPA checks localStorage['eppo_overrides'] BEFORE making network requests.
+  // By setting this key early, we force the flags without needing to intercept Eppo SDK.
+  // This is the built-in override system used by the SPA.
+
+  const EPPO_OVERRIDES = {
+    // MCP UI FORCE-ENABLE (Windows disabled by default)
+    'comet-mcp-enabled': 'true',         // Must be string "true" not boolean
+    'custom-remote-mcps': 'true',
+    'comet-dxt-enabled': 'true',
+
+    // TELEMETRY (DISABLE)
+    'use-mixpanel-analytics': 'false',
+    'report-omnibox-text': 'false',
+    'http-error-monitor': 'false',
+    'upload-client-context-async': 'false',
+    'cf-ping': 'false',
+
+    // URL/NAVIGATION TRACKING (DISABLE)
+    'show-perplexity-nav-suggestions': 'false',
+    'nav-intent-classifier': 'false',
+
+    // AI CONTEXT - History (DISABLE)
+    'browser-history-summary-settings': 'false',
+    'memory-search-history': 'false',
+
+    // SHOPPING/ADVERTISING (DISABLE)
+    'shopping-enabled': 'false',
+    'shopping-comparison': 'false',
+    'shopping-try-on-enabled': 'false',
+    'enable-sidecar-nudge-for-shopping-assistant': 'false',
+    'paypal-cashback-promo-config': 'false',
+    'visa-config': 'false',
+    'hotel-discounts-config': 'false',
+    'can-book-hotels': 'false',
+    'get-opentable-enabled': 'false',
+
+    // UPSELL/PROMO TRACKING (DISABLE)
+    'onboarding-comet-upsell': 'false',
+    'onboarding-pro-upsell': 'false',
+    'full-screen-comet-upsell': 'false',
+    'max-upsell': 'false',
+    'pro-free-trial-side-upsell': 'false',
+    'power-user-recruitment-banner': 'false',
+    'spring-2025-referrals-promo': 'false',
+    'assistant-promo-deeplinks': 'false',
+
+    // YOUTUBE/ADBLOCK (DISABLE auto-whitelist)
+    'adblock-youtube-autowhitelist-enabled': 'false',
+
+    // DISCOVERY/SUGGESTIONS (DISABLE tracking)
+    'discover-early-fetch': 'false',
+    'discover-ui-test-2': 'false',
+    'discovery-sidebar-widgets': 'false',
+    'sidecar-personalized-query-suggestions': 'false',
+
+    // ENTERPRISE TELEMETRY (DISABLE)
+    'enterprise-insights': 'false',
+    'enterprise-insights-special-access': 'false'
+  };
+
+  // Inject Eppo overrides via COOKIE (primary) and localStorage (backup)
+  // The SPA checks cookies FIRST via js-cookie, then falls back to localStorage.
+  // Cookie must be set on the correct domain with path=/
+  try {
+    // Set as cookie (checked first by SPA)
+    const cookieValue = encodeURIComponent(JSON.stringify(EPPO_OVERRIDES));
+    // Set cookie with 1 year expiry, path=/, for current domain
+    const expires = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toUTCString();
+    document.cookie = `eppo_overrides=${cookieValue}; path=/; expires=${expires}; SameSite=Lax`;
+
+    // Also set localStorage as backup
+    localStorage.setItem('eppo_overrides', JSON.stringify(EPPO_OVERRIDES));
+  } catch (e) {
+    console.warn('[Meteor] Could not set eppo_overrides:', e);
+  }
+
+  // ============================================================================
+  // SECTION 3: LOCAL FEATURE FLAG OVERRIDES (for network interception fallback)
   // ============================================================================
 
   const LOCAL_FEATURE_FLAGS = {
@@ -673,5 +753,5 @@
     getAll: () => ({ ...LOCAL_FEATURE_FLAGS })
   };
 
-  console.log('[Meteor] Content script active - SDK stubs + feature flag interception + styles enabled');
+  console.log('[Meteor] Content script active - SDK stubs + eppo_overrides localStorage + styles enabled');
 })();
