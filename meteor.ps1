@@ -1728,14 +1728,8 @@ function Get-ExtensionUpdateInfo {
     # Determine separator (& if URL already has query params, ? otherwise)
     $separator = if ($UpdateUrl.Contains("?")) { "&" } else { "?" }
 
-    # Generate a stable machine ID (Perplexity requires this parameter)
-    # Use a hash of the computer name for consistency across runs
-    $computerName = if ($env:COMPUTERNAME) { $env:COMPUTERNAME } else { "meteor" }
-    $machineId = [System.BitConverter]::ToString(
-        [System.Security.Cryptography.SHA256]::Create().ComputeHash(
-            [System.Text.Encoding]::UTF8.GetBytes($computerName)
-        )
-    ).Replace("-", "").Substring(0, 32).ToLower()
+    # Generate a random machine ID (Perplexity requires this parameter)
+    $machineId = [guid]::NewGuid().ToString()
 
     # Build full URL with required parameters
     $checkUrl = "$UpdateUrl$separator" + `
