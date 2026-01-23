@@ -315,19 +315,19 @@ function Invoke-MeteorWebRequest {
     try {
         switch ($Mode) {
             'Content' {
-                $response = Invoke-WebRequest -Uri $Uri -UseBasicParsing -TimeoutSec $TimeoutSec -Headers $headers
+                $response = Invoke-WebRequest -Uri $Uri -UseBasicParsing -TimeoutSec $TimeoutSec -Headers $headers -Verbose:$false
                 return $response.Content
             }
             'Download' {
                 if (-not $OutFile) {
                     throw "OutFile is required for Download mode"
                 }
-                Invoke-WebRequest -Uri $Uri -OutFile $OutFile -UseBasicParsing -TimeoutSec $TimeoutSec -Headers $headers
+                Invoke-WebRequest -Uri $Uri -OutFile $OutFile -UseBasicParsing -TimeoutSec $TimeoutSec -Headers $headers -Verbose:$false
                 return $true
             }
             'Redirect' {
                 try {
-                    $response = Invoke-WebRequest -Uri $Uri -Method Get -UseBasicParsing -MaximumRedirection 0 -Headers $headers -ErrorAction Stop
+                    $response = Invoke-WebRequest -Uri $Uri -Method Get -UseBasicParsing -MaximumRedirection 0 -Headers $headers -ErrorAction Stop -Verbose:$false
                     return $null
                 }
                 catch {
@@ -1854,7 +1854,7 @@ function Get-ChromeExtensionCrx {
 
     try {
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        Invoke-WebRequest -Uri $downloadUrl -OutFile $outFile -UseBasicParsing -TimeoutSec 120 -Headers @{
+        Invoke-WebRequest -Uri $downloadUrl -OutFile $outFile -UseBasicParsing -TimeoutSec 120 -Verbose:$false -Headers @{
             "User-Agent" = $script:UserAgent
             Referer      = "https://chrome.google.com/webstore/detail/$ExtensionId"
         }
@@ -2293,7 +2293,7 @@ function Test-CometUpdate {
         # The API returns a 307 redirect to the actual download URL which contains the version
         $redirectUrl = $null
         try {
-            $response = Invoke-WebRequest -Uri $DownloadUrl -Method Get -UseBasicParsing -MaximumRedirection 0 -Headers @{
+            $response = Invoke-WebRequest -Uri $DownloadUrl -Method Get -UseBasicParsing -MaximumRedirection 0 -Verbose:$false -Headers @{
                 "User-Agent" = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
             }
             Write-VerboseTimestamped "Update check: Response status $($response.StatusCode)"
