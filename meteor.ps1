@@ -5338,6 +5338,47 @@ function Initialize-Extensions {
 
     Write-Status "Step 4: Extracting and Patching" -Type Step
 
+    # Always ensure bundled CRX extensions are disabled (even when using cached patches)
+    # This handles cases where Comet updates restore external_extensions.json
+    if ($Comet) {
+        $defaultAppsDir = Join-Path $Comet.Directory "default_apps"
+        if (Test-Path $defaultAppsDir) {
+            # Clear external_extensions.json to prevent CRX loading
+            $extJsonPath = Join-Path $defaultAppsDir "external_extensions.json"
+            $extJsonBackup = "$extJsonPath.meteor-backup"
+            if (Test-Path $extJsonPath) {
+                $content = Get-Content -Path $extJsonPath -Raw -ErrorAction SilentlyContinue
+                if ($content -and $content.Trim() -ne "{}") {
+                    if ($DryRunMode) {
+                        Write-Status "Would clear external_extensions.json" -Type Detail
+                    }
+                    else {
+                        if (-not (Test-Path $extJsonBackup)) {
+                            Copy-Item -Path $extJsonPath -Destination $extJsonBackup -Force
+                        }
+                        Set-Content -Path $extJsonPath -Value "{}" -Encoding UTF8
+                        Write-Status "Cleared external_extensions.json" -Type Detail
+                    }
+                }
+            }
+
+            # Backup any remaining .crx files
+            $crxFilesToBackup = Get-ChildItem -Path $defaultAppsDir -Filter "*.crx" -ErrorAction SilentlyContinue
+            foreach ($crx in $crxFilesToBackup) {
+                $backupPath = "$($crx.FullName).meteor-backup"
+                if (-not (Test-Path $backupPath)) {
+                    if ($DryRunMode) {
+                        Write-Status "Would backup: $($crx.Name)" -Type Detail
+                    }
+                    else {
+                        Move-Item -Path $crx.FullName -Destination $backupPath -Force
+                        Write-Status "Backed up: $($crx.Name)" -Type Detail
+                    }
+                }
+            }
+        }
+    }
+
     if (-not $NeedsSetup -or -not $Comet) {
         Write-Status "Using existing patched extensions" -Type Detail
         return
@@ -5391,41 +5432,6 @@ function Initialize-Extensions {
             else {
                 Remove-Item -Path $crxCachePath -Recurse -Force -ErrorAction SilentlyContinue
                 Write-Status "Cleared: $(Split-Path -Leaf $crxCachePath)" -Type Detail
-            }
-        }
-    }
-
-    # Disable bundled extensions
-    $defaultAppsDir = Join-Path $Comet.Directory "default_apps"
-    if (Test-Path $defaultAppsDir) {
-        # Clear external_extensions.json
-        $extJsonPath = Join-Path $defaultAppsDir "external_extensions.json"
-        $extJsonBackup = "$extJsonPath.meteor-backup"
-        if (Test-Path $extJsonPath) {
-            if ($DryRunMode) {
-                Write-Status "Would clear external_extensions.json" -Type Detail
-            }
-            else {
-                if (-not (Test-Path $extJsonBackup)) {
-                    Copy-Item -Path $extJsonPath -Destination $extJsonBackup -Force
-                }
-                Set-Content -Path $extJsonPath -Value "{}" -Encoding UTF8
-                Write-Status "Cleared external_extensions.json" -Type Detail
-            }
-        }
-
-        # Backup .crx files
-        $crxFilesToBackup = Get-ChildItem -Path $defaultAppsDir -Filter "*.crx" -ErrorAction SilentlyContinue
-        foreach ($crx in $crxFilesToBackup) {
-            $backupPath = "$($crx.FullName).meteor-backup"
-            if (-not (Test-Path $backupPath)) {
-                if ($DryRunMode) {
-                    Write-Status "Would backup: $($crx.Name)" -Type Detail
-                }
-                else {
-                    Move-Item -Path $crx.FullName -Destination $backupPath -Force
-                    Write-Status "Backed up: $($crx.Name)" -Type Detail
-                }
             }
         }
     }
@@ -5578,6 +5584,54 @@ function Main {
                 $cometProcesses | Stop-Process -Force -ErrorAction SilentlyContinue
                 Start-Sleep -Milliseconds 500  # Brief pause for file handles to release
                 Write-Status "Comet processes stopped" -Type Success
+            }
+        }
+
+        # Delete Comet registry key (contains MACs and other browser state)
+        $registryPath = "HKCU:\SOFTWARE\Perplexity\Comet"
+        if (Test-Path $registryPath) {
+            if ($DryRun) {
+                Write-Status "Would delete registry key: $registryPath" -Type DryRun
+            }
+            else {
+                Remove-Item -Path $registryPath -Recurse -Force -ErrorAction SilentlyContinue
+                Write-Status "Deleted Comet registry key" -Type Detail
+            }
+        }
+
+        # Delete Comet application files (but NOT User Data)
+        $cometAppPath = Join-Path $meteorDataPath "comet"
+        if (Test-Path $cometAppPath) {
+            if ($DryRun) {
+                Write-Status "Would delete Comet application: $cometAppPath" -Type DryRun
+            }
+            else {
+                Remove-Item -Path $cometAppPath -Recurse -Force -ErrorAction SilentlyContinue
+                Write-Status "Deleted Comet application files" -Type Detail
+            }
+        }
+
+        # Delete patched extensions (will be re-extracted)
+        $patchedExtForceDelete = Join-Path $meteorDataPath "patched_extensions"
+        if (Test-Path $patchedExtForceDelete) {
+            if ($DryRun) {
+                Write-Status "Would delete patched extensions: $patchedExtForceDelete" -Type DryRun
+            }
+            else {
+                Remove-Item -Path $patchedExtForceDelete -Recurse -Force -ErrorAction SilentlyContinue
+                Write-Status "Deleted patched extensions" -Type Detail
+            }
+        }
+
+        # Delete patched resources (will be re-extracted from PAK)
+        $patchedResForceDelete = Join-Path $meteorDataPath "patched_resources"
+        if (Test-Path $patchedResForceDelete) {
+            if ($DryRun) {
+                Write-Status "Would delete patched resources: $patchedResForceDelete" -Type DryRun
+            }
+            else {
+                Remove-Item -Path $patchedResForceDelete -Recurse -Force -ErrorAction SilentlyContinue
+                Write-Status "Deleted patched resources" -Type Detail
             }
         }
 
