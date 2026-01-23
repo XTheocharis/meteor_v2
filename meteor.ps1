@@ -2574,7 +2574,7 @@ function Install-ChromeWebStoreExtension {
         }
 
         # Extract CRX to output directory (with key injection for consistent extension ID)
-        Export-CrxToDirectory -CrxPath $crxFile -OutputDir $OutputDir -InjectKey
+        $null = Export-CrxToDirectory -CrxPath $crxFile -OutputDir $OutputDir -InjectKey
 
         # Get new version from manifest
         $newManifest = Get-Content -Path $manifestPath -Raw | ConvertFrom-Json
