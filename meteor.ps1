@@ -1728,12 +1728,21 @@ function Get-ExtensionUpdateInfo {
     # Determine separator (& if URL already has query params, ? otherwise)
     $separator = if ($UpdateUrl.Contains("?")) { "&" } else { "?" }
 
+    # Generate a stable machine ID (Perplexity requires this parameter)
+    # Use a hash of the computer name for consistency across runs
+    $computerName = if ($env:COMPUTERNAME) { $env:COMPUTERNAME } else { "meteor" }
+    $machineId = [System.BitConverter]::ToString(
+        [System.Security.Cryptography.SHA256]::Create().ComputeHash(
+            [System.Text.Encoding]::UTF8.GetBytes($computerName)
+        )
+    ).Replace("-", "").Substring(0, 32).ToLower()
+
     # Build full URL with required parameters
     $checkUrl = "$UpdateUrl$separator" + `
         "response=updatecheck&" + `
         "os=win&arch=x86-64&os_arch=x86-64&" + `
         "prod=chromecrx&prodchannel=unknown&prodversion=120.0.0.0&" + `
-        "acceptformat=crx3&x=$xParam"
+        "acceptformat=crx3&machine=$machineId&x=$xParam"
 
     try {
         $content = Invoke-MeteorWebRequest -Uri $checkUrl -Mode Content -TimeoutSec 30
