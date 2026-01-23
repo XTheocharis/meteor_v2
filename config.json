@@ -5,7 +5,9 @@
     "install_path": "",
     "auto_update": true,
     "portable": true,
-    "_comment_portable": "When portable=true, browser is extracted directly (no installer) and user data is stored in DataPath"
+    "fallback_version": "143.1.7499.35382",
+    "_comment_portable": "When portable=true, browser is extracted directly (no installer) and user data is stored in DataPath",
+    "_comment_fallback": "fallback_version used for extension update checks before browser is installed"
   },
   "browser": {
     "profile": "Default",

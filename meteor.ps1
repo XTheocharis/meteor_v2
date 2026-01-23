@@ -5655,13 +5655,17 @@ function Initialize-Extensions {
         return
     }
 
+    # Use actual browser version, or fallback from config for fresh installs
+    $browserVersionForUpdate = if ($CometVersion) { $CometVersion } else { $Config.comet.fallback_version }
+    if (-not $browserVersionForUpdate) { $browserVersionForUpdate = "120.0.0.0" }
+
     $setupResult = Initialize-PatchedExtensions `
         -CometDir $Comet.Directory `
         -OutputDir $PatchedExtPath `
         -PatchesDir $PatchesPath `
         -PatchConfig $Config.extensions.patch_config `
         -ExtensionConfig $Config.extensions `
-        -BrowserVersion $CometVersion `
+        -BrowserVersion $browserVersionForUpdate `
         -DryRunMode:$DryRunMode
 
     if (-not $setupResult) {
