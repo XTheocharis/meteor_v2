@@ -64,10 +64,6 @@
       "WebRtcHideLocalIpsWithMdns"
     ],
     "disable_features": [
-      "comet-voice-mode-new",
-      "ShowVoiceSearchInSteadyComposebox",
-      "ShowVoiceSearchInExpandedComposebox",
-      "ShowVoiceSearchInExpandedRealbox",
       "ExtensionManifestV2DeprecationWarning",
       "ExtensionManifestV2Disabled",
       "ExtensionManifestV2Unsupported",
