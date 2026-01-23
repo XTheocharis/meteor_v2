@@ -4130,17 +4130,14 @@ function Set-BrowserPreferences {
     }
 
     # Untracked Chrome preferences (no MAC needed, not exposed via settingsPrivate)
+    # NOTE: extensions.* prefs are often tracked - don't add them here!
     # These are set directly in the Preferences file at browser startup
     $untrackedChromePrefs = @{
-        # Extensions
-        "extensions.unpublished_availability"  = 1      # 1 = enabled (allow unpublished extensions)
-        "extensions.block_external_extensions" = $false # Allow external extensions
-
-        # DevTools
+        # DevTools (these are NOT tracked)
         "devtools.availability" = 1  # 1 = always available
+        "devtools.gen_ai_settings" = 2  # 2 = disabled
 
         # AI & Lens Features (disable Google AI integrations)
-        "devtools.gen_ai_settings"           = 2      # 2 = disabled
         "browser.gemini_settings"            = 1      # 1 = disabled
         "lens.policy.lens_overlay_settings"  = 1      # 1 = disabled
         "policy.lens_desktop_ntp_search_enabled" = $false
@@ -4438,16 +4435,13 @@ function Update-TrackedPreferences {
         }
 
         # Untracked Chrome preferences (no MAC needed, not exposed via settingsPrivate)
+        # NOTE: extensions.* prefs are often tracked - don't add them here!
         $untrackedChromePrefs = @{
-            # Extensions
-            "extensions.unpublished_availability"  = 1      # 1 = enabled
-            "extensions.block_external_extensions" = $false
-
-            # DevTools
+            # DevTools (these are NOT tracked)
             "devtools.availability" = 1  # 1 = always available
+            "devtools.gen_ai_settings" = 2  # 2 = disabled
 
             # AI & Lens Features (disable Google AI integrations)
-            "devtools.gen_ai_settings"           = 2      # 2 = disabled
             "browser.gemini_settings"            = 1      # 1 = disabled
             "lens.policy.lens_overlay_settings"  = 1      # 1 = disabled
             "policy.lens_desktop_ntp_search_enabled" = $false
