@@ -44,6 +44,9 @@
     // Disable proactive notifications
     'perplexity.notifications.proactive_assistance.enabled': false,
 
+    // Disable voice dictation button in toolbar
+    'perplexity.voice_mode.enabled': false,
+
     // Skip setup/onboarding
     'perplexity.onboarding_completed': true,
     'perplexity.was_site_onboarding_started': true,
