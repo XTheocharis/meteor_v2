@@ -134,17 +134,20 @@ $script:RegistryHashSeed = "ChromeRegistryHashStoreValidationSeed"
 function Write-Status {
     param(
         [string]$Message,
-        [ValidateSet("Info", "Success", "Warning", "Error", "Detail", "Step")]
+        [ValidateSet("Info", "Success", "Warning", "Error", "Detail", "Step", "DryRun")]
         [string]$Type = "Info"
     )
 
+    $timestamp = Get-Date -Format "HH:mm:ss.fff"
+
     switch ($Type) {
-        "Info" { Write-Host "[*] $Message" -ForegroundColor Cyan }
-        "Success" { Write-Host "[+] $Message" -ForegroundColor Green }
-        "Warning" { Write-Host "[!] $Message" -ForegroundColor Yellow }
-        "Error" { Write-Host "[!] $Message" -ForegroundColor Red }
-        "Detail" { Write-Host "    -> $Message" -ForegroundColor Gray }
-        "Step" { Write-Host "`n=== $Message ===" -ForegroundColor Magenta }
+        "Info"    { Write-Host "[$timestamp] [*] $Message" -ForegroundColor Cyan }
+        "Success" { Write-Host "[$timestamp] [+] $Message" -ForegroundColor Green }
+        "Warning" { Write-Host "[$timestamp] [!] $Message" -ForegroundColor Yellow }
+        "Error"   { Write-Host "[$timestamp] [!] $Message" -ForegroundColor Red }
+        "Detail"  { Write-Host "[$timestamp]     -> $Message" -ForegroundColor Gray }
+        "Step"    { Write-Host "`n[$timestamp] === $Message ===" -ForegroundColor Magenta }
+        "DryRun"  { Write-Host "[$timestamp] [DRY] $Message" -ForegroundColor DarkYellow }
     }
 }
 
