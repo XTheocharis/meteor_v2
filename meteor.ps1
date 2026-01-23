@@ -160,6 +160,47 @@ function Write-VerboseTimestamped {
     }
 }
 
+function Invoke-WebRequestTimestamped {
+    <#
+    .SYNOPSIS
+        Wrapper for Invoke-WebRequest that timestamps verbose output.
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [string]$Uri,
+        [string]$Method = 'Get',
+        [string]$OutFile,
+        [hashtable]$Headers,
+        [int]$TimeoutSec = 30,
+        [int]$MaximumRedirection = 5,
+        [switch]$UseBasicParsing
+    )
+
+    $params = @{
+        Uri = $Uri
+        Method = $Method
+        UseBasicParsing = $UseBasicParsing
+        TimeoutSec = $TimeoutSec
+        MaximumRedirection = $MaximumRedirection
+        Verbose = ($VerbosePreference -eq 'Continue')
+    }
+    if ($Headers) { $params.Headers = $Headers }
+    if ($OutFile) { $params.OutFile = $OutFile }
+
+    # Capture verbose stream (4) and merge to output
+    $output = Invoke-WebRequest @params 4>&1
+
+    foreach ($item in $output) {
+        if ($item -is [System.Management.Automation.VerboseRecord]) {
+            Write-VerboseTimestamped $item.Message
+        }
+        else {
+            # Return non-verbose output (the actual response)
+            $item
+        }
+    }
+}
+
 function Get-FileHash256 {
     param([string]$Path)
 
@@ -315,19 +356,19 @@ function Invoke-MeteorWebRequest {
     try {
         switch ($Mode) {
             'Content' {
-                $response = Invoke-WebRequest -Uri $Uri -UseBasicParsing -TimeoutSec $TimeoutSec -Headers $headers -Verbose:$false
+                $response = Invoke-WebRequestTimestamped -Uri $Uri -UseBasicParsing -TimeoutSec $TimeoutSec -Headers $headers
                 return $response.Content
             }
             'Download' {
                 if (-not $OutFile) {
                     throw "OutFile is required for Download mode"
                 }
-                Invoke-WebRequest -Uri $Uri -OutFile $OutFile -UseBasicParsing -TimeoutSec $TimeoutSec -Headers $headers -Verbose:$false
+                Invoke-WebRequestTimestamped -Uri $Uri -OutFile $OutFile -UseBasicParsing -TimeoutSec $TimeoutSec -Headers $headers
                 return $true
             }
             'Redirect' {
                 try {
-                    $response = Invoke-WebRequest -Uri $Uri -Method Get -UseBasicParsing -MaximumRedirection 0 -Headers $headers -ErrorAction Stop -Verbose:$false
+                    $response = Invoke-WebRequestTimestamped -Uri $Uri -Method Get -UseBasicParsing -MaximumRedirection 0 -Headers $headers
                     return $null
                 }
                 catch {
@@ -1854,7 +1895,7 @@ function Get-ChromeExtensionCrx {
 
     try {
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        Invoke-WebRequest -Uri $downloadUrl -OutFile $outFile -UseBasicParsing -TimeoutSec 120 -Verbose:$false -Headers @{
+        Invoke-WebRequestTimestamped -Uri $downloadUrl -OutFile $outFile -UseBasicParsing -TimeoutSec 120 -Headers @{
             "User-Agent" = $script:UserAgent
             Referer      = "https://chrome.google.com/webstore/detail/$ExtensionId"
         }
@@ -2293,7 +2334,7 @@ function Test-CometUpdate {
         # The API returns a 307 redirect to the actual download URL which contains the version
         $redirectUrl = $null
         try {
-            $response = Invoke-WebRequest -Uri $DownloadUrl -Method Get -UseBasicParsing -MaximumRedirection 0 -Verbose:$false -Headers @{
+            $response = Invoke-WebRequestTimestamped -Uri $DownloadUrl -Method Get -UseBasicParsing -MaximumRedirection 0 -Headers @{
                 "User-Agent" = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
             }
             Write-VerboseTimestamped "Update check: Response status $($response.StatusCode)"
