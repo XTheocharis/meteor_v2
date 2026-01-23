@@ -1708,6 +1708,8 @@ function Get-ExtensionUpdateInfo {
     <#
     .SYNOPSIS
         Query an extension's update URL to check for newer versions.
+    .DESCRIPTION
+        Uses the standard Chrome/Omaha update protocol to query for extension updates.
     #>
     param(
         [string]$UpdateUrl,
@@ -1719,10 +1721,19 @@ function Get-ExtensionUpdateInfo {
         return $null
     }
 
-    # Build update check URL
-    $encodedId = [System.Web.HttpUtility]::UrlEncode("id=$ExtensionId")
-    $encodedVersion = [System.Web.HttpUtility]::UrlEncode("v=$CurrentVersion")
-    $checkUrl = "$UpdateUrl`?x=$encodedId%26$encodedVersion%26uc"
+    # Build update check URL with required Chrome-style parameters
+    # The x= parameter contains: id=<ExtensionId>&v=<Version>&uc
+    $xParam = "id%3D$ExtensionId%26v%3D$CurrentVersion%26uc"
+
+    # Determine separator (& if URL already has query params, ? otherwise)
+    $separator = if ($UpdateUrl.Contains("?")) { "&" } else { "?" }
+
+    # Build full URL with required parameters
+    $checkUrl = "$UpdateUrl$separator" + `
+        "response=updatecheck&" + `
+        "os=win&arch=x86-64&os_arch=x86-64&" + `
+        "prod=chromecrx&prodchannel=unknown&prodversion=120.0.0.0&" + `
+        "acceptformat=crx3&x=$xParam"
 
     try {
         $content = Invoke-MeteorWebRequest -Uri $checkUrl -Mode Content -TimeoutSec 30
