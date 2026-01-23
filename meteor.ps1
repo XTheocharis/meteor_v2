@@ -442,7 +442,10 @@ function Resolve-MeteorPath {
         return $RelativePath
     }
 
-    return (Join-Path $BasePath $RelativePath)
+    # Strip leading ./ or .\ to avoid double-dot paths when joining
+    $cleanPath = $RelativePath -replace '^\.[\\/]', ''
+
+    return (Join-Path $BasePath $cleanPath)
 }
 
 function Test-MeteorConfig {
