@@ -6026,7 +6026,16 @@ function Main {
         $cometDir = if ($comet) { $comet.Directory } else { $null }
         $null = Set-BrowserPreferences -BrowserPath $browserExe -UserDataPath $browserUserDataPath -ProfileName $profileName -CometDir $cometDir -DryRunMode:$DryRun
 
-        $cmd = Build-BrowserCommand -Config $config -BrowserExe $browserExe -ExtPath $patchedExtPath -UBlockPath $ublockPath -AdGuardExtraPath $adguardExtraPath -UserDataPath $browserUserDataPath -UseProxy:$Proxy
+        $buildParams = @{
+            Config = $config
+            BrowserExe = $browserExe
+            ExtPath = $patchedExtPath
+            UBlockPath = $ublockPath
+            AdGuardExtraPath = $adguardExtraPath
+            UserDataPath = $browserUserDataPath
+        }
+        if ($Proxy) { $buildParams.UseProxy = $true }
+        $cmd = Build-BrowserCommand @buildParams
 
         $proc = Start-Browser -Command $cmd -DryRunMode:$DryRun
 
