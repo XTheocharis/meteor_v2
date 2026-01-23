@@ -14,86 +14,59 @@
   // CONFIGURATION
   // ============================================================================
 
+  // Only includes preferences that exist in Comet's settingsPrivate API
+  // Verified via chrome.settingsPrivate.getAllPrefs() - 210 prefs available
   const ENFORCED_PREFERENCES = {
+    // ========================================================================
+    // Perplexity-Specific Settings (37 available)
+    // ========================================================================
+
     // Disable built-in adblock (use uBlock instead)
     'perplexity.adblock.enabled': false,
     'perplexity.adblock.fb_embed_default': false,
     'perplexity.adblock.linkedin_embed_default': false,
     'perplexity.adblock.twitter_embed_default': false,
     'perplexity.adblock.whitelist': [],
+    'perplexity.adblock.hidden_whitelisted_dst': [],
+    'perplexity.adblock.hidden_whitelisted_src': [],
 
-    // Disable telemetry
+    // Disable telemetry and analytics
     'perplexity.metrics_allowed': false,
     'perplexity.analytics_observer_initialised': false,
-    'perplexity.feature.nav-logging': false,
 
     // Disable data collection features
     'perplexity.history_search_enabled': false,
     'perplexity.external_search_enabled': false,
     'perplexity.help_me_with_text.enabled': false,
     'perplexity.proactive_scraping.enabled': false,
+    'perplexity.always_allow_browser_agent': false,
 
-    // Feature flags
-    'perplexity.feature.adblock-whitelist': {
-      whitelist_destinations: [],
-      whitelist_sources: []
-    },
-    'perplexity.feature.Allow-external-extensions-scripting-on-NTP': true,
-    'perplexity.feature.navigate-to-perplexity-search-same-doc': false,
+    // Disable proactive notifications
+    'perplexity.notifications.proactive_assistance.enabled': false,
 
-    // Skip setup
+    // Skip setup/onboarding
     'perplexity.onboarding_completed': true,
+    'perplexity.was_site_onboarding_started': true,
 
     // ========================================================================
-    // Chromium Privacy Settings
+    // Chromium Privacy Settings (available in Comet)
     // ========================================================================
 
     // Search & Omnibox
     'search.suggest_enabled': false,
+    'omnibox.prevent_url_elisions': true,
 
-    // Safe Browsing & Security
+    // Safe Browsing - disable telemetry but keep protection
     'safebrowsing.scout_reporting_enabled': false,
-    'safebrowsing.password_protection_warning_trigger': 0,
-    'profile.password_dismiss_compromised_alert': false,
+
+    // Disable URL-keyed data collection
+    'url_keyed_anonymized_data_collection.enabled': false,
+
+    // Disable feedback
+    'feedback_allowed': false,
 
     // UI Preferences
-    'browser.show_home_button': true,
-    'omnibox.prevent_url_elisions': true,
-    'bookmark_bar.show_apps_shortcut': false,
-
-    // Sign-in & Profile
-    // Note: signin.allowed is NOT set - allow sign-in but disable sync via sync.managed
-    'profile.browser_guest_enforced': false,
-    'profile.add_person_enabled': false,
-
-    // AI & Lens Features
-    'devtools.gen_ai_settings': 2,
-    'browser.gemini_settings': 1,
-    'lens.policy.lens_overlay_settings': 1,
-    'policy.lens_desktop_ntp_search_enabled': false,
-    'policy.lens_region_search_enabled': false,
-
-    // ========================================================================
-    // Additional Settings
-    // ========================================================================
-
-    // Profile & Startup
-    'profile.picker_availability_on_startup': 1,  // 1 = disabled
-
-    // Cloud & Auth
-    'auth.cloud_ap_auth.enabled': false,
-
-    // Developer Tools
-    'devtools.availability': 1,  // 1 = always available
-
-    // Extensions
-    'extensions.ui.developer_mode': true,
-    'extensions.unpublished_availability': 1,  // 1 = enabled
-    'extensions.block_external_extensions': false,
-
-    // Feedback & Sync
-    'feedback_allowed': false,
-    'sync.managed': true  // true = sync disabled/managed
+    'browser.show_home_button': true
   };
 
   // ============================================================================
@@ -265,30 +238,11 @@
   };
 
   /**
-   * Enable incognito access for a specific extension using developerPrivate API
+   * Check extension incognito status and log results.
+   * Note: Incognito is pre-configured by meteor.ps1 in Secure Preferences.
+   * This function just verifies the status at runtime.
    */
-  function enableIncognito(extensionId, extensionName) {
-    if (!chrome?.developerPrivate?.updateExtensionConfiguration) {
-      console.warn('[Meteor] chrome.developerPrivate API not available');
-      return;
-    }
-
-    chrome.developerPrivate.updateExtensionConfiguration({
-      extensionId: extensionId,
-      incognitoAccess: true
-    }, () => {
-      if (chrome.runtime.lastError) {
-        console.warn(`[Meteor] Failed to enable incognito for ${extensionName}:`, chrome.runtime.lastError.message);
-      } else {
-        console.log(`[Meteor] Enabled incognito for ${extensionName}`);
-      }
-    });
-  }
-
-  /**
-   * Check current extension states and enable incognito where needed
-   */
-  function autoEnableIncognito() {
+  function checkExtensionStatus() {
     if (!chrome?.management?.getAll) {
       console.warn('[Meteor] chrome.management API not available');
       return;
@@ -303,11 +257,13 @@
       for (const extension of extensions) {
         if (METEOR_EXTENSIONS[extension.id]) {
           const extensionName = METEOR_EXTENSIONS[extension.id];
-          if (extension.enabled && !extension.incognitoAccess) {
-            console.log(`[Meteor] Auto-enabling incognito for ${extensionName}...`);
-            enableIncognito(extension.id, extensionName);
-          } else if (extension.incognitoAccess) {
-            console.log(`[Meteor] ${extensionName} already has incognito access`);
+          if (extension.enabled) {
+            if (extension.incognitoAccess) {
+              console.log(`[Meteor] ${extensionName}: incognito enabled`);
+            } else {
+              // Incognito should be enabled by meteor.ps1 - warn if not
+              console.warn(`[Meteor] ${extensionName}: incognito NOT enabled - run meteor.ps1 -Force to fix`);
+            }
           }
         }
       }
@@ -319,9 +275,7 @@
     chrome.management.onInstalled.addListener((extensionInfo) => {
       if (METEOR_EXTENSIONS[extensionInfo.id]) {
         const extensionName = METEOR_EXTENSIONS[extensionInfo.id];
-        console.log(`[Meteor] ${extensionName} installed, enabling incognito...`);
-        // Small delay to ensure extension is fully registered
-        setTimeout(() => enableIncognito(extensionInfo.id, extensionName), 500);
+        console.log(`[Meteor] ${extensionName} installed - restart browser and run meteor.ps1 -Force to enable incognito`);
       }
     });
   }
@@ -334,13 +288,12 @@
   applyPreferences();
   setupPreferenceMonitor();
 
-  // Try to enable incognito for extensions on startup
-  autoEnableIncognito();
+  // Check extension incognito status
+  checkExtensionStatus();
 
   // Re-apply periodically (catch edge cases)
   setInterval(applyPreferences, 60000);
 
   console.log('[Meteor] Preference enforcement initialized');
   console.log('[Meteor] Remote URL redirection active');
-  console.log('[Meteor] Auto-incognito enablement active');
 })();

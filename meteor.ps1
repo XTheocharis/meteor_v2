@@ -4122,10 +4122,40 @@ function Set-BrowserPreferences {
     $adGuardExtraId = "gkeojjjcdcopjkbelgbcpckplegclfeg"
 
     # Tracked preferences to set (atomic MACs)
+    # These are protected by Chromium's MAC system and require valid HMACs
     $trackedPrefs = @{
         "extensions.ui.developer_mode"    = $true
         "browser.show_home_button"        = $true
         "bookmark_bar.show_apps_shortcut" = $false
+    }
+
+    # Untracked Chrome preferences (no MAC needed, not exposed via settingsPrivate)
+    # These are set directly in the Preferences file at browser startup
+    $untrackedChromePrefs = @{
+        # Extensions
+        "extensions.unpublished_availability"  = 1      # 1 = enabled (allow unpublished extensions)
+        "extensions.block_external_extensions" = $false # Allow external extensions
+
+        # DevTools
+        "devtools.availability" = 1  # 1 = always available
+
+        # AI & Lens Features (disable Google AI integrations)
+        "devtools.gen_ai_settings"           = 2      # 2 = disabled
+        "browser.gemini_settings"            = 1      # 1 = disabled
+        "lens.policy.lens_overlay_settings"  = 1      # 1 = disabled
+        "policy.lens_desktop_ntp_search_enabled" = $false
+        "policy.lens_region_search_enabled"      = $false
+
+        # Profile & Sign-in
+        "profile.picker_availability_on_startup" = 1  # 1 = disabled
+        "profile.browser_guest_enforced"         = $false
+        "profile.add_person_enabled"             = $false
+
+        # Cloud & Auth
+        "auth.cloud_ap_auth.enabled" = $false
+
+        # Safe Browsing (disable telemetry, keep protection)
+        "safebrowsing.password_protection_warning_trigger" = 0  # 0 = disabled
     }
 
     # Extension settings with incognito enabled (split MACs)
@@ -4171,6 +4201,24 @@ function Set-BrowserPreferences {
             $current = $current[$part]
         }
         $current[$parts[-1]] = $value
+    }
+
+    # Add untracked Chrome preferences to the structure (no MAC needed)
+    foreach ($path in $untrackedChromePrefs.Keys) {
+        $value = $untrackedChromePrefs[$path]
+        $parts = $path -split '\.'
+
+        # Navigate/create nested structure
+        $current = $securePrefs
+        for ($i = 0; $i -lt $parts.Count - 1; $i++) {
+            $part = $parts[$i]
+            if (-not $current.ContainsKey($part)) {
+                $current[$part] = @{}
+            }
+            $current = $current[$part]
+        }
+        $current[$parts[-1]] = $value
+        Write-VerboseTimestamped "[Secure Prefs] Added untracked Chrome pref: $path = $value"
     }
 
     # Add extension settings to the structure
@@ -4382,14 +4430,42 @@ function Update-TrackedPreferences {
         $hashKeys = $securePrefsHash.Keys -join ", "
         Write-VerboseTimestamped "[Secure Prefs] After conversion - hashtable keys: $hashKeys"
 
-        # Preferences to modify
+        # Tracked preferences to modify (need MAC recalculation)
         $prefsToModify = @{
             "extensions.ui.developer_mode"    = $true
             "browser.show_home_button"        = $true
             "bookmark_bar.show_apps_shortcut" = $false
         }
 
-        # Set values in the preferences structure
+        # Untracked Chrome preferences (no MAC needed, not exposed via settingsPrivate)
+        $untrackedChromePrefs = @{
+            # Extensions
+            "extensions.unpublished_availability"  = 1      # 1 = enabled
+            "extensions.block_external_extensions" = $false
+
+            # DevTools
+            "devtools.availability" = 1  # 1 = always available
+
+            # AI & Lens Features (disable Google AI integrations)
+            "devtools.gen_ai_settings"           = 2      # 2 = disabled
+            "browser.gemini_settings"            = 1      # 1 = disabled
+            "lens.policy.lens_overlay_settings"  = 1      # 1 = disabled
+            "policy.lens_desktop_ntp_search_enabled" = $false
+            "policy.lens_region_search_enabled"      = $false
+
+            # Profile & Sign-in
+            "profile.picker_availability_on_startup" = 1  # 1 = disabled
+            "profile.browser_guest_enforced"         = $false
+            "profile.add_person_enabled"             = $false
+
+            # Cloud & Auth
+            "auth.cloud_ap_auth.enabled" = $false
+
+            # Safe Browsing (disable telemetry, keep protection)
+            "safebrowsing.password_protection_warning_trigger" = 0
+        }
+
+        # Set tracked preferences in the structure
         foreach ($path in $prefsToModify.Keys) {
             $value = $prefsToModify[$path]
             $parts = $path -split '\.'
@@ -4407,6 +4483,27 @@ function Update-TrackedPreferences {
                 $current = $current[$part]
             }
             $current[$parts[-1]] = $value
+        }
+
+        # Set untracked Chrome preferences in the structure (no MAC needed)
+        foreach ($path in $untrackedChromePrefs.Keys) {
+            $value = $untrackedChromePrefs[$path]
+            $parts = $path -split '\.'
+
+            # Navigate/create nested structure
+            $current = $securePrefsHash
+            for ($i = 0; $i -lt $parts.Count - 1; $i++) {
+                $part = $parts[$i]
+                if (-not $current.ContainsKey($part)) {
+                    $current[$part] = @{}
+                }
+                elseif ($current[$part] -isnot [hashtable]) {
+                    $current[$part] = @{}
+                }
+                $current = $current[$part]
+            }
+            $current[$parts[-1]] = $value
+            Write-VerboseTimestamped "[Secure Prefs] Set untracked Chrome pref: $path = $value"
         }
 
         # Enable incognito access for uBlock Origin and AdGuard Extra
