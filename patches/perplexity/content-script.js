@@ -219,13 +219,16 @@
   // By setting this key early, we force the flags without needing to intercept Eppo SDK.
   // This is the built-in override system used by the SPA.
 
+  // Eppo overrides - only include flags that are simple booleans (as strings)
+  // NOTE: Flags that are DICTIONARY types (like *-config, *-settings) should NOT
+  // be set to 'false' as the SPA expects objects, causing "Cannot use 'in' operator" errors
   const EPPO_OVERRIDES = {
     // MCP UI FORCE-ENABLE (Windows disabled by default)
-    'comet-mcp-enabled': 'true',         // Must be string "true" not boolean
+    'comet-mcp-enabled': 'true',
     'custom-remote-mcps': 'true',
     'comet-dxt-enabled': 'true',
 
-    // TELEMETRY (DISABLE)
+    // TELEMETRY (DISABLE) - simple boolean flags only
     'use-mixpanel-analytics': 'false',
     'report-omnibox-text': 'false',
     'http-error-monitor': 'false',
@@ -236,18 +239,11 @@
     'show-perplexity-nav-suggestions': 'false',
     'nav-intent-classifier': 'false',
 
-    // AI CONTEXT - History (DISABLE)
-    'browser-history-summary-settings': 'false',
-    'memory-search-history': 'false',
-
-    // SHOPPING/ADVERTISING (DISABLE)
+    // SHOPPING/ADVERTISING (DISABLE) - only simple boolean flags
     'shopping-enabled': 'false',
     'shopping-comparison': 'false',
     'shopping-try-on-enabled': 'false',
     'enable-sidecar-nudge-for-shopping-assistant': 'false',
-    'paypal-cashback-promo-config': 'false',
-    'visa-config': 'false',
-    'hotel-discounts-config': 'false',
     'can-book-hotels': 'false',
     'get-opentable-enabled': 'false',
 
@@ -258,16 +254,12 @@
     'max-upsell': 'false',
     'pro-free-trial-side-upsell': 'false',
     'power-user-recruitment-banner': 'false',
-    'spring-2025-referrals-promo': 'false',
-    'assistant-promo-deeplinks': 'false',
 
     // YOUTUBE/ADBLOCK (DISABLE auto-whitelist)
     'adblock-youtube-autowhitelist-enabled': 'false',
 
     // DISCOVERY/SUGGESTIONS (DISABLE tracking)
     'discover-early-fetch': 'false',
-    'discover-ui-test-2': 'false',
-    'discovery-sidebar-widgets': 'false',
     'sidecar-personalized-query-suggestions': 'false',
 
     // ENTERPRISE TELEMETRY (DISABLE)
@@ -295,6 +287,9 @@
   // SECTION 3: LOCAL FEATURE FLAG OVERRIDES (for network interception fallback)
   // ============================================================================
 
+  // Local feature flags for network interception fallback
+  // NOTE: Only include flags that are simple types (boolean, number, array)
+  // Dictionary/config flags should NOT be set to false as SPA expects objects
   const LOCAL_FEATURE_FLAGS = {
     // MCP UI FORCE-ENABLE (Windows disabled by default)
     'comet-mcp-enabled': true,
@@ -333,19 +328,11 @@
     'external-search-anonymity': { cookies: ['NID', 'AEC', '__Secure-ENID'] },
     'enable-external-search-sapi-navigation': false,
 
-    // AI CONTEXT - History (DISABLE)
-    'browser-history-summary-settings': false,
-    'history-summary-cache-ttl-minutes': 0,
-    'memory-search-history': false,
-
-    // SHOPPING/ADVERTISING (DISABLE)
+    // SHOPPING/ADVERTISING (DISABLE) - simple boolean flags only
     'shopping-enabled': false,
     'shopping-comparison': false,
     'shopping-try-on-enabled': false,
     'enable-sidecar-nudge-for-shopping-assistant': false,
-    'paypal-cashback-promo-config': false,
-    'visa-config': false,
-    'hotel-discounts-config': false,
     'can-book-hotels': false,
     'get-opentable-enabled': false,
 
@@ -356,16 +343,12 @@
     'max-upsell': false,
     'pro-free-trial-side-upsell': false,
     'power-user-recruitment-banner': false,
-    'spring-2025-referrals-promo': false,
-    'assistant-promo-deeplinks': false,
 
     // YOUTUBE/ADBLOCK (DISABLE auto-whitelist)
     'adblock-youtube-autowhitelist-enabled': false,
 
     // DISCOVERY/SUGGESTIONS (DISABLE tracking)
     'discover-early-fetch': false,
-    'discover-ui-test-2': false,
-    'discovery-sidebar-widgets': false,
     'sidecar-personalized-query-suggestions': false,
 
     // ENTERPRISE TELEMETRY (DISABLE)
