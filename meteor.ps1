@@ -1626,6 +1626,8 @@ function Export-CrxToDirectory {
             Remove-Item -Path $tempZip -Force
         }
     }
+
+    return $true
 }
 
 function Get-CrxManifest {
