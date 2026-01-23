@@ -151,6 +151,15 @@ function Write-Status {
     }
 }
 
+function Write-VerboseTimestamped {
+    param([string]$Message)
+
+    if ($VerbosePreference -eq 'Continue') {
+        $timestamp = Get-Date -Format "HH:mm:ss.fff"
+        Write-Host "[$timestamp] [V] $Message" -ForegroundColor DarkGray
+    }
+}
+
 function Get-FileHash256 {
     param([string]$Path)
 
@@ -331,7 +340,7 @@ function Invoke-MeteorWebRequest {
         }
     }
     catch {
-        Write-Verbose "Web request failed: $_"
+        Write-VerboseTimestamped "Web request failed: $_"
         throw
     }
 }
@@ -1590,7 +1599,7 @@ function Get-CrxManifest {
         # Check magic header "Cr24"
         $magic = [System.Text.Encoding]::ASCII.GetString($bytes, 0, 4)
         if ($magic -ne "Cr24") {
-            Write-Verbose "Invalid CRX file: missing Cr24 magic header"
+            Write-VerboseTimestamped "Invalid CRX file: missing Cr24 magic header"
             return $null
         }
 
@@ -1608,7 +1617,7 @@ function Get-CrxManifest {
             $zipOffset = 12 + $headerLen
         }
         else {
-            Write-Verbose "Unsupported CRX version: $version"
+            Write-VerboseTimestamped "Unsupported CRX version: $version"
             return $null
         }
 
@@ -1641,7 +1650,7 @@ function Get-CrxManifest {
         }
     }
     catch {
-        Write-Verbose "Failed to read CRX manifest: $_"
+        Write-VerboseTimestamped "Failed to read CRX manifest: $_"
     }
 
     return $null
@@ -1991,7 +2000,7 @@ function Set-CometRegistryValues {
 
     if ($DryRunMode) {
         Write-Status "Would set registry values at: $regPath" -Type Detail
-        Write-Verbose "[Registry] name=$Name, lang=$Lang, pv=$Version"
+        Write-VerboseTimestamped "[Registry] name=$Name, lang=$Lang, pv=$Version"
         return $true
     }
 
@@ -1999,7 +2008,7 @@ function Set-CometRegistryValues {
         # Create the registry path if it doesn't exist
         if (-not (Test-Path $regPath)) {
             New-Item -Path $regPath -Force | Out-Null
-            Write-Verbose "[Registry] Created path: $regPath"
+            Write-VerboseTimestamped "[Registry] Created path: $regPath"
         }
 
         # Set the values
@@ -2160,11 +2169,11 @@ function Install-CometPortable {
         $chrome7z = Join-Path $extractDir1 "chrome.7z"
         if (Test-Path $chrome7z) {
             # New format: mini_installer directly contains chrome.7z
-            Write-Verbose "Detected mini_installer format (chrome.7z found directly)"
+            Write-VerboseTimestamped "Detected mini_installer format (chrome.7z found directly)"
         }
         else {
             # Old format: NSIS wrapper with updater.7z -> mini_installer -> chrome.7z
-            Write-Verbose "Detected NSIS wrapper format, extracting nested archives..."
+            Write-VerboseTimestamped "Detected NSIS wrapper format, extracting nested archives..."
             $updater7z = Join-Path $extractDir1 "updater.7z"
             if (-not (Test-Path $updater7z)) {
                 throw "Neither chrome.7z nor updater.7z found in installer - unknown format"
@@ -2276,8 +2285,8 @@ function Test-CometUpdate {
         $latestVersion = $null
         $versionSource = $null
 
-        Write-Verbose "Update check: Querying $DownloadUrl"
-        Write-Verbose "Update check: Current version is $CurrentVersion"
+        Write-VerboseTimestamped "Update check: Querying $DownloadUrl"
+        Write-VerboseTimestamped "Update check: Current version is $CurrentVersion"
 
         # Use GET request with MaximumRedirection 0 to capture the redirect URL
         # HEAD requests are blocked by Cloudflare, but GET with no redirect follow works
@@ -2287,11 +2296,11 @@ function Test-CometUpdate {
             $response = Invoke-WebRequest -Uri $DownloadUrl -Method Get -UseBasicParsing -MaximumRedirection 0 -Headers @{
                 "User-Agent" = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
             }
-            Write-Verbose "Update check: Response status $($response.StatusCode)"
+            Write-VerboseTimestamped "Update check: Response status $($response.StatusCode)"
             # PowerShell 5.1 may return 307 directly without throwing - check for Location header
             if ($response.StatusCode -eq 307) {
                 $redirectUrl = $response.Headers["Location"]
-                Write-Verbose "Update check: Got 307 redirect (no exception)"
+                Write-VerboseTimestamped "Update check: Got 307 redirect (no exception)"
             }
         }
         catch [System.Net.WebException] {
@@ -2299,7 +2308,7 @@ function Test-CometUpdate {
             $webResponse = $_.Exception.Response
             if ($webResponse -and $webResponse.StatusCode -eq [System.Net.HttpStatusCode]::TemporaryRedirect) {
                 $redirectUrl = $webResponse.Headers["Location"]
-                Write-Verbose "Update check: Got 307 redirect (from exception)"
+                Write-VerboseTimestamped "Update check: Got 307 redirect (from exception)"
             }
             else {
                 throw
@@ -2307,36 +2316,36 @@ function Test-CometUpdate {
         }
 
         # Try to extract version from redirect Location header
-        Write-Verbose "Update check: Redirect URL: $(if ($redirectUrl) { $redirectUrl } else { '(not present)' })"
+        Write-VerboseTimestamped "Update check: Redirect URL: $(if ($redirectUrl) { $redirectUrl } else { '(not present)' })"
         if ($redirectUrl) {
             # Version pattern in URL path like /143.2.7499.37654/comet_latest_intel.exe
             if ($redirectUrl -match '/(\d+\.\d+\.\d+(?:\.\d+)?)/' -or $redirectUrl -match '[\-_](\d+\.\d+\.\d+(?:\.\d+)?)') {
                 $latestVersion = $Matches[1]
                 $versionSource = "redirect Location header"
-                Write-Verbose "Update check: Extracted version $latestVersion from redirect URL"
+                Write-VerboseTimestamped "Update check: Extracted version $latestVersion from redirect URL"
             }
             else {
-                Write-Verbose "Update check: No version pattern found in redirect URL"
+                Write-VerboseTimestamped "Update check: No version pattern found in redirect URL"
             }
         }
 
         if ($latestVersion) {
-            Write-Verbose "Update check: Latest version $latestVersion found via $versionSource"
+            Write-VerboseTimestamped "Update check: Latest version $latestVersion found via $versionSource"
             $comparison = Compare-Versions -Version1 $latestVersion -Version2 $CurrentVersion
-            Write-Verbose "Update check: Version comparison result: $comparison (positive = update available)"
+            Write-VerboseTimestamped "Update check: Version comparison result: $comparison (positive = update available)"
             if ($comparison -gt 0) {
-                Write-Verbose "Update check: Update available ($CurrentVersion -> $latestVersion)"
+                Write-VerboseTimestamped "Update check: Update available ($CurrentVersion -> $latestVersion)"
                 return @{
                     Version     = $latestVersion
                     DownloadUrl = $DownloadUrl
                 }
             }
             else {
-                Write-Verbose "Update check: Already up to date"
+                Write-VerboseTimestamped "Update check: Already up to date"
             }
         }
         else {
-            Write-Verbose "Update check: Could not determine latest version from response"
+            Write-VerboseTimestamped "Update check: Could not determine latest version from response"
         }
     }
     catch {
@@ -2892,7 +2901,7 @@ function Initialize-PakModifications {
         try {
             $exportResult = Export-PakResources -Pak $pak -OutputDir $PatchedResourcesPath
             Write-Status "Exported $($exportResult.TotalResources) resources to: $PatchedResourcesPath" -Type Detail
-            Write-Verbose "[PAK] Export: $($exportResult.TextResources) text, $($exportResult.BinaryResources) binary, $($exportResult.GzippedCount) were gzipped"
+            Write-VerboseTimestamped "[PAK] Export: $($exportResult.TextResources) text, $($exportResult.BinaryResources) binary, $($exportResult.GzippedCount) were gzipped"
         }
         catch {
             Write-Status "Failed to export PAK resources: $_" -Type Warning
@@ -2943,16 +2952,16 @@ function Initialize-PakModifications {
 
         # Log sample content for pattern debugging
         if ($content -match 'shouldHide|BooleanFlags|NumericFlags|perplexityChannel') {
-            Write-Verbose "[PAK] Resource $resourceId contains potential target (gzip=$isGzipped)"
+            Write-VerboseTimestamped "[PAK] Resource $resourceId contains potential target (gzip=$isGzipped)"
             $preview = $content.Substring(0, [Math]::Min(500, $content.Length)) -replace '[\r\n]+', ' '
-            Write-Verbose "[PAK] Preview: $preview..."
+            Write-VerboseTimestamped "[PAK] Preview: $preview..."
 
             # Extra logging for shouldHide functions
             if ($content -match 'shouldHide\w*Perplexity|shouldHidePerplexity|hidePerplexity') {
-                Write-Verbose "[PAK] Resource $resourceId contains Perplexity hide function"
+                Write-VerboseTimestamped "[PAK] Resource $resourceId contains Perplexity hide function"
                 # Find and show the function
                 if ($content -match '(function\s+shouldHide\w*[^}]+\})') {
-                    Write-Verbose "[PAK] Hide function: $($Matches[1] -replace '[\r\n]+', ' ')"
+                    Write-VerboseTimestamped "[PAK] Hide function: $($Matches[1] -replace '[\r\n]+', ' ')"
                 }
             }
         }
@@ -2963,7 +2972,7 @@ function Initialize-PakModifications {
                 # Show context around the match for debugging
                 if ($content -match "(.{0,100})($([regex]::Escape($mod.pattern)))(.{0,100})") {
                     $context = "$($Matches[1])>>>$($Matches[2])<<<$($Matches[3])" -replace '[\r\n]+', ' '
-                    Write-Verbose "[PAK] Match context in $resourceId`: $context"
+                    Write-VerboseTimestamped "[PAK] Match context in $resourceId`: $context"
                 }
                 $content = $content -replace $mod.pattern, $mod.replacement
                 Write-Status "  Resource $resourceId - $($mod.description)" -Type Detail
@@ -2982,7 +2991,7 @@ function Initialize-PakModifications {
     }
 
     # Log scan statistics
-    Write-Verbose "[PAK] Scan complete: $scannedCount resources, $gzipCount gzipped, $textCount text files, $appliedCount patterns matched"
+    Write-VerboseTimestamped "[PAK] Scan complete: $scannedCount resources, $gzipCount gzipped, $textCount text files, $appliedCount patterns matched"
     if ($appliedCount -eq 0) {
         Write-Status "PAK scan stats: $scannedCount resources, $gzipCount gzipped, $textCount text - no pattern matches" -Type Detail
     }
@@ -2991,19 +3000,19 @@ function Initialize-PakModifications {
     $byteModifications = @{}
     foreach ($resourceId in $modifiedResources.Keys) {
         try {
-            Write-Verbose "[PAK] Preparing resource $resourceId"
+            Write-VerboseTimestamped "[PAK] Preparing resource $resourceId"
             $entry = $modifiedResources[$resourceId]
             $contentString = $entry['Content']
             $wasGzipped = $entry['WasGzipped']
 
-            Write-Verbose "[PAK] Content type: $($contentString.GetType().FullName), WasGzipped: $wasGzipped"
+            Write-VerboseTimestamped "[PAK] Content type: $($contentString.GetType().FullName), WasGzipped: $wasGzipped"
 
             if ($null -eq $contentString) {
                 Write-Status "Content is null for resource $resourceId" -Type Error
                 continue
             }
 
-            Write-Verbose "[PAK] Encoding to UTF8..."
+            Write-VerboseTimestamped "[PAK] Encoding to UTF8..."
             [byte[]]$newBytes = [System.Text.Encoding]::UTF8.GetBytes($contentString)
 
             if ($null -eq $newBytes) {
@@ -3013,14 +3022,14 @@ function Initialize-PakModifications {
 
             # Re-compress if originally gzipped
             if ($wasGzipped) {
-                Write-Verbose "[PAK] Recompressing with gzip..."
+                Write-VerboseTimestamped "[PAK] Recompressing with gzip..."
                 $compressedBytes = Compress-GzipData -UncompressedBytes $newBytes
                 if ($null -eq $compressedBytes) {
                     Write-Status "Gzip compression returned null for resource $resourceId" -Type Error
                     continue
                 }
                 $newBytes = [byte[]]$compressedBytes
-                Write-Verbose "[PAK] Compressed to $($newBytes.GetLength(0)) bytes"
+                Write-VerboseTimestamped "[PAK] Compressed to $($newBytes.GetLength(0)) bytes"
             }
 
             if ($DryRunMode) {
@@ -3045,27 +3054,27 @@ function Initialize-PakModifications {
             Write-Status "Created backup: $backupPath" -Type Detail
         }
         else {
-            Write-Verbose "[PAK] Backup already exists at: $backupPath"
+            Write-VerboseTimestamped "[PAK] Backup already exists at: $backupPath"
         }
 
         try {
             # Calculate hash before write for verification
             $beforeHash = (Get-FileHash -Path $pakPath -Algorithm SHA256).Hash
-            Write-Verbose "[PAK] Hash before write: $beforeHash"
+            Write-VerboseTimestamped "[PAK] Hash before write: $beforeHash"
 
             # Use optimized batch writer (single pass, no O(n²) memory)
             Write-PakFileWithModifications -Pak $pak -Path $pakPath -Modifications $byteModifications
 
             # Verify write succeeded by comparing hashes
             $afterHash = (Get-FileHash -Path $pakPath -Algorithm SHA256).Hash
-            Write-Verbose "[PAK] Hash after write: $afterHash"
+            Write-VerboseTimestamped "[PAK] Hash after write: $afterHash"
 
             if ($beforeHash -eq $afterHash) {
                 Write-Status "PAK file unchanged after write - modifications may not have been applied!" -Type Warning
             }
             else {
                 Write-Status "Wrote modified PAK ($($modifiedResources.Count) resources, $appliedCount modifications)" -Type Success
-                Write-Verbose "[PAK] File modified successfully (hash changed)"
+                Write-VerboseTimestamped "[PAK] File modified successfully (hash changed)"
 
                 # Re-read and verify one of our modifications (resource 21192 - shouldHide)
                 $verifyPak = Read-PakFile -Path $pakPath
@@ -3082,10 +3091,10 @@ function Initialize-PakModifications {
                         }
                         $verifyContent = [System.Text.Encoding]::UTF8.GetString($verifyBytes)
                         if ($verifyContent -match 'return false;\s*//\s*Meteor|shouldHidePerplexityServiceWorker.*return false;') {
-                            Write-Verbose "[PAK] Verification: inspect modification confirmed in written file"
+                            Write-VerboseTimestamped "[PAK] Verification: inspect modification confirmed in written file"
                         }
                         elseif ($verifyContent -notmatch 'return !isPerplexityInternalUser') {
-                            Write-Verbose "[PAK] Verification: original pattern NOT found (modification likely applied)"
+                            Write-VerboseTimestamped "[PAK] Verification: original pattern NOT found (modification likely applied)"
                         }
                         else {
                             Write-Status "PAK verification failed: original pattern still present in resource 21192" -Type Warning
@@ -3185,7 +3194,7 @@ function Get-WindowsSidWithoutRid {
         return $sidWithoutRid
     }
     catch {
-        Write-Verbose "[SID] .NET method failed: $_"
+        Write-VerboseTimestamped "[SID] .NET method failed: $_"
     }
 
     try {
@@ -3201,7 +3210,7 @@ function Get-WindowsSidWithoutRid {
         }
     }
     catch {
-        Write-Verbose "[SID] whoami method failed: $_"
+        Write-VerboseTimestamped "[SID] whoami method failed: $_"
     }
 
     Write-Warning "[SID] Could not extract Windows SID - using empty device ID"
@@ -3262,11 +3271,11 @@ function Get-HmacSeedFromLocalState {
             if ($localState.protection -and $localState.protection.seed) {
                 $seedBase64 = $localState.protection.seed
                 $seedBytes = [Convert]::FromBase64String($seedBase64)
-                Write-Verbose "[HMAC Seed] Found existing seed in Local State"
+                Write-VerboseTimestamped "[HMAC Seed] Found existing seed in Local State"
             }
         }
         catch {
-            Write-Verbose "[HMAC Seed] Failed to parse Local State: $_"
+            Write-VerboseTimestamped "[HMAC Seed] Failed to parse Local State: $_"
             $localState = $null
         }
     }
@@ -3277,7 +3286,7 @@ function Get-HmacSeedFromLocalState {
         $rng = [System.Security.Cryptography.RNGCryptoServiceProvider]::new()
         $rng.GetBytes($seedBytes)
         $rng.Dispose()
-        Write-Verbose "[HMAC Seed] Generated new random seed"
+        Write-VerboseTimestamped "[HMAC Seed] Generated new random seed"
     }
 
     if (-not $seedBytes) {
@@ -3561,7 +3570,7 @@ function Get-PreferenceHmacSeedFromPak {
 
     # Comet is NOT Google Chrome branded, so it uses an empty seed for file MACs
     # This is by design in Chromium - see chrome_pref_service_factory.cc
-    Write-Verbose "[PAK Seed] Comet (non-Chrome branded build) uses empty seed for file MACs"
+    Write-VerboseTimestamped "[PAK Seed] Comet (non-Chrome branded build) uses empty seed for file MACs"
 
     return @{
         seedHex    = ""
@@ -3667,10 +3676,10 @@ function Set-RegistryPreferenceMacs {
             $mac = Get-RegistryPreferenceHmac -DeviceId $DeviceId -Path $path -Value $PreferencesToSet[$path]
             $splitInfo = Test-IsSplitPath -Path $path
             if ($splitInfo.IsSplit) {
-                Write-Verbose "[Registry MAC] Would set (split) $($splitInfo.Prefix)\$($splitInfo.Suffix) = $($mac.Substring(0, 16))..."
+                Write-VerboseTimestamped "[Registry MAC] Would set (split) $($splitInfo.Prefix)\$($splitInfo.Suffix) = $($mac.Substring(0, 16))..."
             }
             else {
-                Write-Verbose "[Registry MAC] Would set (atomic) $path = $($mac.Substring(0, 16))..."
+                Write-VerboseTimestamped "[Registry MAC] Would set (atomic) $path = $($mac.Substring(0, 16))..."
             }
         }
         return $true
@@ -3680,7 +3689,7 @@ function Set-RegistryPreferenceMacs {
         # Create the registry path if it doesn't exist
         if (-not (Test-Path $regPath)) {
             New-Item -Path $regPath -Force | Out-Null
-            Write-Verbose "[Registry MAC] Created path: $regPath"
+            Write-VerboseTimestamped "[Registry MAC] Created path: $regPath"
         }
 
         foreach ($path in $PreferencesToSet.Keys) {
@@ -3697,23 +3706,23 @@ function Set-RegistryPreferenceMacs {
                 $subkeyPath = Join-Path $regPath $splitInfo.Prefix
                 if (-not (Test-Path $subkeyPath)) {
                     New-Item -Path $subkeyPath -Force | Out-Null
-                    Write-Verbose "[Registry MAC] Created subkey: $subkeyPath"
+                    Write-VerboseTimestamped "[Registry MAC] Created subkey: $subkeyPath"
                 }
                 Set-ItemProperty -Path $subkeyPath -Name $splitInfo.Suffix -Value $mac -Type String -Force
-                Write-Verbose "[Registry MAC] Set (split) $($splitInfo.Prefix)\$($splitInfo.Suffix) = $($mac.Substring(0, 16))..."
+                Write-VerboseTimestamped "[Registry MAC] Set (split) $($splitInfo.Prefix)\$($splitInfo.Suffix) = $($mac.Substring(0, 16))..."
             }
             else {
                 # Atomic MAC: Write directly to Default key
                 Set-ItemProperty -Path $regPath -Name $path -Value $mac -Type String -Force
-                Write-Verbose "[Registry MAC] Set (atomic) $path = $($mac.Substring(0, 16))..."
+                Write-VerboseTimestamped "[Registry MAC] Set (atomic) $path = $($mac.Substring(0, 16))..."
             }
         }
 
-        Write-Verbose "[Registry MAC] Updated $($PreferencesToSet.Count) registry MACs"
+        Write-VerboseTimestamped "[Registry MAC] Updated $($PreferencesToSet.Count) registry MACs"
         return $true
     }
     catch {
-        Write-Verbose "[Registry MAC] Error setting registry MACs: $_"
+        Write-VerboseTimestamped "[Registry MAC] Error setting registry MACs: $_"
         return $false
     }
 }
@@ -3757,14 +3766,14 @@ function Get-SuperMac {
     $macsJson = ConvertTo-JsonForHmac -Value $MacsTree
 
     # Debug: Show first part of macs JSON for verification
-    Write-Verbose "[SuperMac] Macs JSON length: $($macsJson.Length)"
-    Write-Verbose "[SuperMac] Macs JSON (first 200 chars): $($macsJson.Substring(0, [Math]::Min(200, $macsJson.Length)))"
+    Write-VerboseTimestamped "[SuperMac] Macs JSON length: $($macsJson.Length)"
+    Write-VerboseTimestamped "[SuperMac] Macs JSON (first 200 chars): $($macsJson.Substring(0, [Math]::Min(200, $macsJson.Length)))"
 
     # Build message: device_id + path + value_json
     # For super_mac: path is empty string ""
     $message = $DeviceId + "" + $macsJson
 
-    Write-Verbose "[SuperMac] Message length: $($message.Length) (device_id=$($DeviceId.Length) + path=0 + json=$($macsJson.Length))"
+    Write-VerboseTimestamped "[SuperMac] Message length: $($message.Length) (device_id=$($DeviceId.Length) + path=0 + json=$($macsJson.Length))"
 
     $messageBytes = [System.Text.Encoding]::UTF8.GetBytes($message)
     return Get-HmacSha256 -Key $seedBytes -Message $messageBytes
@@ -3857,7 +3866,7 @@ function Set-BrowserPreferences {
     #   - File: 64-byte seed from resources.pak (NOT os_crypt.encrypted_key!)
     #   - Registry: Literal ASCII string "ChromeRegistryHashStoreValidationSeed"
     if ((Test-Path $securePrefsPath) -and (Test-Path $localStatePath)) {
-        Write-Verbose "[Secure Prefs] Existing profile found - updating tracked prefs with dual MAC sync"
+        Write-VerboseTimestamped "[Secure Prefs] Existing profile found - updating tracked prefs with dual MAC sync"
         $result = Update-TrackedPreferences -SecurePrefsPath $securePrefsPath -LocalStatePath $localStatePath -CometDir $CometDir
         return $result
     }
@@ -3871,7 +3880,7 @@ function Set-BrowserPreferences {
         $null = New-Item -ItemType Directory -Path $profilePath -Force
     }
 
-    Write-Verbose "[Secure Prefs] First run - creating tracked preferences with valid MACs"
+    Write-VerboseTimestamped "[Secure Prefs] First run - creating tracked preferences with valid MACs"
 
     # Get device ID for MAC calculation
     $deviceId = Get-WindowsSidWithoutRid
@@ -3879,7 +3888,7 @@ function Set-BrowserPreferences {
         Write-Status "Failed to get device ID for MAC calculation" -Type Warning
         return $false
     }
-    Write-Verbose "[Secure Prefs] Device ID: $deviceId"
+    Write-VerboseTimestamped "[Secure Prefs] Device ID: $deviceId"
 
     # Comet uses empty seed for file MACs (non-Chrome branded build)
     $seedHex = ""
@@ -3949,7 +3958,7 @@ function Set-BrowserPreferences {
     }
     foreach ($extId in $extensionSettings.Keys) {
         $securePrefs['extensions']['settings'][$extId] = $extensionSettings[$extId]
-        Write-Verbose "[Secure Prefs] Added extension settings for $extId"
+        Write-VerboseTimestamped "[Secure Prefs] Added extension settings for $extId"
     }
 
     # Calculate MACs for tracked preferences (atomic MACs)
@@ -3969,7 +3978,7 @@ function Set-BrowserPreferences {
             $current = $current[$part]
         }
         $current[$parts[-1]] = $mac
-        Write-Verbose "[Secure Prefs] Calculated MAC for $path = $($mac.Substring(0, 16))..."
+        Write-VerboseTimestamped "[Secure Prefs] Calculated MAC for $path = $($mac.Substring(0, 16))..."
     }
 
     # Calculate MACs for extension settings (split MACs)
@@ -3985,7 +3994,7 @@ function Set-BrowserPreferences {
         $path = "extensions.settings.$extId"
         $mac = Get-PreferenceHmac -SeedHex $seedHex -DeviceId $deviceId -Path $path -Value $extSettings
         $macs['extensions']['settings'][$extId] = $mac
-        Write-Verbose "[Secure Prefs] Calculated split MAC for $path = $($mac.Substring(0, 16))..."
+        Write-VerboseTimestamped "[Secure Prefs] Calculated split MAC for $path = $($mac.Substring(0, 16))..."
 
         # Also add to trackedPrefs for registry MAC calculation
         $trackedPrefs[$path] = $extSettings
@@ -3993,7 +4002,7 @@ function Set-BrowserPreferences {
 
     # Calculate super_mac
     $superMac = Get-SuperMac -SeedHex $seedHex -DeviceId $deviceId -MacsTree $macs
-    Write-Verbose "[Secure Prefs] Calculated super_mac = $($superMac.Substring(0, 16))..."
+    Write-VerboseTimestamped "[Secure Prefs] Calculated super_mac = $($superMac.Substring(0, 16))..."
 
     # Add protection structure
     $securePrefs['protection'] = @{
@@ -4011,7 +4020,7 @@ function Set-BrowserPreferences {
         # CRITICAL: Use -InputObject instead of pipe to avoid PS 5.1 serialization bugs
         $json = ConvertTo-Json -InputObject $securePrefs -Depth 30 -Compress
         Set-Content -Path $securePrefsPath -Value $json -Encoding UTF8 -Force
-        Write-Verbose "[Secure Prefs] Wrote Secure Preferences to: $securePrefsPath"
+        Write-VerboseTimestamped "[Secure Prefs] Wrote Secure Preferences to: $securePrefsPath"
 
         # Write Regular Preferences (for pinned extensions - not tracked by MAC)
         $regularPrefsPath = Join-Path $profilePath "Preferences"
@@ -4022,15 +4031,15 @@ function Set-BrowserPreferences {
         }
         $regularJson = ConvertTo-Json -InputObject $regularPrefs -Depth 30 -Compress
         Set-Content -Path $regularPrefsPath -Value $regularJson -Encoding UTF8 -Force
-        Write-Verbose "[Regular Prefs] Wrote Regular Preferences with pinned extensions to: $regularPrefsPath"
+        Write-VerboseTimestamped "[Regular Prefs] Wrote Regular Preferences with pinned extensions to: $regularPrefsPath"
 
         # Set registry MACs (uses different seed: "ChromeRegistryHashStoreValidationSeed")
         $registryResult = Set-RegistryPreferenceMacs -DeviceId $deviceId -PreferencesToSet $trackedPrefs
         if ($registryResult) {
-            Write-Verbose "[Registry MAC] Registry MACs set successfully"
+            Write-VerboseTimestamped "[Registry MAC] Registry MACs set successfully"
         }
         else {
-            Write-Verbose "[Registry MAC] WARNING: Failed to set registry MACs"
+            Write-VerboseTimestamped "[Registry MAC] WARNING: Failed to set registry MACs"
         }
 
         Write-Status "First-run preferences with tracked prefs, extension settings, and pinning written successfully" -Type Success
@@ -4061,15 +4070,15 @@ function Update-TrackedPreferences {
 
     try {
         # Read existing files
-        Write-Verbose "[Secure Prefs] Reading Local State from: $LocalStatePath"
-        Write-Verbose "[Secure Prefs] Reading Secure Prefs from: $SecurePrefsPath"
+        Write-VerboseTimestamped "[Secure Prefs] Reading Local State from: $LocalStatePath"
+        Write-VerboseTimestamped "[Secure Prefs] Reading Secure Prefs from: $SecurePrefsPath"
 
         $localStateJson = Get-Content -Path $LocalStatePath -Raw -ErrorAction Stop
         $localState = $localStateJson | ConvertFrom-Json -ErrorAction Stop
 
         # Debug: Show Local State structure
         $localStateKeys = $localState.PSObject.Properties.Name -join ", "
-        Write-Verbose "[Secure Prefs] Local State keys: $localStateKeys"
+        Write-VerboseTimestamped "[Secure Prefs] Local State keys: $localStateKeys"
 
         $securePrefsJson = Get-Content -Path $SecurePrefsPath -Raw -ErrorAction Stop
         $securePrefs = $securePrefsJson | ConvertFrom-Json -ErrorAction Stop
@@ -4079,34 +4088,34 @@ function Update-TrackedPreferences {
         $regularPrefsPath = Join-Path (Split-Path $SecurePrefsPath -Parent) "Preferences"
         $regularPrefsHash = $null
         if (Test-Path $regularPrefsPath) {
-            Write-Verbose "[Secure Prefs] Reading Regular Prefs from: $regularPrefsPath"
+            Write-VerboseTimestamped "[Secure Prefs] Reading Regular Prefs from: $regularPrefsPath"
             $regularPrefsJson = Get-Content -Path $regularPrefsPath -Raw -ErrorAction SilentlyContinue
             if ($regularPrefsJson) {
                 $regularPrefs = $regularPrefsJson | ConvertFrom-Json -ErrorAction SilentlyContinue
                 if ($regularPrefs) {
                     $regularPrefsHash = Convert-PSObjectToHashtable -InputObject $regularPrefs
-                    Write-Verbose "[Secure Prefs] Regular Prefs loaded ($($regularPrefsHash.Keys.Count) top-level keys)"
+                    Write-VerboseTimestamped "[Secure Prefs] Regular Prefs loaded ($($regularPrefsHash.Keys.Count) top-level keys)"
                 }
             }
         }
         else {
-            Write-Verbose "[Secure Prefs] Regular Preferences file not found at: $regularPrefsPath"
+            Write-VerboseTimestamped "[Secure Prefs] Regular Preferences file not found at: $regularPrefsPath"
         }
 
         # Debug: Show raw JSON structure to understand what Comet stores
-        Write-Verbose "[Secure Prefs] Raw Secure Preferences file length: $($securePrefsJson.Length) chars"
+        Write-VerboseTimestamped "[Secure Prefs] Raw Secure Preferences file length: $($securePrefsJson.Length) chars"
         # Check if 'protection' exists in raw JSON
         if ($securePrefsJson -match '"protection"') {
-            Write-Verbose "[Secure Prefs] Raw JSON CONTAINS 'protection' key"
+            Write-VerboseTimestamped "[Secure Prefs] Raw JSON CONTAINS 'protection' key"
             # Extract a sample of the protection section
             if ($securePrefsJson -match '"protection"\s*:\s*\{[^}]{0,200}') {
-                Write-Verbose "[Secure Prefs] Protection section sample: $($Matches[0])..."
+                Write-VerboseTimestamped "[Secure Prefs] Protection section sample: $($Matches[0])..."
             }
         } else {
-            Write-Verbose "[Secure Prefs] Raw JSON does NOT contain 'protection' key!"
+            Write-VerboseTimestamped "[Secure Prefs] Raw JSON does NOT contain 'protection' key!"
             # Show first 500 chars of the file to see its structure
             $preview = $securePrefsJson.Substring(0, [Math]::Min(500, $securePrefsJson.Length))
-            Write-Verbose "[Secure Prefs] JSON preview: $preview"
+            Write-VerboseTimestamped "[Secure Prefs] JSON preview: $preview"
         }
 
         # Get HMAC seed for file MAC calculation
@@ -4114,32 +4123,32 @@ function Update-TrackedPreferences {
         # For Comet (non-Chrome): Empty string (per Chromium source - GOOGLE_CHROME_BRANDING guard)
         $pakSeed = Get-PreferenceHmacSeedFromPak -CometDir $CometDir
         if (-not $pakSeed) {
-            Write-Verbose "[Secure Prefs] Failed to get HMAC seed"
+            Write-VerboseTimestamped "[Secure Prefs] Failed to get HMAC seed"
             return $false
         }
 
         $seedHex = $pakSeed.seedHex
         if ($seedHex -eq "") {
-            Write-Verbose "[Secure Prefs] Using empty seed (non-Chrome branded build)"
+            Write-VerboseTimestamped "[Secure Prefs] Using empty seed (non-Chrome branded build)"
         } else {
-            Write-Verbose "[Secure Prefs] Extracted 64-byte seed from PAK resource ID $($pakSeed.resourceId)"
-            Write-Verbose "[Secure Prefs] Seed: $($seedHex.Substring(0, 32))..."
+            Write-VerboseTimestamped "[Secure Prefs] Extracted 64-byte seed from PAK resource ID $($pakSeed.resourceId)"
+            Write-VerboseTimestamped "[Secure Prefs] Seed: $($seedHex.Substring(0, 32))..."
         }
 
         # Get device ID (Windows SID without RID)
         $rawSid = Get-WindowsSidWithoutRid
         $deviceId = Get-ChromiumDeviceId -RawMachineId $rawSid
 
-        Write-Verbose "[Secure Prefs] Device ID (raw SID): $deviceId"
+        Write-VerboseTimestamped "[Secure Prefs] Device ID (raw SID): $deviceId"
 
         # Debug: Check original securePrefs BEFORE conversion
-        Write-Verbose "[Secure Prefs] Original securePrefs type: $($securePrefs.GetType().FullName)"
+        Write-VerboseTimestamped "[Secure Prefs] Original securePrefs type: $($securePrefs.GetType().FullName)"
         $origProps = $securePrefs.PSObject.Properties.Name -join ", "
-        Write-Verbose "[Secure Prefs] Original securePrefs properties: $origProps"
+        Write-VerboseTimestamped "[Secure Prefs] Original securePrefs properties: $origProps"
         if ($securePrefs.PSObject.Properties.Name -contains 'protection') {
-            Write-Verbose "[Secure Prefs] Original HAS 'protection' property!"
+            Write-VerboseTimestamped "[Secure Prefs] Original HAS 'protection' property!"
         } else {
-            Write-Verbose "[Secure Prefs] Original MISSING 'protection' property!"
+            Write-VerboseTimestamped "[Secure Prefs] Original MISSING 'protection' property!"
         }
 
         # Convert to hashtable for modification
@@ -4147,7 +4156,7 @@ function Update-TrackedPreferences {
 
         # Debug: Check AFTER conversion
         $hashKeys = $securePrefsHash.Keys -join ", "
-        Write-Verbose "[Secure Prefs] After conversion - hashtable keys: $hashKeys"
+        Write-VerboseTimestamped "[Secure Prefs] After conversion - hashtable keys: $hashKeys"
 
         # Preferences to modify
         $prefsToModify = @{
@@ -4188,7 +4197,7 @@ function Update-TrackedPreferences {
             foreach ($extId in $extensionsToEnableIncognito) {
                 if ($extSettings.ContainsKey($extId)) {
                     $extSettings[$extId]['incognito'] = $true
-                    Write-Verbose "[Secure Prefs] Enabled incognito for extension $extId"
+                    Write-VerboseTimestamped "[Secure Prefs] Enabled incognito for extension $extId"
                 }
             }
         }
@@ -4214,29 +4223,29 @@ function Update-TrackedPreferences {
                 }
             }
             $regularPrefsHash['extensions']['pinned_extensions'] = $existingPinned
-            Write-Verbose "[Regular Prefs] Pinned extensions to toolbar: $($existingPinned -join ', ')"
+            Write-VerboseTimestamped "[Regular Prefs] Pinned extensions to toolbar: $($existingPinned -join ', ')"
 
             # Write updated Regular Preferences
             # CRITICAL: Use -InputObject instead of pipe to avoid PS 5.1 serialization bugs
             $regularPrefsUpdatedJson = ConvertTo-Json -InputObject $regularPrefsHash -Depth 30 -Compress
             Set-Content -Path $regularPrefsPath -Value $regularPrefsUpdatedJson -Encoding UTF8 -Force
-            Write-Verbose "[Regular Prefs] Updated Regular Preferences file"
+            Write-VerboseTimestamped "[Regular Prefs] Updated Regular Preferences file"
         }
 
         # Get existing MACs structure - debug what we have BEFORE any modification
-        Write-Verbose "[Secure Prefs] securePrefsHash has 'protection' key: $($securePrefsHash.ContainsKey('protection'))"
+        Write-VerboseTimestamped "[Secure Prefs] securePrefsHash has 'protection' key: $($securePrefsHash.ContainsKey('protection'))"
         if ($securePrefsHash.ContainsKey('protection')) {
             $prot = $securePrefsHash['protection']
-            Write-Verbose "[Secure Prefs] protection type: $($prot.GetType().FullName)"
+            Write-VerboseTimestamped "[Secure Prefs] protection type: $($prot.GetType().FullName)"
             if ($prot -is [hashtable]) {
                 $protKeys = $prot.Keys -join ", "
-                Write-Verbose "[Secure Prefs] protection keys: $protKeys"
+                Write-VerboseTimestamped "[Secure Prefs] protection keys: $protKeys"
                 if ($prot.ContainsKey('macs')) {
                     $macsObj = $prot['macs']
-                    Write-Verbose "[Secure Prefs] macs type: $($macsObj.GetType().FullName)"
+                    Write-VerboseTimestamped "[Secure Prefs] macs type: $($macsObj.GetType().FullName)"
                     if ($macsObj -is [hashtable]) {
                         $macsKeys = $macsObj.Keys -join ", "
-                        Write-Verbose "[Secure Prefs] macs keys: $macsKeys"
+                        Write-VerboseTimestamped "[Secure Prefs] macs keys: $macsKeys"
                     }
                 }
             }
@@ -4244,15 +4253,15 @@ function Update-TrackedPreferences {
 
         # Only create structures if they don't exist - DON'T replace existing ones
         if (-not $securePrefsHash.ContainsKey('protection')) {
-            Write-Verbose "[Secure Prefs] Creating new protection structure"
+            Write-VerboseTimestamped "[Secure Prefs] Creating new protection structure"
             $securePrefsHash['protection'] = @{ macs = @{} }
         }
         if (-not ($securePrefsHash['protection'] -is [hashtable])) {
-            Write-Verbose "[Secure Prefs] ERROR: protection is not a hashtable after conversion!"
+            Write-VerboseTimestamped "[Secure Prefs] ERROR: protection is not a hashtable after conversion!"
             return $false
         }
         if (-not $securePrefsHash['protection'].ContainsKey('macs')) {
-            Write-Verbose "[Secure Prefs] Creating new macs structure (this will LOSE existing MACs!)"
+            Write-VerboseTimestamped "[Secure Prefs] Creating new macs structure (this will LOSE existing MACs!)"
             $securePrefsHash['protection']['macs'] = @{}
         }
 
@@ -4260,12 +4269,12 @@ function Update-TrackedPreferences {
 
         # Debug: Show existing MAC structure after getting reference
         $existingMacKeys = $macs.Keys -join ", "
-        Write-Verbose "[Secure Prefs] After getting macs - top-level keys: $existingMacKeys"
+        Write-VerboseTimestamped "[Secure Prefs] After getting macs - top-level keys: $existingMacKeys"
 
         # Flatten existing MACs first to count them
         $existingMacs = @{}
         Get-FlattenedMacs -Node $macs -Path "" -Result $existingMacs
-        Write-Verbose "[Secure Prefs] Found $($existingMacs.Count) existing MACs before modification"
+        Write-VerboseTimestamped "[Secure Prefs] Found $($existingMacs.Count) existing MACs before modification"
 
         # CRITICAL: Recalculate ALL existing MACs, not just our target preferences
         # The JSON round-trip through PowerShell (ConvertFrom-Json → ConvertTo-Json) may
@@ -4278,18 +4287,18 @@ function Update-TrackedPreferences {
         # PrefHashCalculator behavior.
         $updateResult = Update-AllMacs -Macs $macs -SecurePreferences $securePrefsHash -RegularPreferences $regularPrefsHash -SeedHex $seedHex -DeviceId $deviceId -SecurePrefsRawJson $securePrefsJson
 
-        Write-Verbose "[Secure Prefs] Recalculated $($updateResult.recalculated) MACs, removed $($updateResult.removed) orphaned MACs"
+        Write-VerboseTimestamped "[Secure Prefs] Recalculated $($updateResult.recalculated) MACs, removed $($updateResult.removed) orphaned MACs"
 
         # Log our specific target preferences
         foreach ($path in $prefsToModify.Keys) {
             $value = $prefsToModify[$path]
-            Write-Verbose "[Secure Prefs] Target pref: $path = $(ConvertTo-JsonForHmac $value)"
+            Write-VerboseTimestamped "[Secure Prefs] Target pref: $path = $(ConvertTo-JsonForHmac $value)"
         }
 
         # Check for account_values (signed-in users)
         $hasAccountValues = $macs.ContainsKey('account_values')
         if ($hasAccountValues) {
-            Write-Verbose "[Secure Prefs] Found account_values section - MACs were included in recalculation"
+            Write-VerboseTimestamped "[Secure Prefs] Found account_values section - MACs were included in recalculation"
         }
 
         # Flatten MACs to count them (for logging only)
@@ -4301,7 +4310,7 @@ function Update-TrackedPreferences {
         $superMac = Get-SuperMac -SeedHex $seedHex -DeviceId $deviceId -MacsTree $macs
         $securePrefsHash['protection']['super_mac'] = $superMac
 
-        Write-Verbose "[Secure Prefs] Calculated super_mac from $($allMacs.Count) MACs: $($superMac.Substring(0, 16))..."
+        Write-VerboseTimestamped "[Secure Prefs] Calculated super_mac from $($allMacs.Count) MACs: $($superMac.Substring(0, 16))..."
 
         # CRITICAL: Clear prefs.tracked_preferences_reset if it exists
         # When browser detects invalid MACs, it populates this array with reset preference names
@@ -4311,7 +4320,7 @@ function Update-TrackedPreferences {
 
         # Check for top-level key with literal dot in name (e.g., "prefs.tracked_preferences_reset")
         if ($securePrefsHash.ContainsKey('prefs.tracked_preferences_reset')) {
-            Write-Verbose "[Secure Prefs] Removing top-level 'prefs.tracked_preferences_reset' key"
+            Write-VerboseTimestamped "[Secure Prefs] Removing top-level 'prefs.tracked_preferences_reset' key"
             $securePrefsHash.Remove('prefs.tracked_preferences_reset')
         }
 
@@ -4321,7 +4330,7 @@ function Update-TrackedPreferences {
             if ($prefsSection -is [hashtable] -and $prefsSection.ContainsKey('tracked_preferences_reset')) {
                 $resetArray = $prefsSection['tracked_preferences_reset']
                 if ($resetArray -and $resetArray.Count -gt 0) {
-                    Write-Verbose "[Secure Prefs] Clearing nested tracked_preferences_reset array (had $($resetArray.Count) entries)"
+                    Write-VerboseTimestamped "[Secure Prefs] Clearing nested tracked_preferences_reset array (had $($resetArray.Count) entries)"
                     $prefsSection['tracked_preferences_reset'] = @()
                 }
             }
@@ -4331,7 +4340,7 @@ function Update-TrackedPreferences {
         # The MACs were calculated using [] but the hashtable has $null. If we write $null,
         # the browser sees "pinned_tabs":null but MAC was calculated for [], triggering reset.
         if ($updateResult.emptyArrayPaths -and $updateResult.emptyArrayPaths.Count -gt 0) {
-            Write-Verbose "[Secure Prefs] Restoring $($updateResult.emptyArrayPaths.Count) empty arrays that PS 5.1 converted to null"
+            Write-VerboseTimestamped "[Secure Prefs] Restoring $($updateResult.emptyArrayPaths.Count) empty arrays that PS 5.1 converted to null"
             foreach ($path in $updateResult.emptyArrayPaths.Keys) {
                 # Navigate to the parent and set the value to empty array
                 $parts = $path -split '\.'
@@ -4350,7 +4359,7 @@ function Update-TrackedPreferences {
                     $lastKey = $parts[-1]
                     if ($current.ContainsKey($lastKey) -and $null -eq $current[$lastKey]) {
                         $current[$lastKey] = @()
-                        Write-Verbose "[Secure Prefs]   Restored: $path = []"
+                        Write-VerboseTimestamped "[Secure Prefs]   Restored: $path = []"
                     }
                 }
             }
@@ -4364,7 +4373,7 @@ function Update-TrackedPreferences {
         $json = ConvertTo-Json -InputObject $securePrefsHash -Depth 30 -Compress
         Set-Content -Path $SecurePrefsPath -Value $json -Encoding UTF8 -Force
 
-        Write-Verbose "[Secure Prefs] File updated successfully"
+        Write-VerboseTimestamped "[Secure Prefs] File updated successfully"
 
         # CRITICAL: Also update Windows Registry MACs for ALL recalculated paths
         # Comet stores duplicate MACs in registry using a DIFFERENT seed ("ChromeRegistryHashStoreValidationSeed")
@@ -4403,14 +4412,14 @@ function Update-TrackedPreferences {
             }
         }
 
-        Write-Verbose "[Registry MAC] Updating registry MACs for $($registryPrefs.Count) paths"
+        Write-VerboseTimestamped "[Registry MAC] Updating registry MACs for $($registryPrefs.Count) paths"
 
         $registryResult = Set-RegistryPreferenceMacs -DeviceId $deviceId -PreferencesToSet $registryPrefs
         if ($registryResult) {
-            Write-Verbose "[Registry MAC] Registry MACs synchronized successfully ($($registryPrefs.Count) entries)"
+            Write-VerboseTimestamped "[Registry MAC] Registry MACs synchronized successfully ($($registryPrefs.Count) entries)"
         }
         else {
-            Write-Verbose "[Registry MAC] WARNING: Failed to update registry MACs - browser may crash"
+            Write-VerboseTimestamped "[Registry MAC] WARNING: Failed to update registry MACs - browser may crash"
         }
 
         $removedInfo = if ($updateResult.removed -gt 0) { ", cleaned $($updateResult.removed) orphaned" } else { "" }
@@ -4418,7 +4427,7 @@ function Update-TrackedPreferences {
         return $true
     }
     catch {
-        Write-Verbose "[Secure Prefs] Error updating tracked preferences: $_"
+        Write-VerboseTimestamped "[Secure Prefs] Error updating tracked preferences: $_"
         return $false
     }
 }
@@ -4584,18 +4593,18 @@ function Get-PreferenceValue {
         $tracePath = if ($tracePath) { "$tracePath.$part" } else { $part }
 
         if ($null -eq $current) {
-            if ($Trace) { Write-Verbose "[GetPrefValue] FAIL at '$tracePath': current is null" }
+            if ($Trace) { Write-VerboseTimestamped "[GetPrefValue] FAIL at '$tracePath': current is null" }
             return @{ Found = $false; Value = $null }
         }
         if ($current -is [hashtable]) {
             if ($current.ContainsKey($part)) {
                 $current = $current[$part]
-                if ($Trace) { Write-Verbose "[GetPrefValue] OK at '$tracePath': found in hashtable$(if ($isLast -and $null -eq $current) { ' (value is null)' })" }
+                if ($Trace) { Write-VerboseTimestamped "[GetPrefValue] OK at '$tracePath': found in hashtable$(if ($isLast -and $null -eq $current) { ' (value is null)' })" }
             }
             else {
                 if ($Trace) {
                     $availableKeys = ($current.Keys | Select-Object -First 5) -join ", "
-                    Write-Verbose "[GetPrefValue] FAIL at '$tracePath': key '$part' not in hashtable (available: $availableKeys...)"
+                    Write-VerboseTimestamped "[GetPrefValue] FAIL at '$tracePath': key '$part' not in hashtable (available: $availableKeys...)"
                 }
                 return @{ Found = $false; Value = $null }
             }
@@ -4604,15 +4613,15 @@ function Get-PreferenceValue {
             $prop = $current.PSObject.Properties[$part]
             if ($prop) {
                 $current = $prop.Value
-                if ($Trace) { Write-Verbose "[GetPrefValue] OK at '$tracePath': found in PSCustomObject$(if ($isLast -and $null -eq $current) { ' (value is null)' })" }
+                if ($Trace) { Write-VerboseTimestamped "[GetPrefValue] OK at '$tracePath': found in PSCustomObject$(if ($isLast -and $null -eq $current) { ' (value is null)' })" }
             }
             else {
-                if ($Trace) { Write-Verbose "[GetPrefValue] FAIL at '$tracePath': property '$part' not in PSCustomObject" }
+                if ($Trace) { Write-VerboseTimestamped "[GetPrefValue] FAIL at '$tracePath': property '$part' not in PSCustomObject" }
                 return @{ Found = $false; Value = $null }
             }
         }
         else {
-            if ($Trace) { Write-Verbose "[GetPrefValue] FAIL at '$tracePath': current is $($current.GetType().Name), not traversable" }
+            if ($Trace) { Write-VerboseTimestamped "[GetPrefValue] FAIL at '$tracePath': current is $($current.GetType().Name), not traversable" }
             return @{ Found = $false; Value = $null }
         }
     }
@@ -4687,9 +4696,9 @@ function Update-ModifiedMacs {
         $updated++
         $updatedPaths += $path
 
-        Write-Verbose "[Update MACs] $path = $($newMac.Substring(0, 32))... (value: $(ConvertTo-JsonForHmac $value))"
+        Write-VerboseTimestamped "[Update MACs] $path = $($newMac.Substring(0, 32))... (value: $(ConvertTo-JsonForHmac $value))"
         if ($originalMac -ne "(none)" -and $originalMac -ne $newMac) {
-            Write-Verbose "[Update MACs]   Changed from: $($originalMac.Substring(0, 32))..."
+            Write-VerboseTimestamped "[Update MACs]   Changed from: $($originalMac.Substring(0, 32))..."
         }
     }
 
@@ -4758,7 +4767,7 @@ function Update-AllMacs {
         foreach ($match in $matches) {
             $key = $match.Groups[1].Value
             $emptyArrayPaths[$key] = $true
-            Write-Verbose "[Update MACs] Detected empty array in raw JSON: $key"
+            Write-VerboseTimestamped "[Update MACs] Detected empty array in raw JSON: $key"
         }
     }
 
@@ -4811,7 +4820,7 @@ function Update-AllMacs {
             # DON'T remove the MAC - the browser expects MACs for all tracked preferences
             # even if they haven't been set yet. Instead, recalculate with null value.
             # Removing MACs causes the browser to detect tampering.
-            Write-Verbose "[Update MACs] $path not found - using null value for MAC"
+            Write-VerboseTimestamped "[Update MACs] $path not found - using null value for MAC"
             $value = $null
             $newMac = Get-PreferenceHmac -SeedHex $SeedHex -DeviceId $DeviceId -Path $hmacPath -Value $value
 
@@ -4838,9 +4847,9 @@ function Update-AllMacs {
                     New = $newMac
                     Value = "null (not found)"
                 }
-                Write-Verbose "[Update MACs] $path CHANGED: $($originalMac.Substring(0, 16))... -> $($newMac.Substring(0, 16))... (null value)"
+                Write-VerboseTimestamped "[Update MACs] $path CHANGED: $($originalMac.Substring(0, 16))... -> $($newMac.Substring(0, 16))... (null value)"
             } else {
-                Write-Verbose "[Update MACs] $path = $($newMac.Substring(0, 16))... (null value, unchanged)"
+                Write-VerboseTimestamped "[Update MACs] $path = $($newMac.Substring(0, 16))... (null value, unchanged)"
             }
             continue
         }
@@ -4852,7 +4861,7 @@ function Update-AllMacs {
         # WORKAROUND: PowerShell 5.1 converts [] to $null
         # If the value is null but the raw JSON had [], use empty array for HMAC
         if ($null -eq $value -and $emptyArrayPaths.ContainsKey($path)) {
-            Write-Verbose "[Update MACs] ${path}: value is null but raw JSON had [] - using empty array for HMAC"
+            Write-VerboseTimestamped "[Update MACs] ${path}: value is null but raw JSON had [] - using empty array for HMAC"
             $value = @()
         }
 
@@ -4886,35 +4895,35 @@ function Update-AllMacs {
                 New = $newMac
                 Value = $truncatedValue
             }
-            Write-Verbose "[Update MACs] $path CHANGED: $($originalMac.Substring(0, 16))... -> $($newMac.Substring(0, 16))...$sourceIndicator"
+            Write-VerboseTimestamped "[Update MACs] $path CHANGED: $($originalMac.Substring(0, 16))... -> $($newMac.Substring(0, 16))...$sourceIndicator"
         } else {
-            Write-Verbose "[Update MACs] $path = $($newMac.Substring(0, 16))...$sourceIndicator (unchanged)"
+            Write-VerboseTimestamped "[Update MACs] $path = $($newMac.Substring(0, 16))...$sourceIndicator (unchanged)"
         }
     }
 
     # Log summary of removed orphaned MACs
     if ($skippedPaths.Count -gt 0) {
-        Write-Verbose "[Update MACs] === REMOVED ORPHANED MACs ($($skippedPaths.Count) total) ==="
+        Write-VerboseTimestamped "[Update MACs] === REMOVED ORPHANED MACs ($($skippedPaths.Count) total) ==="
         foreach ($sp in ($skippedPaths | Select-Object -First 10)) {
-            Write-Verbose "[Update MACs]   - $sp"
+            Write-VerboseTimestamped "[Update MACs]   - $sp"
         }
         if ($skippedPaths.Count -gt 10) {
-            Write-Verbose "[Update MACs]   ... and $($skippedPaths.Count - 10) more"
+            Write-VerboseTimestamped "[Update MACs]   ... and $($skippedPaths.Count - 10) more"
         }
     }
 
     # Log summary of changed MACs (MACs that differ from browser's original calculation)
     # This helps identify which preferences have MAC mismatches
     if ($changedMacs.Count -gt 0) {
-        Write-Verbose "[Update MACs] === CHANGED MACs ($($changedMacs.Count) of $recalculated differ from original) ==="
+        Write-VerboseTimestamped "[Update MACs] === CHANGED MACs ($($changedMacs.Count) of $recalculated differ from original) ==="
         foreach ($change in $changedMacs) {
-            Write-Verbose "[Update MACs]   $($change.Path)"
-            Write-Verbose "[Update MACs]     Original: $($change.Original.Substring(0, 32))..."
-            Write-Verbose "[Update MACs]     New:      $($change.New.Substring(0, 32))..."
-            Write-Verbose "[Update MACs]     Value:    $($change.Value)"
+            Write-VerboseTimestamped "[Update MACs]   $($change.Path)"
+            Write-VerboseTimestamped "[Update MACs]     Original: $($change.Original.Substring(0, 32))..."
+            Write-VerboseTimestamped "[Update MACs]     New:      $($change.New.Substring(0, 32))..."
+            Write-VerboseTimestamped "[Update MACs]     Value:    $($change.Value)"
         }
     } else {
-        Write-Verbose "[Update MACs] All $recalculated MACs match browser's original calculation"
+        Write-VerboseTimestamped "[Update MACs] All $recalculated MACs match browser's original calculation"
     }
 
     return @{
@@ -5044,8 +5053,8 @@ function Start-Browser {
 
     # Show full command line in verbose mode
     $fullCommandLine = "`"$exe`" $($processArgs -join ' ')"
-    Write-Verbose "Launching browser with command line:"
-    Write-Verbose $fullCommandLine
+    Write-VerboseTimestamped "Launching browser with command line:"
+    Write-VerboseTimestamped $fullCommandLine
 
     $process = Start-Process -FilePath $exe -ArgumentList $processArgs -PassThru
     return $process
