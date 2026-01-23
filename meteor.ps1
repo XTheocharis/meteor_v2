@@ -5397,7 +5397,19 @@ function Initialize-Extensions {
     # Always ensure bundled CRX extensions are disabled (even when using cached patches)
     # This handles cases where Comet updates restore external_extensions.json
     if ($Comet) {
+        # Find default_apps directory (may be in version subdirectory)
         $defaultAppsDir = Join-Path $Comet.Directory "default_apps"
+        if (-not (Test-Path $defaultAppsDir)) {
+            # Try version subdirectory (e.g., .meteor/comet/143.2.7499.37654/default_apps)
+            $versionDirs = Get-ChildItem -Path $Comet.Directory -Directory -ErrorAction SilentlyContinue
+            foreach ($vDir in $versionDirs) {
+                $subDefaultApps = Join-Path $vDir.FullName "default_apps"
+                if (Test-Path $subDefaultApps) {
+                    $defaultAppsDir = $subDefaultApps
+                    break
+                }
+            }
+        }
         if (Test-Path $defaultAppsDir) {
             # Clear external_extensions.json to prevent CRX loading
             $extJsonPath = Join-Path $defaultAppsDir "external_extensions.json"
