@@ -211,15 +211,18 @@
     "bundled": {
       "perplexity": {
         "id": "mcjlamohcooanphmebaiigheeeoplihb",
-        "name": "Perplexity"
+        "name": "Perplexity",
+        "fallback_version": "1.0.64"
       },
       "comet_web_resources": {
         "id": "mjdcklhepheaaemphcopihnmjlmjpcnh",
-        "name": "Comet Web Resources"
+        "name": "Comet Web Resources",
+        "fallback_version": "2025.12.19.1204"
       },
       "agents": {
         "id": "npclhjbddhklpbnacpjloidibaggcgon",
-        "name": "Agents"
+        "name": "Agents",
+        "fallback_version": "0.0.165"
       }
     },
     "patch_config": {

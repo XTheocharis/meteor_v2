@@ -1717,7 +1717,8 @@ function Get-ExtensionUpdateInfo {
     param(
         [string]$UpdateUrl,
         [string]$ExtensionId,
-        [string]$CurrentVersion
+        [string]$CurrentVersion,
+        [string]$BrowserVersion = "120.0.0.0"
     )
 
     if (-not $UpdateUrl) {
@@ -1725,21 +1726,23 @@ function Get-ExtensionUpdateInfo {
     }
 
     # Build update check URL with required Chrome-style parameters
-    # The x= parameter contains: id=<ExtensionId>&v=<Version>&uc
+    # The x= parameter contains: id=<ExtensionId>&v=<Version>&uc (URL-encoded)
     $xParam = "id%3D$ExtensionId%26v%3D$CurrentVersion%26uc"
 
     # Determine separator (& if URL already has query params, ? otherwise)
     $separator = if ($UpdateUrl.Contains("?")) { "&" } else { "?" }
 
-    # Generate a random machine ID (Perplexity requires this parameter)
-    $machineId = [guid]::NewGuid().ToString()
+    # Generate a random 64-character lowercase hex machine ID (matches Comet's format)
+    $randomBytes = New-Object byte[] 32
+    [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($randomBytes)
+    $machineId = [System.BitConverter]::ToString($randomBytes).Replace("-", "").ToLower()
 
-    # Build full URL with required parameters
+    # Build full URL with parameters matching Comet's actual request format
     $checkUrl = "$UpdateUrl$separator" + `
         "response=updatecheck&" + `
-        "os=win&arch=x86-64&os_arch=x86-64&" + `
-        "prod=chromecrx&prodchannel=unknown&prodversion=120.0.0.0&" + `
-        "acceptformat=crx3&machine=$machineId&x=$xParam"
+        "os=win&arch=x64&os_arch=x86_64&" + `
+        "prod=chromiumcrx&prodchannel=&prodversion=$BrowserVersion&" + `
+        "lang=en-US&acceptformat=crx3,puff&machine=$machineId&x=$xParam"
 
     try {
         $content = Invoke-MeteorWebRequest -Uri $checkUrl -Mode Content -TimeoutSec 30
@@ -1838,6 +1841,7 @@ function Get-BundledExtensionFromServer {
         Download the latest version of a bundled extension from Perplexity's update server.
     .DESCRIPTION
         Queries the update server for the latest version, downloads the CRX, and extracts it.
+        Uses CurrentVersion to check for updates - if newer version available, downloads it.
     .OUTPUTS
         Hashtable with Version and Path on success, $null on failure.
     #>
@@ -1846,13 +1850,15 @@ function Get-BundledExtensionFromServer {
         [Parameter(Mandatory)][string]$ExtensionName,
         [Parameter(Mandatory)][string]$UpdateUrl,
         [Parameter(Mandatory)][string]$OutputDir,
+        [string]$CurrentVersion = "0.0.0",
+        [string]$BrowserVersion = "120.0.0.0",
         [switch]$InjectKey
     )
 
     Write-Status "Fetching $ExtensionName from update server..." -Type Detail
 
-    # Query update server for latest version (use version 0.0.0 to always get latest)
-    $updateInfo = Get-ExtensionUpdateInfo -UpdateUrl $UpdateUrl -ExtensionId $ExtensionId -CurrentVersion "0.0.0"
+    # Query update server for latest version
+    $updateInfo = Get-ExtensionUpdateInfo -UpdateUrl $UpdateUrl -ExtensionId $ExtensionId -CurrentVersion $CurrentVersion -BrowserVersion $BrowserVersion
 
     if (-not $updateInfo -or -not $updateInfo.Codebase) {
         Write-Status "  No update info available for $ExtensionName" -Type Warning
@@ -2820,6 +2826,7 @@ function Initialize-PatchedExtensions {
         [string]$PatchesDir,
         [object]$PatchConfig,
         [object]$ExtensionConfig,
+        [string]$BrowserVersion = "120.0.0.0",
         [switch]$DryRunMode
     )
 
@@ -2846,8 +2853,27 @@ function Initialize-PatchedExtensions {
 
             Write-Status "Processing: $extName" -Type Info
 
+            # Determine current version:
+            # 1. If patched extension exists, use its manifest version
+            # 2. Otherwise use fallback_version from config (for first run)
+            $currentVersion = "0.0.0"
+            $existingManifest = Join-Path $extOutputDir "manifest.json"
+            if (Test-Path $existingManifest) {
+                try {
+                    $manifest = Get-Content $existingManifest -Raw | ConvertFrom-Json
+                    if ($manifest.version) {
+                        $currentVersion = $manifest.version
+                        Write-Verbose "  Existing version: $currentVersion"
+                    }
+                } catch { }
+            }
+            elseif ($extInfo.fallback_version) {
+                $currentVersion = $extInfo.fallback_version
+                Write-Verbose "  Using fallback version: $currentVersion"
+            }
+
             if ($DryRunMode) {
-                Write-Status "Would fetch from: $updateUrl" -Type Detail
+                Write-Status "Would fetch from: $updateUrl (current: $currentVersion)" -Type Detail
                 $extensionsToProcess[$extName] = @{ OutputDir = $extOutputDir; FromServer = $true }
                 continue
             }
@@ -2858,6 +2884,8 @@ function Initialize-PatchedExtensions {
                 -ExtensionName $extInfo.name `
                 -UpdateUrl $updateUrl `
                 -OutputDir $extOutputDir `
+                -CurrentVersion $currentVersion `
+                -BrowserVersion $BrowserVersion `
                 -InjectKey
 
             if ($result) {
@@ -5560,6 +5588,7 @@ function Initialize-Extensions {
         [string]$PatchesPath,
         [string]$PatchedResourcesPath,
         [string]$UserDataPath,
+        [string]$CometVersion,
         [switch]$PortableMode,
         [switch]$NeedsSetup,
         [switch]$SkipPak,
@@ -5632,6 +5661,7 @@ function Initialize-Extensions {
         -PatchesDir $PatchesPath `
         -PatchConfig $Config.extensions.patch_config `
         -ExtensionConfig $Config.extensions `
+        -BrowserVersion $CometVersion `
         -DryRunMode:$DryRunMode
 
     if (-not $setupResult) {
@@ -5960,6 +5990,7 @@ function Main {
         -PatchesPath $patchesPath `
         -PatchedResourcesPath $patchedResourcesPath `
         -UserDataPath $userDataPath `
+        -CometVersion $cometVersion `
         -PortableMode:$portableMode `
         -NeedsSetup:$needsSetup `
         -SkipPak:$SkipPak `
