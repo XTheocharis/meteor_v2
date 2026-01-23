@@ -238,44 +238,21 @@
   };
 
   /**
-   * Check extension incognito status and log results.
+   * Check extension status and log results.
    * Note: Incognito is pre-configured by meteor.ps1 in Secure Preferences.
-   * This function just verifies the status at runtime.
+   * The chrome.management API's incognitoAccess property is unreliable for
+   * unpacked extensions, so we just log that extensions are loaded.
    */
   function checkExtensionStatus() {
-    if (!chrome?.management?.getAll) {
-      console.warn('[Meteor] chrome.management API not available');
-      return;
-    }
+    if (!chrome?.management?.getAll) return;
 
     chrome.management.getAll((extensions) => {
-      if (chrome.runtime.lastError) {
-        console.warn('[Meteor] Failed to get extensions:', chrome.runtime.lastError.message);
-        return;
-      }
+      if (chrome.runtime.lastError) return;
 
-      for (const extension of extensions) {
-        if (METEOR_EXTENSIONS[extension.id]) {
-          const extensionName = METEOR_EXTENSIONS[extension.id];
-          if (extension.enabled) {
-            if (extension.incognitoAccess) {
-              console.log(`[Meteor] ${extensionName}: incognito enabled`);
-            } else {
-              // Incognito should be enabled by meteor.ps1 - warn if not
-              console.warn(`[Meteor] ${extensionName}: incognito NOT enabled - run meteor.ps1 -Force to fix`);
-            }
-          }
-        }
-      }
-    });
-  }
-
-  // Monitor for extension installations/updates
-  if (chrome?.management?.onInstalled) {
-    chrome.management.onInstalled.addListener((extensionInfo) => {
-      if (METEOR_EXTENSIONS[extensionInfo.id]) {
-        const extensionName = METEOR_EXTENSIONS[extensionInfo.id];
-        console.log(`[Meteor] ${extensionName} installed - restart browser and run meteor.ps1 -Force to enable incognito`);
+      const meteorExts = extensions.filter(e => METEOR_EXTENSIONS[e.id] && e.enabled);
+      if (meteorExts.length > 0) {
+        const names = meteorExts.map(e => METEOR_EXTENSIONS[e.id]).join(', ');
+        console.log(`[Meteor] Extensions loaded: ${names}`);
       }
     });
   }
