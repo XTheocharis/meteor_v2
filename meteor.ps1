@@ -1815,6 +1815,70 @@ function Update-Extension {
     }
 }
 
+function Get-BundledExtensionFromServer {
+    <#
+    .SYNOPSIS
+        Download the latest version of a bundled extension from Perplexity's update server.
+    .DESCRIPTION
+        Queries the update server for the latest version, downloads the CRX, and extracts it.
+    .OUTPUTS
+        Hashtable with Version and Path on success, $null on failure.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$ExtensionId,
+        [Parameter(Mandatory)][string]$ExtensionName,
+        [Parameter(Mandatory)][string]$UpdateUrl,
+        [Parameter(Mandatory)][string]$OutputDir,
+        [switch]$InjectKey
+    )
+
+    Write-Status "Fetching $ExtensionName from update server..." -Type Detail
+
+    # Query update server for latest version (use version 0.0.0 to always get latest)
+    $updateInfo = Get-ExtensionUpdateInfo -UpdateUrl $UpdateUrl -ExtensionId $ExtensionId -CurrentVersion "0.0.0"
+
+    if (-not $updateInfo -or -not $updateInfo.Codebase) {
+        Write-Status "  No update info available for $ExtensionName" -Type Warning
+        return $null
+    }
+
+    Write-Status "  Latest version: $($updateInfo.Version)" -Type Detail
+
+    # Download CRX
+    $tempCrx = Join-Path $env:TEMP "meteor_bundled_$(Get-Random).crx"
+    try {
+        $null = Invoke-MeteorWebRequest -Uri $updateInfo.Codebase -Mode Download -OutFile $tempCrx -TimeoutSec 120
+        Write-Status "  Downloaded: $(Split-Path -Leaf $updateInfo.Codebase)" -Type Detail
+
+        # Extract to output directory
+        if (Test-Path $OutputDir) {
+            Remove-Item -Path $OutputDir -Recurse -Force
+        }
+
+        $exportResult = Export-CrxToDirectory -CrxPath $tempCrx -OutputDir $OutputDir -InjectKey:$InjectKey
+        if (-not $exportResult) {
+            Write-Status "  Failed to extract $ExtensionName" -Type Error
+            return $null
+        }
+
+        Write-Status "  Extracted to: $OutputDir" -Type Detail
+
+        return @{
+            Version = $updateInfo.Version
+            Path    = $OutputDir
+        }
+    }
+    catch {
+        Write-Status "  Failed to download $ExtensionName : $_" -Type Error
+        return $null
+    }
+    finally {
+        if (Test-Path $tempCrx) {
+            Remove-Item -Path $tempCrx -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 function Get-ChromeExtensionVersion {
     <#
     .SYNOPSIS
@@ -2728,73 +2792,142 @@ function Get-AdGuardExtra {
 function Initialize-PatchedExtensions {
     <#
     .SYNOPSIS
-        Extract and patch extensions from Comet's default_apps.
+        Fetch latest extensions from update server and apply patches.
+    .DESCRIPTION
+        If fetch_from_server is enabled, downloads latest CRX files from Perplexity's
+        update server. Falls back to local CRX files if server is unavailable.
     #>
     param(
         [string]$CometDir,
         [string]$OutputDir,
         [string]$PatchesDir,
         [object]$PatchConfig,
+        [object]$ExtensionConfig,
         [switch]$DryRunMode
     )
 
-    $defaultAppsDir = Join-Path $CometDir "default_apps"
+    # Determine if we should fetch from server
+    $fetchFromServer = $ExtensionConfig.fetch_from_server -eq $true
+    $updateUrl = $ExtensionConfig.update_url
+    $bundledExtensions = $ExtensionConfig.bundled
 
-    if (-not (Test-Path $defaultAppsDir)) {
-        # Try version subdirectory
-        $versionDirs = Get-ChildItem -Path $CometDir -Directory -ErrorAction SilentlyContinue
-        foreach ($vDir in $versionDirs) {
-            $subDefaultApps = Join-Path $vDir.FullName "default_apps"
-            if (Test-Path $subDefaultApps) {
-                $defaultAppsDir = $subDefaultApps
-                break
-            }
-        }
-    }
-
-    if (-not (Test-Path $defaultAppsDir)) {
-        Write-Status "default_apps directory not found in: $CometDir" -Type Error
-        return $false
-    }
-
-    Write-Status "Source: $defaultAppsDir" -Type Detail
     Write-Status "Output: $OutputDir" -Type Detail
 
     if (-not (Test-Path $OutputDir)) {
         New-Item -Path $OutputDir -ItemType Directory -Force | Out-Null
     }
 
-    # Find and process CRX files (prefer active .crx over .crx.meteor-backup)
-    $crxSources = @{}
+    # Build list of extensions to process
+    $extensionsToProcess = @{}
 
-    # First collect .crx.meteor-backup files
-    $backupFiles = Get-ChildItem -Path $defaultAppsDir -Filter "*.crx.meteor-backup" -ErrorAction SilentlyContinue
-    foreach ($file in $backupFiles) {
-        $baseName = $file.Name -replace '\.crx\.meteor-backup$', ''
-        $crxSources[$baseName] = $file
+    if ($fetchFromServer -and $updateUrl -and $bundledExtensions) {
+        Write-Status "Fetching extensions from update server..." -Type Info
+
+        foreach ($extName in $bundledExtensions.PSObject.Properties.Name) {
+            $extInfo = $bundledExtensions.$extName
+            $extOutputDir = Join-Path $OutputDir $extName
+
+            Write-Status "Processing: $extName" -Type Info
+
+            if ($DryRunMode) {
+                Write-Status "Would fetch from: $updateUrl" -Type Detail
+                $extensionsToProcess[$extName] = @{ OutputDir = $extOutputDir; FromServer = $true }
+                continue
+            }
+
+            # Try to fetch from server
+            $result = Get-BundledExtensionFromServer `
+                -ExtensionId $extInfo.id `
+                -ExtensionName $extInfo.name `
+                -UpdateUrl $updateUrl `
+                -OutputDir $extOutputDir `
+                -InjectKey
+
+            if ($result) {
+                $extensionsToProcess[$extName] = @{ OutputDir = $extOutputDir; FromServer = $true; Version = $result.Version }
+            }
+            else {
+                Write-Status "  Server fetch failed, will try local fallback" -Type Warning
+                $extensionsToProcess[$extName] = @{ OutputDir = $extOutputDir; FromServer = $false; NeedsFallback = $true }
+            }
+        }
+    }
+    else {
+        # Mark all extensions for local fallback
+        if ($bundledExtensions) {
+            foreach ($extName in $bundledExtensions.PSObject.Properties.Name) {
+                $extOutputDir = Join-Path $OutputDir $extName
+                $extensionsToProcess[$extName] = @{ OutputDir = $extOutputDir; FromServer = $false; NeedsFallback = $true }
+            }
+        }
     }
 
-    # Then collect active .crx files (these override .meteor-backup versions)
-    $activeFiles = Get-ChildItem -Path $defaultAppsDir -Filter "*.crx" -ErrorAction SilentlyContinue
-    foreach ($file in $activeFiles) {
-        $baseName = $file.Name -replace '\.crx$', ''
-        $crxSources[$baseName] = $file
-    }
+    # Handle local fallback for any extensions that failed server fetch
+    $needsFallback = $extensionsToProcess.Values | Where-Object { $_.NeedsFallback }
+    if ($needsFallback) {
+        Write-Status "Using local CRX files for fallback..." -Type Detail
 
-    foreach ($extName in $crxSources.Keys | Sort-Object) {
-        $crx = $crxSources[$extName]
-        $extOutputDir = Join-Path $OutputDir $extName
-
-        Write-Status "Processing: $extName" -Type Info
-
-        if ($DryRunMode) {
-            Write-Status "Would extract to: $extOutputDir" -Type Detail
-            continue
+        # Find default_apps directory
+        $defaultAppsDir = Join-Path $CometDir "default_apps"
+        if (-not (Test-Path $defaultAppsDir)) {
+            $versionDirs = Get-ChildItem -Path $CometDir -Directory -ErrorAction SilentlyContinue
+            foreach ($vDir in $versionDirs) {
+                $subDefaultApps = Join-Path $vDir.FullName "default_apps"
+                if (Test-Path $subDefaultApps) {
+                    $defaultAppsDir = $subDefaultApps
+                    break
+                }
+            }
         }
 
-        # Extract CRX and inject public key for consistent extension ID
-        Export-CrxToDirectory -CrxPath $crx.FullName -OutputDir $extOutputDir -InjectKey
-        Write-Status "Extracted to: $extOutputDir" -Type Detail
+        if (Test-Path $defaultAppsDir) {
+            Write-Status "Local source: $defaultAppsDir" -Type Detail
+
+            # Find CRX files
+            $crxSources = @{}
+            $backupFiles = Get-ChildItem -Path $defaultAppsDir -Filter "*.crx.meteor-backup" -ErrorAction SilentlyContinue
+            foreach ($file in $backupFiles) {
+                $baseName = $file.Name -replace '\.crx\.meteor-backup$', ''
+                $crxSources[$baseName] = $file
+            }
+            $activeFiles = Get-ChildItem -Path $defaultAppsDir -Filter "*.crx" -ErrorAction SilentlyContinue
+            foreach ($file in $activeFiles) {
+                $baseName = $file.Name -replace '\.crx$', ''
+                $crxSources[$baseName] = $file
+            }
+
+            # Process fallback extensions
+            foreach ($extName in $extensionsToProcess.Keys) {
+                $extData = $extensionsToProcess[$extName]
+                if (-not $extData.NeedsFallback) { continue }
+
+                if ($crxSources.ContainsKey($extName)) {
+                    $crx = $crxSources[$extName]
+                    Write-Status "Processing (local): $extName" -Type Info
+
+                    if (-not $DryRunMode) {
+                        Export-CrxToDirectory -CrxPath $crx.FullName -OutputDir $extData.OutputDir -InjectKey
+                        Write-Status "Extracted to: $($extData.OutputDir)" -Type Detail
+                        $extData.NeedsFallback = $false
+                    }
+                }
+                else {
+                    Write-Status "No local CRX found for: $extName" -Type Warning
+                }
+            }
+        }
+        else {
+            Write-Status "No local CRX source available" -Type Warning
+        }
+    }
+
+    # Apply patches to all successfully extracted extensions
+    foreach ($extName in $extensionsToProcess.Keys) {
+        $extData = $extensionsToProcess[$extName]
+        $extOutputDir = $extData.OutputDir
+
+        if ($DryRunMode) { continue }
+        if (-not (Test-Path $extOutputDir)) { continue }
 
         # Apply patches if configured (check property exists to avoid StrictMode error)
         if ($PatchConfig.PSObject.Properties[$extName]) {
@@ -5253,13 +5386,31 @@ function Update-BundledExtensions {
 
     Write-Status "Step 2: Checking for Extension Updates" -Type Step
 
-    if (-not $Config.extensions.check_updates -or -not $Comet) {
+    # If fetch_from_server is enabled, skip this step - we'll fetch latest in Step 4
+    if ($Config.extensions.fetch_from_server -eq $true) {
+        Write-Status "Server fetch enabled - extensions will be downloaded in Step 4" -Type Detail
+        return $false
+    }
+
+    if (-not $Comet) {
         Write-Status "Extension update checking disabled" -Type Detail
         return $false
     }
 
     $extensionsUpdated = $false
+
+    # Find default_apps directory (may be in version subdirectory)
     $defaultAppsDir = Join-Path $Comet.Directory "default_apps"
+    if (-not (Test-Path $defaultAppsDir)) {
+        $versionDirs = Get-ChildItem -Path $Comet.Directory -Directory -ErrorAction SilentlyContinue
+        foreach ($vDir in $versionDirs) {
+            $subDefaultApps = Join-Path $vDir.FullName "default_apps"
+            if (Test-Path $subDefaultApps) {
+                $defaultAppsDir = $subDefaultApps
+                break
+            }
+        }
+    }
 
     if (-not (Test-Path $defaultAppsDir)) {
         return $false
@@ -5457,6 +5608,7 @@ function Initialize-Extensions {
         -OutputDir $PatchedExtPath `
         -PatchesDir $PatchesPath `
         -PatchConfig $Config.extensions.patch_config `
+        -ExtensionConfig $Config.extensions `
         -DryRunMode:$DryRunMode
 
     if (-not $setupResult) {

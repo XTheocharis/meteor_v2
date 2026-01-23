@@ -206,8 +206,22 @@
     ]
   },
   "extensions": {
-    "check_updates": true,
-    "sources": ["perplexity", "comet_web_resources", "agents"],
+    "update_url": "https://www.perplexity.ai/rest/browser/update-crx?channel=stable",
+    "fetch_from_server": true,
+    "bundled": {
+      "perplexity": {
+        "id": "mcjlamohcooanphmebaiigheeeoplihb",
+        "name": "Perplexity"
+      },
+      "comet_web_resources": {
+        "id": "mjdcklhepheaaemphcopihnmjlmjpcnh",
+        "name": "Comet Web Resources"
+      },
+      "agents": {
+        "id": "npclhjbddhklpbnacpjloidibaggcgon",
+        "name": "Agents"
+      }
+    },
     "patch_config": {
       "perplexity": {
         "manifest_additions": {
