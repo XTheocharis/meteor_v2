@@ -12,7 +12,6 @@
   "browser": {
     "profile": "Default",
     "flags": [
-      "--homepage=https://www.perplexity.ai/b/home",
       "--skip-onboarding-for-testing",
       "--no-first-run",
       "--no-default-browser-check",

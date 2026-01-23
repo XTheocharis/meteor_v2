@@ -167,67 +167,6 @@
   };
 
   // ============================================================================
-  // REMOTE URL REDIRECTION
-  // ============================================================================
-
-  // Force remote perplexity.ai URLs instead of local chrome-extension:// pages
-  const REMOTE_URLS = {
-    home: 'https://www.perplexity.ai/b/home',
-    sidecar: 'https://www.perplexity.ai/sidecar?copilot=true'
-  };
-
-  const LOCAL_URL_PATTERNS = [
-    // Chrome protocol variants
-    'chrome://newtab',
-    'chrome://new-tab-page',
-    'chrome-extension://mjdcklhepheaaemphcopihnmjlmjpcnh/spa/index.html',
-    'chrome-extension://mjdcklhepheaaemphcopihnmjlmjpcnh/spa/ntp.html',
-    // Comet protocol variants (aliases)
-    'comet://newtab',
-    'comet://new-tab-page',
-    'comet-extension://mjdcklhepheaaemphcopihnmjlmjpcnh/spa/index.html',
-    'comet-extension://mjdcklhepheaaemphcopihnmjlmjpcnh/spa/ntp.html'
-  ];
-
-  const SIDECAR_LOCAL_PATTERNS = [
-    'chrome-extension://mjdcklhepheaaemphcopihnmjlmjpcnh/sidecar/index.html',
-    'comet-extension://mjdcklhepheaaemphcopihnmjlmjpcnh/sidecar/index.html'
-  ];
-
-  function shouldRedirectToHome(url) {
-    if (!url) return false;
-    return LOCAL_URL_PATTERNS.some(pattern => url.startsWith(pattern));
-  }
-
-  function shouldRedirectToSidecar(url) {
-    if (!url) return false;
-    return SIDECAR_LOCAL_PATTERNS.some(pattern => url.startsWith(pattern));
-  }
-
-  // Redirect local NTP/homepage URLs to remote
-  chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-    if (changeInfo.url) {
-      if (shouldRedirectToHome(changeInfo.url)) {
-        chrome.tabs.update(tabId, { url: REMOTE_URLS.home });
-      } else if (shouldRedirectToSidecar(changeInfo.url)) {
-        chrome.tabs.update(tabId, { url: REMOTE_URLS.sidecar });
-      }
-    }
-  });
-
-  // Intercept new tab creation - but only if there's no pending navigation
-  // (browser menus create tabs briefly with empty URL before navigating)
-  chrome.tabs.onCreated.addListener((tab) => {
-    // Skip if there's a pending navigation (e.g., from browser menu action)
-    if (tab.pendingUrl && tab.pendingUrl !== 'chrome://newtab/' && tab.pendingUrl !== 'comet://newtab/') {
-      return;
-    }
-    if (!tab.url || tab.url === 'chrome://newtab/' || tab.url === 'comet://newtab/' || tab.url === '') {
-      chrome.tabs.update(tab.id, { url: REMOTE_URLS.home });
-    }
-  });
-
-  // ============================================================================
   // AUTO-ENABLE INCOGNITO FOR EXTENSIONS
   // ============================================================================
 
