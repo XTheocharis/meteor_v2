@@ -97,7 +97,7 @@ When you run `.\meteor.ps1`, it performs these steps automatically:
 | `.meteor/User Data/` | Browser profile data (bookmarks, cache, extensions) |
 | `.meteor/patched_extensions/` | Extracted and patched browser extensions |
 | `.meteor/patched_resources/` | Extracted PAK resources (editable text/binary files + manifest.json) |
-| `patches/perplexity/telemetry.json` | 17 DNR rules for telemetry blocking |
+| `patches/perplexity/telemetry.json` | 26 DNR redirect rules for silent telemetry blocking |
 | `patches/perplexity/meteor-prefs.js` | Service worker preference enforcement |
 | `patches/perplexity/content-script.js` | SDK stubs + feature flag interception |
 
@@ -147,8 +147,11 @@ By default, Meteor runs in **portable mode** (`config.json: comet.portable = tru
 - Force-enables MCP UI flags (`comet-mcp-enabled`, `custom-remote-mcps`, `comet-dxt-enabled`)
 - Provides backup blocking for internal API endpoints with fake success responses
 
-**patches/perplexity/telemetry.json**: 17 DNR rules (primary telemetry blocking mechanism):
-- DataDog RUM, Singular, Eppo, Mixpanel, Sentry, Intercom, Cloudflare (insights and RUM)
+**patches/perplexity/telemetry.json**: 26 DNR rules (primary telemetry blocking mechanism):
+- Uses `redirect` to data URLs instead of `block` to suppress console errors
+- Scripts redirect to `data:text/javascript,` (empty JS)
+- XHR/fetch redirect to `data:application/json,{}` (empty JSON)
+- Covers: DataDog RUM, Singular, Eppo, Mixpanel, Sentry, Intercom, Cloudflare (insights and RUM)
 - Perplexity internal telemetry (irontail, analytics endpoints)
 
 ## Configuration
@@ -349,7 +352,7 @@ The script must run on PowerShell 5.1 (Windows default). Key quirks:
 
 ## Critical Rules for Changes
 
-1. **DNR Rules**: Must maintain sequential rule IDs starting from 1 (currently 17 rules, IDs 1-17)
+1. **DNR Rules**: Must maintain sequential rule IDs starting from 1 (currently 26 rules, IDs 1-26)
 2. **MCP Flags**: These flags MUST be `true` for MCP UI to work:
    - `comet-mcp-enabled`
    - `custom-remote-mcps`

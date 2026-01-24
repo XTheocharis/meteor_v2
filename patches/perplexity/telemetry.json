@@ -3,72 +3,71 @@
     "id": 1,
     "priority": 1,
     "action": {
-      "type": "block"
+      "type": "redirect",
+      "redirect": { "url": "data:text/javascript," }
     },
     "condition": {
       "urlFilter": "||browser-intake-datadoghq.com",
-      "resourceTypes": [
-        "xmlhttprequest",
-        "ping",
-        "other",
-        "main_frame",
-        "sub_frame",
-        "script"
-      ]
+      "resourceTypes": ["script"]
     }
   },
   {
     "id": 2,
     "priority": 1,
     "action": {
-      "type": "block"
+      "type": "redirect",
+      "redirect": { "url": "data:application/json,{}" }
     },
     "condition": {
-      "urlFilter": "||sdk-api-v1.singular.net",
-      "resourceTypes": ["xmlhttprequest", "ping", "other", "script", "image"]
+      "urlFilter": "||browser-intake-datadoghq.com",
+      "resourceTypes": ["xmlhttprequest", "ping", "other", "main_frame", "sub_frame"]
     }
   },
   {
     "id": 3,
     "priority": 1,
     "action": {
-      "type": "block"
+      "type": "redirect",
+      "redirect": { "url": "data:text/javascript," }
     },
     "condition": {
-      "urlFilter": "||fscdn.eppo.cloud",
-      "resourceTypes": ["xmlhttprequest", "ping", "other", "script"]
+      "urlFilter": "||sdk-api-v1.singular.net",
+      "resourceTypes": ["script"]
     }
   },
   {
     "id": 4,
     "priority": 1,
     "action": {
-      "type": "block"
+      "type": "redirect",
+      "redirect": { "url": "data:application/json,{}" }
     },
     "condition": {
-      "urlFilter": "||fs-edge-assignment.eppo.cloud",
-      "resourceTypes": ["xmlhttprequest", "ping", "other", "script"]
+      "urlFilter": "||sdk-api-v1.singular.net",
+      "resourceTypes": ["xmlhttprequest", "ping", "other", "image"]
     }
   },
   {
     "id": 5,
     "priority": 1,
     "action": {
-      "type": "block"
+      "type": "redirect",
+      "redirect": { "url": "data:text/javascript," }
     },
     "condition": {
-      "urlFilter": "||irontail.perplexity.ai",
-      "resourceTypes": ["xmlhttprequest", "ping", "other", "script"]
+      "urlFilter": "||fscdn.eppo.cloud",
+      "resourceTypes": ["script"]
     }
   },
   {
     "id": 6,
     "priority": 1,
     "action": {
-      "type": "block"
+      "type": "redirect",
+      "redirect": { "url": "data:application/json,{}" }
     },
     "condition": {
-      "urlFilter": "/rest/event/analytics",
+      "urlFilter": "||fscdn.eppo.cloud",
       "resourceTypes": ["xmlhttprequest", "ping", "other"]
     }
   },
@@ -76,21 +75,23 @@
     "id": 7,
     "priority": 1,
     "action": {
-      "type": "block"
+      "type": "redirect",
+      "redirect": { "url": "data:text/javascript," }
     },
     "condition": {
-      "urlFilter": "/cdn-cgi/trace",
-      "resourceTypes": ["xmlhttprequest", "ping", "other", "script"]
+      "urlFilter": "||fs-edge-assignment.eppo.cloud",
+      "resourceTypes": ["script"]
     }
   },
   {
     "id": 8,
     "priority": 1,
     "action": {
-      "type": "block"
+      "type": "redirect",
+      "redirect": { "url": "data:application/json,{}" }
     },
     "condition": {
-      "urlFilter": "/api/intercom",
+      "urlFilter": "||fs-edge-assignment.eppo.cloud",
       "resourceTypes": ["xmlhttprequest", "ping", "other"]
     }
   },
@@ -98,32 +99,35 @@
     "id": 9,
     "priority": 1,
     "action": {
-      "type": "block"
+      "type": "redirect",
+      "redirect": { "url": "data:text/javascript," }
     },
     "condition": {
-      "urlFilter": "||api.mixpanel.com",
-      "resourceTypes": ["xmlhttprequest", "ping", "other", "script"]
+      "urlFilter": "||irontail.perplexity.ai",
+      "resourceTypes": ["script"]
     }
   },
   {
     "id": 10,
     "priority": 1,
     "action": {
-      "type": "block"
+      "type": "redirect",
+      "redirect": { "url": "data:application/json,{}" }
     },
     "condition": {
-      "urlFilter": ".ingest.sentry.io",
-      "resourceTypes": ["xmlhttprequest", "ping", "other", "script"]
+      "urlFilter": "||irontail.perplexity.ai",
+      "resourceTypes": ["xmlhttprequest", "ping", "other"]
     }
   },
   {
     "id": 11,
     "priority": 1,
     "action": {
-      "type": "block"
+      "type": "redirect",
+      "redirect": { "url": "data:application/json,{}" }
     },
     "condition": {
-      "urlFilter": "/rest/attribution/",
+      "urlFilter": "/rest/event/analytics",
       "resourceTypes": ["xmlhttprequest", "ping", "other"]
     }
   },
@@ -131,21 +135,23 @@
     "id": 12,
     "priority": 1,
     "action": {
-      "type": "block"
+      "type": "redirect",
+      "redirect": { "url": "data:text/javascript," }
     },
     "condition": {
-      "urlFilter": "/rest/homepage-widgets/upsell/interacted",
-      "resourceTypes": ["xmlhttprequest", "ping", "other"]
+      "urlFilter": "/cdn-cgi/trace",
+      "resourceTypes": ["script"]
     }
   },
   {
     "id": 13,
     "priority": 1,
     "action": {
-      "type": "block"
+      "type": "redirect",
+      "redirect": { "url": "data:application/json,{}" }
     },
     "condition": {
-      "urlFilter": "/rest/ntp/upsell/interacted",
+      "urlFilter": "/cdn-cgi/trace",
       "resourceTypes": ["xmlhttprequest", "ping", "other"]
     }
   },
@@ -153,10 +159,11 @@
     "id": 14,
     "priority": 1,
     "action": {
-      "type": "block"
+      "type": "redirect",
+      "redirect": { "url": "data:application/json,{}" }
     },
     "condition": {
-      "urlFilter": "/rest/autosuggest/track-query-clicked",
+      "urlFilter": "/api/intercom",
       "resourceTypes": ["xmlhttprequest", "ping", "other"]
     }
   },
@@ -164,7 +171,104 @@
     "id": 15,
     "priority": 1,
     "action": {
-      "type": "block"
+      "type": "redirect",
+      "redirect": { "url": "data:text/javascript," }
+    },
+    "condition": {
+      "urlFilter": "||api.mixpanel.com",
+      "resourceTypes": ["script"]
+    }
+  },
+  {
+    "id": 16,
+    "priority": 1,
+    "action": {
+      "type": "redirect",
+      "redirect": { "url": "data:application/json,{}" }
+    },
+    "condition": {
+      "urlFilter": "||api.mixpanel.com",
+      "resourceTypes": ["xmlhttprequest", "ping", "other"]
+    }
+  },
+  {
+    "id": 17,
+    "priority": 1,
+    "action": {
+      "type": "redirect",
+      "redirect": { "url": "data:text/javascript," }
+    },
+    "condition": {
+      "urlFilter": ".ingest.sentry.io",
+      "resourceTypes": ["script"]
+    }
+  },
+  {
+    "id": 18,
+    "priority": 1,
+    "action": {
+      "type": "redirect",
+      "redirect": { "url": "data:application/json,{}" }
+    },
+    "condition": {
+      "urlFilter": ".ingest.sentry.io",
+      "resourceTypes": ["xmlhttprequest", "ping", "other"]
+    }
+  },
+  {
+    "id": 19,
+    "priority": 1,
+    "action": {
+      "type": "redirect",
+      "redirect": { "url": "data:application/json,{}" }
+    },
+    "condition": {
+      "urlFilter": "/rest/attribution/",
+      "resourceTypes": ["xmlhttprequest", "ping", "other"]
+    }
+  },
+  {
+    "id": 20,
+    "priority": 1,
+    "action": {
+      "type": "redirect",
+      "redirect": { "url": "data:application/json,{}" }
+    },
+    "condition": {
+      "urlFilter": "/rest/homepage-widgets/upsell/interacted",
+      "resourceTypes": ["xmlhttprequest", "ping", "other"]
+    }
+  },
+  {
+    "id": 21,
+    "priority": 1,
+    "action": {
+      "type": "redirect",
+      "redirect": { "url": "data:application/json,{}" }
+    },
+    "condition": {
+      "urlFilter": "/rest/ntp/upsell/interacted",
+      "resourceTypes": ["xmlhttprequest", "ping", "other"]
+    }
+  },
+  {
+    "id": 22,
+    "priority": 1,
+    "action": {
+      "type": "redirect",
+      "redirect": { "url": "data:application/json,{}" }
+    },
+    "condition": {
+      "urlFilter": "/rest/autosuggest/track-query-clicked",
+      "resourceTypes": ["xmlhttprequest", "ping", "other"]
+    }
+  },
+  {
+    "id": 23,
+    "priority": 1,
+    "action": {
+      "type": "redirect",
+      "redirect": { "url": "data:application/json,{}" }
     },
     "condition": {
       "urlFilter": "/rest/live-events/subscription",
@@ -172,21 +276,35 @@
     }
   },
   {
-    "id": 16,
+    "id": 24,
     "priority": 1,
     "action": {
-      "type": "block"
+      "type": "redirect",
+      "redirect": { "url": "data:text/javascript," }
     },
     "condition": {
       "urlFilter": "||cloudflareinsights.com",
-      "resourceTypes": ["script", "xmlhttprequest", "ping", "other"]
+      "resourceTypes": ["script"]
     }
   },
   {
-    "id": 17,
+    "id": 25,
     "priority": 1,
     "action": {
-      "type": "block"
+      "type": "redirect",
+      "redirect": { "url": "data:application/json,{}" }
+    },
+    "condition": {
+      "urlFilter": "||cloudflareinsights.com",
+      "resourceTypes": ["xmlhttprequest", "ping", "other"]
+    }
+  },
+  {
+    "id": 26,
+    "priority": 1,
+    "action": {
+      "type": "redirect",
+      "redirect": { "url": "data:application/json,{}" }
     },
     "condition": {
       "urlFilter": "/cdn-cgi/rum",
