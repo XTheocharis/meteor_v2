@@ -2082,6 +2082,9 @@ function Get-CrxPublicKey {
         Handles both CRX2 (direct key) and CRX3 (protobuf header) formats.
         For CRX3, finds the key that matches the CRX ID in signed_header_data.
         Returns the key as a base64 string suitable for manifest.json "key" field.
+
+        Uses streaming to read only the CRX header portion (typically <10KB),
+        avoiding loading the entire CRX file (10+ MB) into memory.
     .OUTPUTS
         System.String
     #>
@@ -2096,159 +2099,175 @@ function Get-CrxPublicKey {
         throw "CRX file not found: $CrxPath"
     }
 
-    $bytes = [System.IO.File]::ReadAllBytes($CrxPath)
+    $fileStream = $null
+    try {
+        $fileStream = [System.IO.File]::OpenRead($CrxPath)
 
-    # Validate CRX format and get version using helper functions
-    $version = Get-CrxVersion -Header $bytes
-
-    if ($version -eq $script:CRX_VERSION_2) {
-        # CRX2: public key is at offset 16 for pubkeyLen bytes
-        $pubkeyLen = ConvertTo-LittleEndianUInt32 -Bytes $bytes -Offset 8
-
-        if ($pubkeyLen -eq 0) {
-            throw "CRX2 file has zero-length public key"
+        # Read CRX header (first 16 bytes) to determine version and header size
+        $header = New-Object byte[] 16
+        $bytesRead = $fileStream.Read($header, 0, 16)
+        if ($bytesRead -lt 12) {
+            throw "CRX file too small: only $bytesRead bytes"
         }
 
-        $keyEndOffset = $script:CRX2_HEADER_SIZE_MIN + $pubkeyLen
-        if ($keyEndOffset -gt $bytes.Length) {
-            throw "CRX2 file truncated: public key extends beyond file (offset $keyEndOffset > size $($bytes.Length))"
+        # Validate magic "Cr24"
+        if ($header[0] -ne 0x43 -or $header[1] -ne 0x72 -or $header[2] -ne 0x32 -or $header[3] -ne 0x34) {
+            throw "Invalid CRX file: missing Cr24 magic header"
         }
 
-        $pubkey = New-Object byte[] $pubkeyLen
-        [Array]::Copy($bytes, $script:CRX2_HEADER_SIZE_MIN, $pubkey, 0, $pubkeyLen)
-        return [Convert]::ToBase64String($pubkey)
-    }
-    else {
-        # CRX3: Find the key whose SHA256 hash matches the CRX ID
-        $headerLen = ConvertTo-LittleEndianUInt32 -Bytes $bytes -Offset 8
-        $headerStart = $script:CRX3_HEADER_SIZE_MIN
-        $headerEnd = $headerStart + $headerLen
+        $version = [BitConverter]::ToUInt32($header, 4)
 
-        if ($headerEnd -gt $bytes.Length) {
-            throw "CRX3 file truncated: header extends beyond file (offset $headerEnd > size $($bytes.Length))"
+        if ($version -eq 2) {
+            # CRX2: public key at offset 16, length in header
+            $pubkeyLen = [BitConverter]::ToUInt32($header, 8)
+            if ($pubkeyLen -eq 0) {
+                throw "CRX2 file has zero-length public key"
+            }
+
+            # Read just the public key (already at offset 16 after reading header)
+            $pubkey = New-Object byte[] $pubkeyLen
+            $fileStream.Read($pubkey, 0, $pubkeyLen) | Out-Null
+            return [Convert]::ToBase64String($pubkey)
         }
+        elseif ($version -eq 3) {
+            # CRX3: Read protobuf header only
+            $headerLen = [BitConverter]::ToUInt32($header, 8)
 
-        # Parse protobuf header to collect keys and find the CRX ID
-        $keys = [System.Collections.ArrayList]@()
-        $crxId = $null
+            # Seek to start of protobuf header (offset 12)
+            $fileStream.Seek(12, [System.IO.SeekOrigin]::Begin) | Out-Null
+            $bytes = New-Object byte[] $headerLen
+            $fileStream.Read($bytes, 0, $headerLen) | Out-Null
 
-        $pos = $headerStart
-        while ($pos -lt $headerEnd) {
-            $result = Read-ProtobufVarint -Bytes $bytes -Pos $pos
-            $tag = $result.Value
-            $pos = $result.Pos
+            # Parse protobuf header to collect keys and find the CRX ID
+            # Note: $bytes now starts at offset 0 (not 12)
+            $headerEnd = $headerLen
+            $keys = [System.Collections.ArrayList]@()
+            $crxId = $null
 
-            $fieldNum = $tag -shr 3
-            $wireType = $tag -band 0x07
-
-            if ($wireType -eq 2) {
-                # Length-delimited field
+            $pos = 0
+            while ($pos -lt $headerEnd) {
                 $result = Read-ProtobufVarint -Bytes $bytes -Pos $pos
-                $len = $result.Value
+                $tag = $result.Value
                 $pos = $result.Pos
-                $fieldEnd = $pos + $len
 
-                if ($fieldEnd -gt $headerEnd) {
-                    throw "CRX3 protobuf field extends beyond header at position $pos"
-                }
+                $fieldNum = $tag -shr 3
+                $wireType = $tag -band 0x07
 
-                if ($fieldNum -in @(2, 3)) {
-                    # sha256_with_rsa (2) or sha256_with_ecdsa (3) - extract public_key
-                    $nestedPos = $pos
-                    while ($nestedPos -lt $fieldEnd) {
-                        $result = Read-ProtobufVarint -Bytes $bytes -Pos $nestedPos
-                        $nestedTag = $result.Value
-                        $nestedPos = $result.Pos
+                if ($wireType -eq 2) {
+                    # Length-delimited field
+                    $result = Read-ProtobufVarint -Bytes $bytes -Pos $pos
+                    $len = $result.Value
+                    $pos = $result.Pos
+                    $fieldEnd = $pos + $len
 
-                        $nestedFieldNum = $nestedTag -shr 3
-                        $nestedWireType = $nestedTag -band 0x07
+                    if ($fieldEnd -gt $headerEnd) {
+                        throw "CRX3 protobuf field extends beyond header at position $pos"
+                    }
 
-                        if ($nestedWireType -eq 2) {
+                    if ($fieldNum -in @(2, 3)) {
+                        # sha256_with_rsa (2) or sha256_with_ecdsa (3) - extract public_key
+                        $nestedPos = $pos
+                        while ($nestedPos -lt $fieldEnd) {
                             $result = Read-ProtobufVarint -Bytes $bytes -Pos $nestedPos
-                            $nestedLen = $result.Value
+                            $nestedTag = $result.Value
                             $nestedPos = $result.Pos
 
-                            if ($nestedFieldNum -eq 1) {
-                                # public_key field
-                                $pubkey = New-Object byte[] $nestedLen
-                                [Array]::Copy($bytes, $nestedPos, $pubkey, 0, $nestedLen)
-                                [void]$keys.Add($pubkey)
+                            $nestedFieldNum = $nestedTag -shr 3
+                            $nestedWireType = $nestedTag -band 0x07
+
+                            if ($nestedWireType -eq 2) {
+                                $result = Read-ProtobufVarint -Bytes $bytes -Pos $nestedPos
+                                $nestedLen = $result.Value
+                                $nestedPos = $result.Pos
+
+                                if ($nestedFieldNum -eq 1) {
+                                    # public_key field
+                                    $pubkey = New-Object byte[] $nestedLen
+                                    [Array]::Copy($bytes, $nestedPos, $pubkey, 0, $nestedLen)
+                                    [void]$keys.Add($pubkey)
+                                }
+                                $nestedPos += $nestedLen
                             }
-                            $nestedPos += $nestedLen
-                        }
-                        else {
-                            break
+                            else {
+                                break
+                            }
                         }
                     }
-                }
-                elseif ($fieldNum -eq 10000) {
-                    # signed_header_data - contains crx_id
-                    $nestedPos = $pos
-                    while ($nestedPos -lt $fieldEnd) {
-                        $result = Read-ProtobufVarint -Bytes $bytes -Pos $nestedPos
-                        $nestedTag = $result.Value
-                        $nestedPos = $result.Pos
-
-                        $nestedFieldNum = $nestedTag -shr 3
-                        $nestedWireType = $nestedTag -band 0x07
-
-                        if ($nestedWireType -eq 2 -and $nestedFieldNum -eq 1) {
-                            # crx_id field
+                    elseif ($fieldNum -eq 10000) {
+                        # signed_header_data - contains crx_id
+                        $nestedPos = $pos
+                        while ($nestedPos -lt $fieldEnd) {
                             $result = Read-ProtobufVarint -Bytes $bytes -Pos $nestedPos
-                            $crxIdLen = $result.Value
+                            $nestedTag = $result.Value
                             $nestedPos = $result.Pos
 
-                            $crxId = New-Object byte[] $crxIdLen
-                            [Array]::Copy($bytes, $nestedPos, $crxId, 0, $crxIdLen)
-                            break
-                        }
-                        else {
-                            break
+                            $nestedFieldNum = $nestedTag -shr 3
+                            $nestedWireType = $nestedTag -band 0x07
+
+                            if ($nestedWireType -eq 2 -and $nestedFieldNum -eq 1) {
+                                # crx_id field
+                                $result = Read-ProtobufVarint -Bytes $bytes -Pos $nestedPos
+                                $crxIdLen = $result.Value
+                                $nestedPos = $result.Pos
+
+                                $crxId = New-Object byte[] $crxIdLen
+                                [Array]::Copy($bytes, $nestedPos, $crxId, 0, $crxIdLen)
+                                break
+                            }
+                            else {
+                                break
+                            }
                         }
                     }
+
+                    $pos = $fieldEnd
                 }
-
-                $pos = $fieldEnd
+                elseif ($wireType -eq 0) {
+                    # Varint field
+                    $result = Read-ProtobufVarint -Bytes $bytes -Pos $pos
+                    $pos = $result.Pos
+                }
+                elseif ($wireType -eq 1) { $pos += 8 }  # 64-bit fixed
+                elseif ($wireType -eq 5) { $pos += 4 }  # 32-bit fixed
+                else {
+                    throw "CRX3 protobuf unknown wire type $wireType at position $pos"
+                }
             }
-            elseif ($wireType -eq 0) {
-                # Varint field
-                $result = Read-ProtobufVarint -Bytes $bytes -Pos $pos
-                $pos = $result.Pos
-            }
-            elseif ($wireType -eq 1) { $pos += 8 }  # 64-bit fixed
-            elseif ($wireType -eq 5) { $pos += 4 }  # 32-bit fixed
-            else {
-                throw "CRX3 protobuf unknown wire type $wireType at position $pos"
-            }
-        }
 
-        # Find the key that matches the CRX ID
-        if ($crxId -and $keys.Count -gt 0) {
-            $crxIdHex = [BitConverter]::ToString($crxId).Replace("-", "").ToLower()
+            # Find the key that matches the CRX ID
+            if ($crxId -and $keys.Count -gt 0) {
+                $crxIdHex = [BitConverter]::ToString($crxId).Replace("-", "").ToLower()
 
-            foreach ($key in $keys) {
-                $sha = [System.Security.Cryptography.SHA256]::Create()
-                try {
-                    $hash = $sha.ComputeHash($key)
-                    $hashHex = [BitConverter]::ToString($hash[0..15]).Replace("-", "").ToLower()
+                foreach ($key in $keys) {
+                    $sha = [System.Security.Cryptography.SHA256]::Create()
+                    try {
+                        $hash = $sha.ComputeHash($key)
+                        $hashHex = [BitConverter]::ToString($hash[0..15]).Replace("-", "").ToLower()
 
-                    if ($hashHex -eq $crxIdHex) {
-                        return [Convert]::ToBase64String($key)
+                        if ($hashHex -eq $crxIdHex) {
+                            return [Convert]::ToBase64String($key)
+                        }
+                    }
+                    finally {
+                        $sha.Dispose()
                     }
                 }
-                finally {
-                    $sha.Dispose()
-                }
             }
-        }
 
-        # Fallback: return first key if no CRX ID match (shouldn't happen for valid CRX)
-        if ($keys.Count -gt 0) {
-            Write-VerboseTimestamped "Warning: CRX ID not found in header, using first available key"
-            return [Convert]::ToBase64String($keys[0])
-        }
+            # Fallback: return first key if no CRX ID match (shouldn't happen for valid CRX)
+            if ($keys.Count -gt 0) {
+                Write-VerboseTimestamped "Warning: CRX ID not found in header, using first available key"
+                return [Convert]::ToBase64String($keys[0])
+            }
 
-        throw "Could not find public key in CRX3 header (found $($keys.Count) keys, crxId present: $($null -ne $crxId))"
+            throw "Could not find public key in CRX3 header (found $($keys.Count) keys, crxId present: $($null -ne $crxId))"
+        }
+        else {
+            throw "Unsupported CRX version: $version"
+        }
+    }
+    finally {
+        if ($fileStream) { $fileStream.Dispose() }
     }
 }
 
@@ -2258,6 +2277,7 @@ function Export-CrxToDirectory {
         Extract a CRX file to a directory.
     .DESCRIPTION
         Handles both CRX2 and CRX3 formats by detecting the header and extracting the ZIP payload.
+        Uses streaming to avoid loading the entire CRX file into memory.
         Optionally injects the public key into manifest.json for consistent extension ID.
     .OUTPUTS
         System.Boolean
@@ -2279,30 +2299,69 @@ function Export-CrxToDirectory {
         throw "CRX file not found: $CrxPath"
     }
 
-    $bytes = [System.IO.File]::ReadAllBytes($CrxPath)
-
-    # Calculate ZIP offset using helper function (validates format automatically)
-    $zipOffset = Get-CrxZipOffset -Bytes $bytes
-
-    # Extract ZIP portion
-    $zipLength = $bytes.Length - $zipOffset
-    if ($zipLength -le 0) {
-        throw "CRX file has no ZIP content (ZIP length: $zipLength)"
-    }
-
-    $zipBytes = New-Object byte[] $zipLength
-    [Array]::Copy($bytes, $zipOffset, $zipBytes, 0, $zipLength)
-
-    # Validate ZIP magic (PK\x03\x04)
-    if ($zipBytes.Length -lt 4 -or $zipBytes[0] -ne 0x50 -or $zipBytes[1] -ne 0x4B) {
-        throw "CRX file contains invalid ZIP archive (missing PK signature at offset $zipOffset)"
-    }
-
-    # Write to temp file and extract
     $tempZip = Join-Path $env:TEMP "meteor_crx_$(Get-Random).zip"
+    $inputStream = $null
+    $outputStream = $null
 
     try {
-        [System.IO.File]::WriteAllBytes($tempZip, $zipBytes)
+        # Open input file and read header to find ZIP offset
+        $inputStream = [System.IO.File]::OpenRead($CrxPath)
+
+        $header = New-Object byte[] 16
+        $bytesRead = $inputStream.Read($header, 0, 16)
+        if ($bytesRead -lt 12) {
+            throw "CRX file too small: only $bytesRead bytes"
+        }
+
+        # Validate magic "Cr24"
+        if ($header[0] -ne 0x43 -or $header[1] -ne 0x72 -or $header[2] -ne 0x32 -or $header[3] -ne 0x34) {
+            throw "Invalid CRX file: missing Cr24 magic header"
+        }
+
+        # Calculate ZIP offset
+        $version = [BitConverter]::ToUInt32($header, 4)
+        if ($version -eq 2) {
+            $pubkeyLen = [BitConverter]::ToUInt32($header, 8)
+            $sigLen = [BitConverter]::ToUInt32($header, 12)
+            $zipOffset = 16 + $pubkeyLen + $sigLen
+        }
+        elseif ($version -eq 3) {
+            $headerLen = [BitConverter]::ToUInt32($header, 8)
+            $zipOffset = 12 + $headerLen
+        }
+        else {
+            throw "Unsupported CRX version: $version"
+        }
+
+        $zipLength = $inputStream.Length - $zipOffset
+        if ($zipLength -le 0) {
+            throw "CRX file has no ZIP content (ZIP length: $zipLength)"
+        }
+
+        # Seek to ZIP start and validate ZIP magic
+        $inputStream.Seek($zipOffset, [System.IO.SeekOrigin]::Begin) | Out-Null
+        $zipMagic = New-Object byte[] 4
+        $inputStream.Read($zipMagic, 0, 4) | Out-Null
+        if ($zipMagic[0] -ne 0x50 -or $zipMagic[1] -ne 0x4B) {
+            throw "CRX file contains invalid ZIP archive (missing PK signature at offset $zipOffset)"
+        }
+
+        # Stream ZIP portion to temp file (64KB buffer)
+        $inputStream.Seek($zipOffset, [System.IO.SeekOrigin]::Begin) | Out-Null
+        $outputStream = [System.IO.File]::Create($tempZip)
+        $buffer = New-Object byte[] 65536
+        $remaining = $zipLength
+        while ($remaining -gt 0) {
+            $toRead = [Math]::Min($buffer.Length, $remaining)
+            $read = $inputStream.Read($buffer, 0, $toRead)
+            if ($read -eq 0) { break }
+            $outputStream.Write($buffer, 0, $read)
+            $remaining -= $read
+        }
+        $outputStream.Close()
+        $outputStream = $null
+        $inputStream.Close()
+        $inputStream = $null
 
         if (Test-Path $OutputDir) {
             Remove-Item -Path $OutputDir -Recurse -Force
@@ -2342,6 +2401,8 @@ function Export-CrxToDirectory {
         }
     }
     finally {
+        if ($outputStream) { $outputStream.Dispose() }
+        if ($inputStream) { $inputStream.Dispose() }
         if (Test-Path $tempZip) {
             Remove-Item -Path $tempZip -Force
         }
