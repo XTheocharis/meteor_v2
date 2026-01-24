@@ -2888,7 +2888,8 @@ function Install-CometPortable {
     #>
     param(
         [string]$DownloadUrl,
-        [string]$TargetDir
+        [string]$TargetDir,
+        [string]$PreDownloadedInstaller
     )
 
     Write-Status "Installing Comet in portable mode..." -Type Info
@@ -2913,9 +2914,16 @@ function Install-CometPortable {
         # Create temp directory
         New-DirectoryIfNotExists -Path $tempDir
 
-        # Download installer
-        Write-Status "Downloading from: $DownloadUrl" -Type Detail
-        $null = Invoke-MeteorDownload -Uri $DownloadUrl -OutFile $tempInstaller
+        # Use pre-downloaded installer if available, otherwise download
+        if ($PreDownloadedInstaller -and (Test-Path $PreDownloadedInstaller)) {
+            Write-Status "Using pre-downloaded installer" -Type Detail
+            Copy-Item -Path $PreDownloadedInstaller -Destination $tempInstaller -Force
+            Remove-Item -Path $PreDownloadedInstaller -Force -ErrorAction SilentlyContinue
+        }
+        else {
+            Write-Status "Downloading from: $DownloadUrl" -Type Detail
+            $null = Invoke-MeteorDownload -Uri $DownloadUrl -OutFile $tempInstaller
+        }
 
         Write-Status "Extracting installer (step 1/2)..." -Type Detail
 
@@ -3364,7 +3372,8 @@ function Get-UBlockOrigin {
     param(
         [string]$OutputDir,
         [object]$UBlockConfig,
-        [switch]$ForceDownload
+        [switch]$ForceDownload,
+        [switch]$SkipDownload
     )
 
     try {
@@ -3381,15 +3390,18 @@ function Get-UBlockOrigin {
             return $null
         }
 
-        # Use common helper for download/extract
-        $result = Install-ChromeWebStoreExtension `
-            -ExtensionId $UBlockConfig.extension_id `
-            -ExtensionName "uBlock Origin" `
-            -OutputDir $OutputDir `
-            -ForceDownload:$ForceDownload
+        # Skip download if already extracted (from parallel pre-download)
+        if (-not $SkipDownload) {
+            # Use common helper for download/extract
+            $result = Install-ChromeWebStoreExtension `
+                -ExtensionId $UBlockConfig.extension_id `
+                -ExtensionName "uBlock Origin" `
+                -OutputDir $OutputDir `
+                -ForceDownload:$ForceDownload
 
-        if ($null -eq $result) {
-            throw "Failed to download uBlock Origin"
+            if ($null -eq $result) {
+                throw "Failed to download uBlock Origin"
+            }
         }
 
         # Apply defaults if configured - using auto-import approach
@@ -3466,6 +3478,7 @@ function Initialize-PatchedExtensions {
         If fetch_from_server is enabled, downloads latest CRX files from Perplexity's
         update server. Falls back to local CRX files if server is unavailable.
         Uses parallel update checks and downloads for better performance.
+        When FreshInstall is true, reads CRX versions from local files for update checks.
     #>
     param(
         [string]$CometDir,
@@ -3473,7 +3486,8 @@ function Initialize-PatchedExtensions {
         [string]$PatchesDir,
         [object]$PatchConfig,
         [object]$ExtensionConfig,
-        [string]$BrowserVersion = "120.0.0.0"
+        [string]$BrowserVersion = "120.0.0.0",
+        [switch]$FreshInstall
     )
 
     # Determine if we should fetch from server
@@ -3488,6 +3502,23 @@ function Initialize-PatchedExtensions {
     # Build list of extensions to process
     $extensionsToProcess = @{}
 
+    # Find default_apps directory for reading local CRX versions
+    $defaultAppsDir = Get-DefaultAppsDirectory -CometDir $CometDir
+    $localCrxVersions = @{}
+
+    # On fresh install, read CRX versions from the installer's bundled files
+    if ($FreshInstall -and $defaultAppsDir) {
+        Write-VerboseTimestamped "Fresh install - reading CRX versions from: $defaultAppsDir"
+        Get-ChildItem -Path $defaultAppsDir -Filter "*.crx*" -ErrorAction SilentlyContinue | Where-Object { $_.Extension -eq '.crx' -or $_.Name.EndsWith('.crx.meteor-backup') } | ForEach-Object {
+            $baseName = $_.Name -replace '\.crx(\.meteor-backup)?$', ''
+            $crxManifest = Get-CrxManifest -CrxPath $_.FullName
+            if ($crxManifest -and $crxManifest.version) {
+                $localCrxVersions[$baseName] = $crxManifest.version
+                Write-VerboseTimestamped "  $baseName local CRX version: $($crxManifest.version)"
+            }
+        }
+    }
+
     if ($fetchFromServer -and $updateUrl -and $bundledExtensions) {
         Write-Status "Fetching extensions from update server..." -Type Info
 
@@ -3499,7 +3530,7 @@ function Initialize-PatchedExtensions {
             $extInfo = $bundledExtensions.$extName
             $extOutputDir = Join-Path $OutputDir $extName
 
-            # Determine current version
+            # Determine current version (priority: existing patched > local CRX > fallback)
             $currentVersion = "0.0.0"
             $existingManifest = Join-Path $extOutputDir "manifest.json"
             if (Test-Path $existingManifest) {
@@ -3507,15 +3538,20 @@ function Initialize-PatchedExtensions {
                     $manifest = Get-JsonFile -Path $existingManifest
                     if ($manifest.version) {
                         $currentVersion = $manifest.version
-                        Write-Verbose "  $extName existing version: $currentVersion"
+                        Write-VerboseTimestamped "  $extName existing version: $currentVersion"
                     }
                 } catch {
                     $null = $_
                 }
             }
+            elseif ($FreshInstall -and $localCrxVersions.ContainsKey($extName)) {
+                # Fresh install: use version from local CRX file
+                $currentVersion = $localCrxVersions[$extName]
+                Write-VerboseTimestamped "  $extName local CRX version: $currentVersion"
+            }
             elseif ($extInfo.fallback_version) {
                 $currentVersion = $extInfo.fallback_version
-                Write-Verbose "  $extName using fallback version: $currentVersion"
+                Write-VerboseTimestamped "  $extName using fallback version: $currentVersion"
             }
 
             $extensionInfoList += @{
@@ -4004,22 +4040,6 @@ function Initialize-PakModifications {
 
         $textCount++
         $resourceModified = $false
-
-        # Log sample content for pattern debugging
-        if ($content -match 'shouldHide|BooleanFlags|NumericFlags|perplexityChannel') {
-            Write-VerboseTimestamped "[PAK] Resource $resourceId contains potential target (gzip=$isGzipped)"
-            $preview = $content.Substring(0, [Math]::Min(500, $content.Length)) -replace '[\r\n]+', ' '
-            Write-VerboseTimestamped "[PAK] Preview: $preview..."
-
-            # Extra logging for shouldHide functions
-            if ($content -match 'shouldHide\w*Perplexity|shouldHidePerplexity|hidePerplexity') {
-                Write-VerboseTimestamped "[PAK] Resource $resourceId contains Perplexity hide function"
-                # Find and show the function
-                if ($content -match '(function\s+shouldHide\w*[^}]+\})') {
-                    Write-VerboseTimestamped "[PAK] Hide function: $($Matches[1] -replace '[\r\n]+', ' ')"
-                }
-            }
-        }
 
         # Try each modification pattern
         $modIndex = 0
@@ -6460,13 +6480,14 @@ function Initialize-CometInstallation {
         Finds existing Comet installation or downloads/extracts a new one.
         Handles both portable and system installation modes.
     .OUTPUTS
-        Hashtable with Comet installation info and version, or $null on failure.
+        Hashtable with Comet installation info, version, and FreshInstall flag.
     #>
     param(
         [PSCustomObject]$Config,
         [string]$MeteorDataPath,
         [switch]$PortableMode,
-        [switch]$Force
+        [switch]$Force,
+        [string]$PreDownloadedInstaller
     )
 
     Write-Status "Step 0: Checking Comet Installation" -Type Step
@@ -6477,6 +6498,7 @@ function Initialize-CometInstallation {
 
     # Check for existing installation (portable path first if in portable mode)
     $comet = Get-CometInstallation -DataPath $(if ($PortableMode) { $MeteorDataPath } else { $null })
+    $freshInstall = $false
 
     # In portable mode, we need a portable installation - don't use system-wide fallback
     if ($PortableMode -and $comet -and -not $comet.Portable) {
@@ -6491,8 +6513,9 @@ function Initialize-CometInstallation {
     }
 
     if (-not $comet) {
+        $freshInstall = $true
         if ($PortableMode) {
-            $comet = Install-CometPortable -DownloadUrl $Config.comet.download_url -TargetDir $MeteorDataPath
+            $comet = Install-CometPortable -DownloadUrl $Config.comet.download_url -TargetDir $MeteorDataPath -PreDownloadedInstaller $PreDownloadedInstaller
         }
         else {
             $comet = Install-Comet -DownloadUrl $Config.comet.download_url
@@ -6520,8 +6543,9 @@ function Initialize-CometInstallation {
     }
 
     return @{
-        Comet = $comet
+        Comet        = $comet
         CometVersion = $cometVersion
+        FreshInstall = $freshInstall
     }
 }
 
@@ -6729,7 +6753,8 @@ function Initialize-Extensions {
         [string]$CometVersion,
         [switch]$PortableMode,
         [switch]$NeedsSetup,
-        [switch]$SkipPak
+        [switch]$SkipPak,
+        [switch]$FreshInstall
     )
 
     Write-Status "Step 4: Extracting and Patching" -Type Step
@@ -6791,7 +6816,8 @@ function Initialize-Extensions {
         -PatchesDir $PatchesPath `
         -PatchConfig $Config.extensions.patch_config `
         -ExtensionConfig $Config.extensions `
-        -BrowserVersion $browserVersionForUpdate
+        -BrowserVersion $browserVersionForUpdate `
+        -FreshInstall:$FreshInstall
 
     if (-not $setupResult) {
         Write-Status "Extension patching failed" -Type Error
@@ -6873,7 +6899,9 @@ function Initialize-AdBlockExtensions {
         [PSCustomObject]$Config,
         [string]$UBlockPath,
         [string]$AdGuardExtraPath,
-        [switch]$Force
+        [switch]$Force,
+        [string]$PreDownloadedUBlock,
+        [string]$PreDownloadedAdGuard
     )
 
     Write-Status "Step 5: Checking ad-block extensions" -Type Step
@@ -6900,9 +6928,50 @@ function Initialize-AdBlockExtensions {
         return @{ UBlockPath = $resultUBlockPath; AdGuardExtraPath = $resultAdGuardPath }
     }
 
-    # Build list of extensions to check
+    # Process pre-downloaded extensions first (from parallel download with installer)
+    $ublockHandled = $false
+    $adguardHandled = $false
+
+    if ($PreDownloadedUBlock -and (Test-Path $PreDownloadedUBlock) -and $ublockEnabled) {
+        Write-Status "Installing pre-downloaded uBlock Origin..." -Type Detail
+        try {
+            if (Test-Path $UBlockPath) {
+                Remove-Item -Path $UBlockPath -Recurse -Force
+            }
+            $null = Export-CrxToDirectory -CrxPath $PreDownloadedUBlock -OutputDir $UBlockPath
+            # Configure uBlock (add auto-import.js, patch start.js, etc.)
+            $null = Get-UBlockOrigin -OutputDir $UBlockPath -UBlockConfig $Config.ublock -SkipDownload
+            Write-Status "uBlock Origin installed" -Type Success
+            $ublockHandled = $true
+        }
+        finally {
+            Remove-Item -Path $PreDownloadedUBlock -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    if ($PreDownloadedAdGuard -and (Test-Path $PreDownloadedAdGuard) -and $adguardEnabled) {
+        Write-Status "Installing pre-downloaded AdGuard Extra..." -Type Detail
+        try {
+            if (Test-Path $AdGuardExtraPath) {
+                Remove-Item -Path $AdGuardExtraPath -Recurse -Force
+            }
+            $null = Export-CrxToDirectory -CrxPath $PreDownloadedAdGuard -OutputDir $AdGuardExtraPath
+            Write-Status "AdGuard Extra installed" -Type Success
+            $adguardHandled = $true
+        }
+        finally {
+            Remove-Item -Path $PreDownloadedAdGuard -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    # If all enabled extensions were handled by pre-download, we're done
+    if ((-not $ublockEnabled -or $ublockHandled) -and (-not $adguardEnabled -or $adguardHandled)) {
+        return @{ UBlockPath = $resultUBlockPath; AdGuardExtraPath = $resultAdGuardPath }
+    }
+
+    # Build list of extensions to check (only those not already handled)
     $extensionsToCheck = @()
-    if ($ublockEnabled) {
+    if ($ublockEnabled -and -not $ublockHandled) {
         $ublockManifest = Join-Path $UBlockPath "manifest.json"
         $ublockCurrentVer = if ((Test-Path $UBlockPath) -and (Test-Path $ublockManifest)) {
             (Get-JsonFile -Path $ublockManifest).version
@@ -6917,7 +6986,7 @@ function Initialize-AdBlockExtensions {
             Type = "ublock"
         }
     }
-    if ($adguardEnabled) {
+    if ($adguardEnabled -and -not $adguardHandled) {
         $adguardManifest = Join-Path $AdGuardExtraPath "manifest.json"
         $adguardCurrentVer = if ((Test-Path $AdGuardExtraPath) -and (Test-Path $adguardManifest)) {
             (Get-JsonFile -Path $adguardManifest).version
@@ -6933,12 +7002,17 @@ function Initialize-AdBlockExtensions {
         }
     }
 
+    # If no extensions left to check, we're done
+    if ($extensionsToCheck.Count -eq 0) {
+        return @{ UBlockPath = $resultUBlockPath; AdGuardExtraPath = $resultAdGuardPath }
+    }
+
     # If only one extension or none, use sequential path
     if ($extensionsToCheck.Count -le 1) {
-        if ($ublockEnabled) {
+        if ($ublockEnabled -and -not $ublockHandled) {
             $null = Get-UBlockOrigin -OutputDir $UBlockPath -UBlockConfig $Config.ublock -ForceDownload:$Force
         }
-        if ($adguardEnabled) {
+        if ($adguardEnabled -and -not $adguardHandled) {
             $null = Get-AdGuardExtra -OutputDir $AdGuardExtraPath -AdGuardConfig $Config.adguard_extra -ForceDownload:$Force
         }
         return @{ UBlockPath = $resultUBlockPath; AdGuardExtraPath = $resultAdGuardPath }
@@ -7275,21 +7349,142 @@ function Main {
     }
 
     # ═══════════════════════════════════════════════════════════════
+    # Pre-download Check: Parallelize downloads when we know we'll need them
+    # ═══════════════════════════════════════════════════════════════
+    # Check if we'll need to download Comet (Force or no existing installation)
+    $existingComet = Get-CometInstallation -DataPath $(if ($portableMode) { $meteorDataPath } else { $null })
+    $willNeedCometDownload = $Force -or -not $existingComet -or ($portableMode -and $existingComet -and -not $existingComet.Portable)
+
+    # Pre-downloaded paths (if parallel download happens)
+    $preDownloadedComet = $null
+    $preDownloadedUBlock = $null
+    $preDownloadedAdGuard = $null
+
+    if ($willNeedCometDownload -and -not $WhatIfPreference -and $portableMode) {
+        # Check if adblock extensions need downloading
+        $ublockEnabled = $config.ublock.enabled -eq $true
+        $adguardEnabled = $config.adguard_extra.enabled -eq $true
+
+        $ublockNeedsDownload = $false
+        $adguardNeedsDownload = $false
+
+        if ($ublockEnabled) {
+            $ublockManifest = Join-Path $ublockPath "manifest.json"
+            $ublockNeedsDownload = $Force -or -not (Test-Path $ublockManifest)
+        }
+        if ($adguardEnabled) {
+            $adguardManifest = Join-Path $adguardExtraPath "manifest.json"
+            $adguardNeedsDownload = $Force -or -not (Test-Path $adguardManifest)
+        }
+
+        # If we need to download Comet AND at least one adblock extension, do parallel downloads
+        if ($ublockNeedsDownload -or $adguardNeedsDownload) {
+            Write-Status "Parallel download: Comet installer + ad-block extensions" -Type Info
+
+            $downloadTasks = @()
+
+            # Comet installer download task
+            $cometTempPath = Join-Path $env:TEMP "meteor_comet_$(Get-Random).exe"
+            $cometDownloadScript = {
+                param($Url, $TempPath)
+                try {
+                    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+                    $wc = New-Object System.Net.WebClient
+                    $wc.Headers.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0")
+                    $wc.DownloadFile($Url, $TempPath)
+                    $wc.Dispose()
+                    return @{ Success = $true; Type = "comet"; Path = $TempPath }
+                }
+                catch {
+                    return @{ Success = $false; Type = "comet"; Error = $_.ToString() }
+                }
+            }
+            $downloadTasks += @{ Script = $cometDownloadScript; Args = @($config.comet.download_url, $cometTempPath) }
+
+            # uBlock download task
+            if ($ublockNeedsDownload) {
+                $ublockTempPath = Join-Path $env:TEMP "meteor_ublock_$(Get-Random).crx"
+                $extensionDownloadScript = {
+                    param($ExtId, $TempPath, $ExtType)
+                    try {
+                        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+                        $url = "https://clients2.google.com/service/update2/crx?response=redirect&os=win&arch=x86-64&os_arch=x86-64&prod=chromecrx&prodchannel=unknown&prodversion=120.0.0.0&acceptformat=crx3&x=id%3D$ExtId%26uc"
+                        $wc = New-Object System.Net.WebClient
+                        $wc.Headers.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0")
+                        $wc.DownloadFile($url, $TempPath)
+                        $wc.Dispose()
+                        return @{ Success = $true; Type = $ExtType; Path = $TempPath }
+                    }
+                    catch {
+                        return @{ Success = $false; Type = $ExtType; Error = $_.ToString() }
+                    }
+                }
+                $downloadTasks += @{ Script = $extensionDownloadScript; Args = @($config.ublock.extension_id, $ublockTempPath, "ublock") }
+            }
+
+            # AdGuard download task
+            if ($adguardNeedsDownload) {
+                $adguardTempPath = Join-Path $env:TEMP "meteor_adguard_$(Get-Random).crx"
+                $extensionDownloadScript = {
+                    param($ExtId, $TempPath, $ExtType)
+                    try {
+                        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+                        $url = "https://clients2.google.com/service/update2/crx?response=redirect&os=win&arch=x86-64&os_arch=x86-64&prod=chromecrx&prodchannel=unknown&prodversion=120.0.0.0&acceptformat=crx3&x=id%3D$ExtId%26uc"
+                        $wc = New-Object System.Net.WebClient
+                        $wc.Headers.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0")
+                        $wc.DownloadFile($url, $TempPath)
+                        $wc.Dispose()
+                        return @{ Success = $true; Type = $ExtType; Path = $TempPath }
+                    }
+                    catch {
+                        return @{ Success = $false; Type = $ExtType; Error = $_.ToString() }
+                    }
+                }
+                $downloadTasks += @{ Script = $extensionDownloadScript; Args = @($config.adguard_extra.extension_id, $adguardTempPath, "adguard") }
+            }
+
+            Write-Status "Downloading $($downloadTasks.Count) file(s) in parallel..." -Type Detail
+            $downloadResults = Invoke-Parallel -Tasks $downloadTasks -MaxThreads $downloadTasks.Count
+
+            foreach ($result in $downloadResults) {
+                if ($result.Success) {
+                    switch ($result.Type) {
+                        "comet" { $preDownloadedComet = $result.Path; Write-Status "  Comet installer downloaded" -Type Detail }
+                        "ublock" { $preDownloadedUBlock = $result.Path; Write-Status "  uBlock Origin downloaded" -Type Detail }
+                        "adguard" { $preDownloadedAdGuard = $result.Path; Write-Status "  AdGuard Extra downloaded" -Type Detail }
+                    }
+                }
+                else {
+                    Write-Status "  $($result.Type) download failed: $($result.Error)" -Type Warning
+                }
+            }
+        }
+    }
+
+    # ═══════════════════════════════════════════════════════════════
     # Step 0: Comet Installation
     # ═══════════════════════════════════════════════════════════════
-    $installResult = Initialize-CometInstallation -Config $config -MeteorDataPath $meteorDataPath -PortableMode:$portableMode -Force:$Force
+    $installResult = Initialize-CometInstallation -Config $config -MeteorDataPath $meteorDataPath -PortableMode:$portableMode -Force:$Force -PreDownloadedInstaller $preDownloadedComet
     if ($null -eq $installResult -and -not $WhatIfPreference) {
         exit 1
     }
     $comet = $installResult.Comet
     $cometVersion = $installResult.CometVersion
+    $freshInstall = $installResult.FreshInstall
 
     # ═══════════════════════════════════════════════════════════════
     # Step 1: Comet Update Check
     # ═══════════════════════════════════════════════════════════════
-    $updateResult = Update-CometBrowser -Config $config -Comet $comet -CometVersion $cometVersion -MeteorDataPath $meteorDataPath -PortableMode:$portableMode
-    $comet = $updateResult.Comet
-    $cometVersion = $updateResult.CometVersion
+    if ($freshInstall) {
+        # Skip update check - we just downloaded the latest installer
+        Write-Status "Step 1: Skipping Update Check (fresh install)" -Type Step
+        Write-Status "Fresh install - already have the latest version" -Type Detail
+    }
+    else {
+        $updateResult = Update-CometBrowser -Config $config -Comet $comet -CometVersion $cometVersion -MeteorDataPath $meteorDataPath -PortableMode:$portableMode
+        $comet = $updateResult.Comet
+        $cometVersion = $updateResult.CometVersion
+    }
 
     # ═══════════════════════════════════════════════════════════════
     # Step 2: Extension Update Check
@@ -7315,12 +7510,19 @@ function Main {
         -CometVersion $cometVersion `
         -PortableMode:$portableMode `
         -NeedsSetup:$needsSetup `
-        -SkipPak:$SkipPak
+        -SkipPak:$SkipPak `
+        -FreshInstall:$freshInstall
 
     # ═══════════════════════════════════════════════════════════════
     # Step 5 & 5.5: Ad-blocking Extensions
     # ═══════════════════════════════════════════════════════════════
-    $adBlockResult = Initialize-AdBlockExtensions -Config $config -UBlockPath $ublockPath -AdGuardExtraPath $adguardExtraPath -Force:$Force
+    $adBlockResult = Initialize-AdBlockExtensions `
+        -Config $config `
+        -UBlockPath $ublockPath `
+        -AdGuardExtraPath $adguardExtraPath `
+        -Force:$Force `
+        -PreDownloadedUBlock $preDownloadedUBlock `
+        -PreDownloadedAdGuard $preDownloadedAdGuard
     $ublockPath = $adBlockResult.UBlockPath
     $adguardExtraPath = $adBlockResult.AdGuardExtraPath
 
