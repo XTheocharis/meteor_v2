@@ -6938,7 +6938,7 @@ function Initialize-AdBlockExtensions {
             if (Test-Path $UBlockPath) {
                 Remove-Item -Path $UBlockPath -Recurse -Force
             }
-            $null = Export-CrxToDirectory -CrxPath $PreDownloadedUBlock -OutputDir $UBlockPath
+            $null = Export-CrxToDirectory -CrxPath $PreDownloadedUBlock -OutputDir $UBlockPath -InjectKey
             # Configure uBlock (add auto-import.js, patch start.js, etc.)
             $null = Get-UBlockOrigin -OutputDir $UBlockPath -UBlockConfig $Config.ublock -SkipDownload
             Write-Status "uBlock Origin installed" -Type Success
@@ -6955,7 +6955,7 @@ function Initialize-AdBlockExtensions {
             if (Test-Path $AdGuardExtraPath) {
                 Remove-Item -Path $AdGuardExtraPath -Recurse -Force
             }
-            $null = Export-CrxToDirectory -CrxPath $PreDownloadedAdGuard -OutputDir $AdGuardExtraPath
+            $null = Export-CrxToDirectory -CrxPath $PreDownloadedAdGuard -OutputDir $AdGuardExtraPath -InjectKey
             Write-Status "AdGuard Extra installed" -Type Success
             $adguardHandled = $true
         }
