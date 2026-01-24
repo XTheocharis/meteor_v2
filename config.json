@@ -264,7 +264,7 @@
     }
   },
   "pak_modifications": {
-    "enabled": true,
+    "enabled": false,
     "modifications": [
       {
         "pattern": "!isPerplexityInternalUser",
