@@ -7006,6 +7006,7 @@ function Initialize-Extensions {
         [switch]$PortableMode,
         [switch]$NeedsSetup,
         [switch]$SkipPak,
+        [switch]$PakInBackground,
         [switch]$FreshInstall
     )
 
@@ -7140,7 +7141,10 @@ function Initialize-Extensions {
     }
 
     # PAK modifications
-    if ($SkipPak) {
+    if ($PakInBackground) {
+        Write-Status "PAK modifications running in background" -Type Detail
+    }
+    elseif ($SkipPak) {
         Write-Status "Skipping PAK modifications (-SkipPak specified)" -Type Detail
     }
     elseif ($Config.pak_modifications.enabled) {
@@ -8528,7 +8532,8 @@ setTimeout(checkAndImport, 3000);
         -CometVersion $cometVersion `
         -PortableMode:$portableMode `
         -NeedsSetup:$needsSetup `
-        -SkipPak:($SkipPak -or $pakInBackground) `
+        -SkipPak:$SkipPak `
+        -PakInBackground:$pakInBackground `
         -FreshInstall:$freshInstall
 
     # ═══════════════════════════════════════════════════════════════
