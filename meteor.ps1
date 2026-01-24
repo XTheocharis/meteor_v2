@@ -549,21 +549,27 @@ function Test-BinaryContent {
     .SYNOPSIS
         Test if byte array contains binary (non-text) content.
     .DESCRIPTION
-        Uses regex to detect binary indicators (null bytes and control characters).
-        More efficient than byte-by-byte comparison.
+        Checks bytes directly for binary indicators (null bytes and control characters).
+        Only scans first 8KB for efficiency - avoids full UTF-8 string conversion.
     .RETURNS
         $true if content appears to be binary, $false if it appears to be text.
     #>
     param([byte[]]$Bytes)
 
-    try {
-        $text = [System.Text.Encoding]::UTF8.GetString($Bytes)
-        # Binary indicators: null bytes and control chars (except newlines/tabs)
-        return $text -match '[\x00-\x08\x0E-\x1F]'
+    if ($null -eq $Bytes -or $Bytes.Length -eq 0) {
+        return $false
     }
-    catch {
-        return $true
+
+    # Check first 8KB for binary indicators (sufficient for detection)
+    $checkLength = [Math]::Min($Bytes.Length, 8192)
+    for ($i = 0; $i -lt $checkLength; $i++) {
+        $b = $Bytes[$i]
+        # Binary indicators: null byte or control chars (except tab=9, LF=10, CR=13)
+        if ($b -eq 0 -or ($b -lt 32 -and $b -ne 9 -and $b -ne 10 -and $b -ne 13)) {
+            return $true
+        }
     }
+    return $false
 }
 
 function Find-CometVersionDirectory {
@@ -788,6 +794,72 @@ function Test-MeteorConfig {
     return $true
 }
 
+function Invoke-Parallel {
+    <#
+    .SYNOPSIS
+        Execute scriptblocks in parallel using runspace pool.
+    .DESCRIPTION
+        Low-overhead parallel execution for PS 5.1 compatibility.
+        Each task receives arguments positionally via AddArgument.
+        Functions from the main script are NOT available inside runspaces.
+    .PARAMETER Tasks
+        Array of @{ Script = [scriptblock]; Args = @(...) }
+    .PARAMETER MaxThreads
+        Maximum concurrent threads (default: 4)
+    .RETURNS
+        Array of results from all tasks
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [array]$Tasks,
+
+        [int]$MaxThreads = 4
+    )
+
+    $runspacePool = [runspacefactory]::CreateRunspacePool(1, $MaxThreads)
+    $runspacePool.Open()
+
+    $runspaces = @()
+
+    foreach ($task in $Tasks) {
+        $powershell = [powershell]::Create()
+        $powershell.RunspacePool = $runspacePool
+        [void]$powershell.AddScript($task.Script)
+
+        # Add arguments positionally (PS 5.1 compatible)
+        foreach ($arg in $task.Args) {
+            [void]$powershell.AddArgument($arg)
+        }
+
+        $runspaces += @{
+            PowerShell = $powershell
+            Handle     = $powershell.BeginInvoke()
+        }
+    }
+
+    # Wait for all to complete and collect results with error handling
+    $results = @()
+    foreach ($rs in $runspaces) {
+        try {
+            $results += $rs.PowerShell.EndInvoke($rs.Handle)
+        }
+        finally {
+            # Surface any errors from the runspace
+            if ($rs.PowerShell.HadErrors) {
+                foreach ($err in $rs.PowerShell.Streams.Error) {
+                    Write-Warning "Parallel task error: $err"
+                }
+            }
+            $rs.PowerShell.Dispose()
+        }
+    }
+
+    $runspacePool.Close()
+    $runspacePool.Dispose()
+
+    return , $results  # Comma preserves array in PS 5.1
+}
+
 #endregion
 
 #region State Management
@@ -945,6 +1017,15 @@ function Read-PakFile {
     }
 
     $pak.DataStartOffset = $offset
+
+    # Build hash index for O(1) resource lookup (optimization)
+    # This eliminates O(n) linear search in Get-PakResource
+    $resourceIndex = @{}
+    for ($i = 0; $i -lt $pak.Resources.Count; $i++) {
+        $resourceIndex[$pak.Resources[$i].Id] = $i
+    }
+    $pak.ResourceIndex = $resourceIndex
+
     return $pak
 }
 
@@ -952,24 +1033,33 @@ function Get-PakResource {
     <#
     .SYNOPSIS
         Get the content of a specific resource from a PAK file.
+    .DESCRIPTION
+        Uses hash index for O(1) lookup instead of O(n) linear search.
+        The index is built during Read-PakFile.
     #>
     param(
         [hashtable]$Pak,
         [int]$ResourceId
     )
 
-    for ($i = 0; $i -lt $Pak.Resources.Count - 1; $i++) {
-        if ($Pak.Resources[$i].Id -eq $ResourceId) {
-            $startOffset = $Pak.Resources[$i].Offset
-            $endOffset = $Pak.Resources[$i + 1].Offset
-            $length = $endOffset - $startOffset
+    # Use hash index for O(1) lookup (built in Read-PakFile)
+    if ($Pak.ResourceIndex -and $Pak.ResourceIndex.ContainsKey($ResourceId)) {
+        $i = $Pak.ResourceIndex[$ResourceId]
 
-            $data = New-Object byte[] $length
-            [Array]::Copy($Pak.RawBytes, $startOffset, $data, 0, $length)
-
-            # Use comma to prevent PowerShell from unwrapping single-element arrays
-            return ,$data
+        # Bounds check: ensure there's a next entry (sentinel) for length calculation
+        if ($i -ge $Pak.Resources.Count - 1) {
+            return $null
         }
+
+        $startOffset = $Pak.Resources[$i].Offset
+        $endOffset = $Pak.Resources[$i + 1].Offset
+        $length = $endOffset - $startOffset
+
+        $data = New-Object byte[] $length
+        [Array]::Copy($Pak.RawBytes, $startOffset, $data, 0, $length)
+
+        # Use comma to prevent PowerShell from unwrapping single-element arrays
+        return ,$data
     }
 
     return $null
@@ -2091,7 +2181,22 @@ function Export-CrxToDirectory {
         }
 
         New-Item -Path $OutputDir -ItemType Directory -Force | Out-Null
-        Expand-Archive -Path $tempZip -DestinationPath $OutputDir -Force
+
+        # Use 7-Zip if available (2-5x faster than Expand-Archive)
+        $sevenZip = Get-7ZipPath
+        if ($sevenZip) {
+            # -bso0 -bsp0 = suppress stdout/progress output, -y = yes to all prompts
+            $null = & $sevenZip x $tempZip "-o$OutputDir" -y -bso0 -bsp0 2>$null
+            if ($LASTEXITCODE -ne 0) {
+                # Fallback to Expand-Archive if 7-Zip fails
+                Write-VerboseTimestamped "[CRX] 7-Zip extraction failed (exit code $LASTEXITCODE), falling back to Expand-Archive"
+                Expand-Archive -Path $tempZip -DestinationPath $OutputDir -Force
+            }
+        }
+        else {
+            # Fallback to Expand-Archive (slower but always available)
+            Expand-Archive -Path $tempZip -DestinationPath $OutputDir -Force
+        }
 
         # Inject public key into manifest if requested
         if ($InjectKey) {
@@ -3070,66 +3175,39 @@ function Install-ChromeWebStoreExtension {
 
 #region uBlock Origin
 
-function Get-UBlockOrigin {
+function Initialize-UBlockAutoImport {
     <#
     .SYNOPSIS
-        Download uBlock Origin MV2 from Chrome Web Store if not present or outdated.
+        Configure uBlock Origin auto-import system.
     .DESCRIPTION
-        Downloads the extension from Chrome Web Store, extracts it, and configures
-        the auto-import system for applying Meteor defaults.
+        Creates auto-import.js and patches start.js to apply Meteor defaults on first run.
+        Extracted as helper for use by both Get-UBlockOrigin and parallel download path.
     #>
     param(
-        [string]$OutputDir,
-        [object]$UBlockConfig,
-        [switch]$ForceDownload
+        [Parameter(Mandatory)]
+        [string]$UBlockDir,
+
+        [Parameter(Mandatory)]
+        [object]$UBlockConfig
     )
 
-    try {
-        # Handle dry run mode - just show what would happen
-        if ($WhatIfPreference) {
-            $manifestPath = Join-Path $OutputDir "manifest.json"
-            if ((Test-Path $OutputDir) -and (Test-Path $manifestPath)) {
-                Write-Status "Would check for uBlock Origin updates" -Type Detail
-            }
-            else {
-                Write-Status "Would download uBlock Origin from Chrome Web Store" -Type Detail
-            }
-            Write-Status "Would apply uBlock auto-import configuration" -Type Detail
-            return $null
-        }
+    $jsDir = Join-Path $UBlockDir "js"
+    if (-not (Test-Path $jsDir)) {
+        Write-Status "uBlock js/ directory not found, skipping auto-import configuration" -Type Warning
+        return
+    }
 
-        # Use common helper for download/extract
-        $result = Install-ChromeWebStoreExtension `
-            -ExtensionId $UBlockConfig.extension_id `
-            -ExtensionName "uBlock Origin" `
-            -OutputDir $OutputDir `
-            -ForceDownload:$ForceDownload
+    if (-not $UBlockConfig.defaults) {
+        return
+    }
 
-        if ($null -eq $result) {
-            throw "Failed to download uBlock Origin"
-        }
+    # Get custom filter lists for the auto-import check
+    $customLists = $UBlockConfig.defaults.selectedFilterLists | Where-Object { $_ -match '^https?://' }
+    $customListsJson = if ($customLists) { $customLists | ConvertTo-Json -Compress } else { "[]" }
 
-        # Apply defaults if configured - using auto-import approach
-        # Only run if uBlock directory and js/ subdirectory exist (either just extracted or previously installed)
-        if ($UBlockConfig.defaults -and (Test-Path $OutputDir)) {
-            $jsDir = Join-Path $OutputDir "js"
-
-            # Ensure js/ directory exists before attempting configuration
-            if (-not (Test-Path $jsDir)) {
-                Write-Status "uBlock js/ directory not found, skipping auto-import configuration" -Type Warning
-            }
-            else {
-                # Save settings file that auto-import.js will load
-                $settingsPath = Join-Path $OutputDir "ublock-settings.json"
-                Save-JsonFile -Path $settingsPath -Object $UBlockConfig.defaults -Depth 20
-
-                # Get custom filter lists for the auto-import check
-                $customLists = $UBlockConfig.defaults.selectedFilterLists | Where-Object { $_ -match '^https?://' }
-                $customListsJson = $customLists | ConvertTo-Json -Compress
-
-                # Create auto-import.js that applies settings on first run
-                $autoImportPath = Join-Path $jsDir "auto-import.js"
-            $autoImportCode = @"
+    # Create auto-import.js that applies settings on first run
+    $autoImportPath = Join-Path $jsDir "auto-import.js"
+    $autoImportCode = @"
 /*******************************************************************************
 
     Meteor - Auto-import custom defaults on first run
@@ -3207,27 +3285,75 @@ setTimeout(checkAndImport, 3000);
 
 /******************************************************************************/
 "@
-            Set-Content -Path $autoImportPath -Value $autoImportCode -Encoding UTF8
+    Set-Content -Path $autoImportPath -Value $autoImportCode -Encoding UTF8
 
-            # Patch start.js to import auto-import.js
-            $startJsPath = Join-Path $jsDir "start.js"
-            if (Test-Path $startJsPath) {
-                $startContent = Get-Content -Path $startJsPath -Raw
-                if ($startContent -notmatch "import './auto-import.js';") {
-                    # Find last import statement and add our import after it
-                    $importPattern = "(import .+ from .+;)\n"
-                    $importMatches = [regex]::Matches($startContent, $importPattern)
-                    if ($importMatches.Count -gt 0) {
-                        $lastMatch = $importMatches[$importMatches.Count - 1]
-                        $insertPos = $lastMatch.Index + $lastMatch.Length
-                        $newContent = $startContent.Substring(0, $insertPos) + "import './auto-import.js';`n" + $startContent.Substring($insertPos)
-                        Set-Content -Path $startJsPath -Value $newContent -Encoding UTF8 -NoNewline
-                    }
-                }
+    # Patch start.js to import auto-import.js
+    $startJsPath = Join-Path $jsDir "start.js"
+    if (Test-Path $startJsPath) {
+        $startContent = Get-Content -Path $startJsPath -Raw
+        if ($startContent -notmatch "import './auto-import.js';") {
+            # Find last import statement and add our import after it
+            $importPattern = "(import .+ from .+;)\n"
+            $importMatches = [regex]::Matches($startContent, $importPattern)
+            if ($importMatches.Count -gt 0) {
+                $lastMatch = $importMatches[$importMatches.Count - 1]
+                $insertPos = $lastMatch.Index + $lastMatch.Length
+                $newContent = $startContent.Substring(0, $insertPos) + "import './auto-import.js';`n" + $startContent.Substring($insertPos)
+                Set-Content -Path $startJsPath -Value $newContent -Encoding UTF8 -NoNewline
             }
+        }
+    }
 
-                Write-Status "uBlock auto-import configured" -Type Detail
+    Write-Status "uBlock auto-import configured" -Type Detail
+}
+
+function Get-UBlockOrigin {
+    <#
+    .SYNOPSIS
+        Download uBlock Origin MV2 from Chrome Web Store if not present or outdated.
+    .DESCRIPTION
+        Downloads the extension from Chrome Web Store, extracts it, and configures
+        the auto-import system for applying Meteor defaults.
+    #>
+    param(
+        [string]$OutputDir,
+        [object]$UBlockConfig,
+        [switch]$ForceDownload
+    )
+
+    try {
+        # Handle dry run mode - just show what would happen
+        if ($WhatIfPreference) {
+            $manifestPath = Join-Path $OutputDir "manifest.json"
+            if ((Test-Path $OutputDir) -and (Test-Path $manifestPath)) {
+                Write-Status "Would check for uBlock Origin updates" -Type Detail
             }
+            else {
+                Write-Status "Would download uBlock Origin from Chrome Web Store" -Type Detail
+            }
+            Write-Status "Would apply uBlock auto-import configuration" -Type Detail
+            return $null
+        }
+
+        # Use common helper for download/extract
+        $result = Install-ChromeWebStoreExtension `
+            -ExtensionId $UBlockConfig.extension_id `
+            -ExtensionName "uBlock Origin" `
+            -OutputDir $OutputDir `
+            -ForceDownload:$ForceDownload
+
+        if ($null -eq $result) {
+            throw "Failed to download uBlock Origin"
+        }
+
+        # Apply defaults if configured - using auto-import approach
+        if ($UBlockConfig.defaults -and (Test-Path $OutputDir)) {
+            # Save settings file that auto-import.js will load
+            $settingsPath = Join-Path $OutputDir "ublock-settings.json"
+            Save-JsonFile -Path $settingsPath -Object $UBlockConfig.defaults -Depth 20
+
+            # Use helper function to create auto-import.js and patch start.js
+            Initialize-UBlockAutoImport -UBlockDir $OutputDir -UBlockConfig $UBlockConfig
         }
 
         return $OutputDir
@@ -3533,6 +3659,13 @@ function Initialize-PakModifications {
 
     if (-not $PakConfig.enabled) {
         Write-Status "PAK modifications disabled in config" -Type Detail
+        return $true
+    }
+
+    # Early exit if no modifications configured - skip entire PAK processing
+    # Use @() wrapper for PS 5.1 null-safety (ConvertFrom-Json returns $null for [])
+    if (-not $PakConfig.modifications -or @($PakConfig.modifications).Count -eq 0) {
+        Write-Status "No PAK modifications configured - skipping PAK processing" -Type Detail
         return $true
     }
 
@@ -6440,6 +6573,9 @@ function Initialize-AdBlockExtensions {
     <#
     .SYNOPSIS
         Step 5/5.5: Download and configure ad-blocking extensions.
+    .DESCRIPTION
+        Downloads uBlock Origin and AdGuard Extra in parallel when both need updating,
+        then configures them sequentially. Uses runspace pool for parallel downloads.
     .OUTPUTS
         Hashtable with UBlockPath and AdGuardExtraPath (may be $null if disabled).
     #>
@@ -6450,28 +6586,209 @@ function Initialize-AdBlockExtensions {
         [switch]$Force
     )
 
-    # Step 5: uBlock Origin
-    Write-Status "Step 5: Checking uBlock Origin" -Type Step
+    Write-Status "Step 5: Checking ad-block extensions" -Type Step
 
     $resultUBlockPath = $UBlockPath
-    if ($Config.ublock.enabled) {
-        $null = Get-UBlockOrigin -OutputDir $UBlockPath -UBlockConfig $Config.ublock -ForceDownload:$Force
-    }
-    else {
+    $resultAdGuardPath = $AdGuardExtraPath
+
+    $ublockEnabled = $Config.ublock.enabled -eq $true
+    $adguardEnabled = $Config.adguard_extra.enabled -eq $true
+
+    if (-not $ublockEnabled) {
         Write-Status "uBlock Origin disabled in config" -Type Detail
         $resultUBlockPath = $null
     }
-
-    # Step 5.5: AdGuard Extra
-    Write-Status "Step 5.5: Checking AdGuard Extra" -Type Step
-
-    $resultAdGuardPath = $AdGuardExtraPath
-    if ($Config.adguard_extra.enabled) {
-        $null = Get-AdGuardExtra -OutputDir $AdGuardExtraPath -AdGuardConfig $Config.adguard_extra -ForceDownload:$Force
-    }
-    else {
+    if (-not $adguardEnabled) {
         Write-Status "AdGuard Extra disabled in config" -Type Detail
         $resultAdGuardPath = $null
+    }
+
+    # Handle dry run mode
+    if ($WhatIfPreference) {
+        if ($ublockEnabled) { Write-Status "Would check/download uBlock Origin" -Type Detail }
+        if ($adguardEnabled) { Write-Status "Would check/download AdGuard Extra" -Type Detail }
+        return @{ UBlockPath = $resultUBlockPath; AdGuardExtraPath = $resultAdGuardPath }
+    }
+
+    # Build list of extensions to check
+    $extensionsToCheck = @()
+    if ($ublockEnabled) {
+        $ublockManifest = Join-Path $UBlockPath "manifest.json"
+        $ublockCurrentVer = if ((Test-Path $UBlockPath) -and (Test-Path $ublockManifest)) {
+            (Get-JsonFile -Path $ublockManifest).version
+        } else { $null }
+
+        $extensionsToCheck += @{
+            Name = "uBlock Origin"
+            Id = $Config.ublock.extension_id
+            OutputDir = $UBlockPath
+            CurrentVersion = $ublockCurrentVer
+            Config = $Config.ublock
+            Type = "ublock"
+        }
+    }
+    if ($adguardEnabled) {
+        $adguardManifest = Join-Path $AdGuardExtraPath "manifest.json"
+        $adguardCurrentVer = if ((Test-Path $AdGuardExtraPath) -and (Test-Path $adguardManifest)) {
+            (Get-JsonFile -Path $adguardManifest).version
+        } else { $null }
+
+        $extensionsToCheck += @{
+            Name = "AdGuard Extra"
+            Id = $Config.adguard_extra.extension_id
+            OutputDir = $AdGuardExtraPath
+            CurrentVersion = $adguardCurrentVer
+            Config = $Config.adguard_extra
+            Type = "adguard"
+        }
+    }
+
+    # If only one extension or none, use sequential path
+    if ($extensionsToCheck.Count -le 1) {
+        if ($ublockEnabled) {
+            $null = Get-UBlockOrigin -OutputDir $UBlockPath -UBlockConfig $Config.ublock -ForceDownload:$Force
+        }
+        if ($adguardEnabled) {
+            $null = Get-AdGuardExtra -OutputDir $AdGuardExtraPath -AdGuardConfig $Config.adguard_extra -ForceDownload:$Force
+        }
+        return @{ UBlockPath = $resultUBlockPath; AdGuardExtraPath = $resultAdGuardPath }
+    }
+
+    # Both extensions enabled - check versions and download in parallel if needed
+    Write-Status "Checking versions for uBlock Origin and AdGuard Extra..." -Type Detail
+
+    # Parallel version check using runspaces (inlined web request)
+    $versionCheckScript = {
+        param($ExtensionId)
+        try {
+            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+            $url = "https://clients2.google.com/service/update2/crx?response=updatecheck&os=win&arch=x86-64&os_arch=x86-64&prod=chromecrx&prodchannel=unknown&prodversion=120.0.0.0&acceptformat=crx3&x=id%3D$ExtensionId%26v%3D0.0.0%26uc"
+            $wc = New-Object System.Net.WebClient
+            $content = $wc.DownloadString($url)
+            [xml]$xml = $content
+            $updatecheck = $xml.gupdate.app.updatecheck
+            if ($updatecheck -and $updatecheck.status -eq "ok" -and $updatecheck.version) {
+                return @{ Id = $ExtensionId; Version = $updatecheck.version; Success = $true }
+            }
+            return @{ Id = $ExtensionId; Version = $null; Success = $false }
+        }
+        catch {
+            return @{ Id = $ExtensionId; Version = $null; Success = $false; Error = $_.Exception.Message }
+        }
+    }
+
+    $versionTasks = @()
+    foreach ($ext in $extensionsToCheck) {
+        $versionTasks += @{ Script = $versionCheckScript; Args = @($ext.Id) }
+    }
+
+    $versionResults = Invoke-Parallel -Tasks $versionTasks -MaxThreads 2
+
+    # Map version results back to extensions
+    $extensionsNeedingDownload = @()
+    foreach ($ext in $extensionsToCheck) {
+        $versionResult = $versionResults | Where-Object { $_.Id -eq $ext.Id } | Select-Object -First 1
+        $latestVersion = if ($versionResult -and $versionResult.Success) { $versionResult.Version } else { $null }
+
+        if (-not $latestVersion) {
+            Write-Status "Could not get version for $($ext.Name)" -Type Warning
+            continue
+        }
+
+        $needsDownload = $Force -or (-not $ext.CurrentVersion) -or
+            ((Compare-Versions -Version1 $latestVersion -Version2 $ext.CurrentVersion) -gt 0)
+
+        if ($needsDownload) {
+            $currentVerDisplay = if ($ext.CurrentVersion) { $ext.CurrentVersion } else { 'not installed' }
+            Write-Status "$($ext.Name): $currentVerDisplay -> $latestVersion" -Type Info
+            $ext.LatestVersion = $latestVersion
+            $extensionsNeedingDownload += $ext
+        }
+        else {
+            Write-Status "$($ext.Name) is up to date ($($ext.CurrentVersion))" -Type Success
+        }
+    }
+
+    # Parallel download if multiple extensions need it
+    if ($extensionsNeedingDownload.Count -gt 1) {
+        Write-Status "Downloading extensions in parallel..." -Type Detail
+
+        $downloadScript = {
+            param($ExtensionId, $Version, $TempDir)
+            try {
+                [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+                $downloadUrl = "https://clients2.google.com/service/update2/crx?response=redirect&os=win&arch=x86-64&os_arch=x86-64&prod=chromecrx&prodchannel=unknown&prodversion=120.0.0.0&acceptformat=crx3&x=id%3D$ExtensionId%26uc"
+                $outFile = Join-Path $TempDir "$ExtensionId`_$Version.crx"
+                $wc = New-Object System.Net.WebClient
+                $wc.Headers.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                $wc.Headers.Add("Referer", "https://chrome.google.com/webstore/detail/$ExtensionId")
+                $wc.DownloadFile($downloadUrl, $outFile)
+                if ((Get-Item $outFile -ErrorAction SilentlyContinue).Length -gt 0) {
+                    return @{ Id = $ExtensionId; CrxPath = $outFile; Success = $true }
+                }
+                return @{ Id = $ExtensionId; CrxPath = $null; Success = $false; Error = "Empty file" }
+            }
+            catch {
+                return @{ Id = $ExtensionId; CrxPath = $null; Success = $false; Error = $_.Exception.Message }
+            }
+        }
+
+        $tempDir = Join-Path $env:TEMP "meteor_adblock_$(Get-Random)"
+        New-DirectoryIfNotExists -Path $tempDir
+
+        $downloadTasks = @()
+        foreach ($ext in $extensionsNeedingDownload) {
+            $downloadTasks += @{ Script = $downloadScript; Args = @($ext.Id, $ext.LatestVersion, $tempDir) }
+        }
+
+        $downloadResults = Invoke-Parallel -Tasks $downloadTasks -MaxThreads 2
+
+        # Process download results and extract/configure sequentially
+        foreach ($ext in $extensionsNeedingDownload) {
+            $downloadResult = $downloadResults | Where-Object { $_.Id -eq $ext.Id } | Select-Object -First 1
+
+            if ($downloadResult -and $downloadResult.Success -and $downloadResult.CrxPath) {
+                Write-Status "Downloaded $($ext.Name), extracting..." -Type Detail
+
+                # Extract CRX
+                if (Test-Path $ext.OutputDir) {
+                    Remove-Item $ext.OutputDir -Recurse -Force
+                }
+                Export-CrxToDirectory -CrxPath $downloadResult.CrxPath -OutputDir $ext.OutputDir -InjectKey
+
+                # Apply uBlock configuration if applicable
+                if ($ext.Type -eq "ublock") {
+                    $jsDir = Join-Path $ext.OutputDir "js"
+                    if ((Test-Path $jsDir) -and $ext.Config.defaults) {
+                        # Save settings and create auto-import.js (reuse logic from Get-UBlockOrigin)
+                        $settingsPath = Join-Path $ext.OutputDir "ublock-settings.json"
+                        Save-JsonFile -Path $settingsPath -Object $ext.Config.defaults -Depth 20
+                        Initialize-UBlockAutoImport -UBlockDir $ext.OutputDir -UBlockConfig $ext.Config
+                    }
+                }
+
+                Write-Status "$($ext.Name) $($ext.LatestVersion) installed" -Type Success
+            }
+            else {
+                $errMsg = if ($downloadResult) { $downloadResult.Error } else { "Unknown error" }
+                Write-Status "Failed to download $($ext.Name): $errMsg" -Type Warning
+            }
+        }
+
+        # Cleanup temp directory
+        if (Test-Path $tempDir) {
+            Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+    elseif ($extensionsNeedingDownload.Count -eq 1) {
+        # Single extension needs download - use original functions
+        $ext = $extensionsNeedingDownload[0]
+        if ($ext.Type -eq "ublock") {
+            $null = Get-UBlockOrigin -OutputDir $ext.OutputDir -UBlockConfig $ext.Config -ForceDownload:$Force
+        }
+        else {
+            $null = Get-AdGuardExtra -OutputDir $ext.OutputDir -AdGuardConfig $ext.Config -ForceDownload:$Force
+        }
     }
 
     return @{
