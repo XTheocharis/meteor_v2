@@ -316,6 +316,25 @@ function Get-FileHash256 {
     return $hash.Hash
 }
 
+function Get-StringHash256 {
+    <#
+    .SYNOPSIS
+        Compute SHA256 hash of a string.
+    .DESCRIPTION
+        Used for deterministic config hashing to detect configuration changes.
+    #>
+    param([string]$Content)
+
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($Content)
+        return [BitConverter]::ToString($sha.ComputeHash($bytes)).Replace("-", "")
+    }
+    finally {
+        $sha.Dispose()
+    }
+}
+
 function New-DirectoryIfNotExists {
     <#
     .SYNOPSIS
@@ -894,10 +913,18 @@ function Get-MeteorState {
             file_hashes        = @{}
             extension_versions = @{}
             last_update_check  = ""
+            pak_state          = $null
         }
     }
 
-    return ConvertTo-Hashtable (Get-JsonFile -Path $StatePath)
+    $state = ConvertTo-Hashtable (Get-JsonFile -Path $StatePath)
+
+    # State migration: add pak_state if missing (for existing state files)
+    if (-not $state.ContainsKey('pak_state')) {
+        $state['pak_state'] = $null
+    }
+
+    return $state
 }
 
 function Save-MeteorState {
@@ -1659,6 +1686,13 @@ function Test-PakModifications {
         }
     }
 
+    # Track unfound patterns for early exit (using List for PS 5.1 compatibility)
+    $unfoundIndices = New-Object 'System.Collections.Generic.List[int]'
+    for ($j = 0; $j -lt $verificationPatterns.Count; $j++) {
+        [void]$unfoundIndices.Add($j)
+    }
+    $totalPatterns = $unfoundIndices.Count
+
     # Scan all text resources
     $scannedCount = 0
     for ($i = 0; $i -lt $pak.Resources.Count - 1; $i++) {
@@ -1688,12 +1722,23 @@ function Test-PakModifications {
         $content = [System.Text.Encoding]::UTF8.GetString($contentBytes)
 
         # Check each verification pattern (look for replacement values)
-        foreach ($pattern in $verificationPatterns) {
+        # Iterate in reverse to safely remove from list during iteration
+        for ($k = $unfoundIndices.Count - 1; $k -ge 0; $k--) {
+            $patternIdx = $unfoundIndices[$k]
+            $pattern = $verificationPatterns[$patternIdx]
             # Use literal string matching for the replacement value
             if ($content.Contains($pattern.Replacement)) {
                 $pattern.Found = $true
                 [void]$pattern.ResourceIds.Add($resourceId)
+                # Remove from unfound list
+                [void]$unfoundIndices.RemoveAt($k)
             }
+        }
+
+        # Early exit: stop scanning if all patterns have been found
+        if ($unfoundIndices.Count -eq 0 -and $totalPatterns -gt 0) {
+            Write-Status "[PAK] All $totalPatterns patterns verified - stopping scan early at resource $($i+1) of $($pak.Resources.Count - 1)" -Type Detail
+            break
         }
     }
 
@@ -3420,6 +3465,7 @@ function Initialize-PatchedExtensions {
     .DESCRIPTION
         If fetch_from_server is enabled, downloads latest CRX files from Perplexity's
         update server. Falls back to local CRX files if server is unavailable.
+        Uses parallel update checks and downloads for better performance.
     #>
     param(
         [string]$CometDir,
@@ -3445,15 +3491,15 @@ function Initialize-PatchedExtensions {
     if ($fetchFromServer -and $updateUrl -and $bundledExtensions) {
         Write-Status "Fetching extensions from update server..." -Type Info
 
+        # ═══════════════════════════════════════════════════════════════
+        # Phase 1: Collect extension info (sequential - reads manifests)
+        # ═══════════════════════════════════════════════════════════════
+        $extensionInfoList = @()
         foreach ($extName in $bundledExtensions.PSObject.Properties.Name) {
             $extInfo = $bundledExtensions.$extName
             $extOutputDir = Join-Path $OutputDir $extName
 
-            Write-Status "Processing: $extName" -Type Info
-
-            # Determine current version:
-            # 1. If patched extension exists, use its manifest version
-            # 2. Otherwise use fallback_version from config (for first run)
+            # Determine current version
             $currentVersion = "0.0.0"
             $existingManifest = Join-Path $extOutputDir "manifest.json"
             if (Test-Path $existingManifest) {
@@ -3461,40 +3507,208 @@ function Initialize-PatchedExtensions {
                     $manifest = Get-JsonFile -Path $existingManifest
                     if ($manifest.version) {
                         $currentVersion = $manifest.version
-                        Write-Verbose "  Existing version: $currentVersion"
+                        Write-Verbose "  $extName existing version: $currentVersion"
                     }
                 } catch {
-                    # Ignore errors reading manifest - will use fallback version
                     $null = $_
                 }
             }
             elseif ($extInfo.fallback_version) {
                 $currentVersion = $extInfo.fallback_version
-                Write-Verbose "  Using fallback version: $currentVersion"
+                Write-Verbose "  $extName using fallback version: $currentVersion"
             }
 
-            if ($WhatIfPreference) {
-                Write-Status "Would fetch from: $updateUrl (current: $currentVersion)" -Type Detail
-                $extensionsToProcess[$extName] = @{ OutputDir = $extOutputDir; FromServer = $true; NeedsFallback = $false }
-                continue
+            $extensionInfoList += @{
+                Name           = $extName
+                Id             = $extInfo.id
+                ExtensionName  = $extInfo.name
+                OutputDir      = $extOutputDir
+                CurrentVersion = $currentVersion
             }
+        }
 
-            # Try to fetch from server
+        if ($WhatIfPreference) {
+            foreach ($ext in $extensionInfoList) {
+                Write-Status "Would fetch $($ext.Name) from: $updateUrl (current: $($ext.CurrentVersion))" -Type Detail
+                $extensionsToProcess[$ext.Name] = @{ OutputDir = $ext.OutputDir; FromServer = $true; NeedsFallback = $false }
+            }
+        }
+        elseif ($extensionInfoList.Count -eq 1) {
+            # Single extension - no parallelization overhead
+            $ext = $extensionInfoList[0]
+            Write-Status "Processing: $($ext.Name)" -Type Info
             $result = Get-BundledExtensionFromServer `
-                -ExtensionId $extInfo.id `
-                -ExtensionName $extInfo.name `
+                -ExtensionId $ext.Id `
+                -ExtensionName $ext.ExtensionName `
                 -UpdateUrl $updateUrl `
-                -OutputDir $extOutputDir `
-                -CurrentVersion $currentVersion `
+                -OutputDir $ext.OutputDir `
+                -CurrentVersion $ext.CurrentVersion `
                 -BrowserVersion $BrowserVersion `
                 -InjectKey
 
             if ($result) {
-                $extensionsToProcess[$extName] = @{ OutputDir = $extOutputDir; FromServer = $true; NeedsFallback = $false; Version = $result.Version }
+                $extensionsToProcess[$ext.Name] = @{ OutputDir = $ext.OutputDir; FromServer = $true; NeedsFallback = $false; Version = $result.Version }
             }
             else {
                 Write-Status "  Server fetch failed, will try local fallback" -Type Warning
-                $extensionsToProcess[$extName] = @{ OutputDir = $extOutputDir; FromServer = $false; NeedsFallback = $true }
+                $extensionsToProcess[$ext.Name] = @{ OutputDir = $ext.OutputDir; FromServer = $false; NeedsFallback = $true }
+            }
+        }
+        else {
+            # ═══════════════════════════════════════════════════════════════
+            # Phase 2: Parallel update checks
+            # ═══════════════════════════════════════════════════════════════
+            Write-Status "Checking for updates (parallel)..." -Type Detail
+
+            # Inline update check scriptblock (can't call main script functions in runspaces)
+            $updateCheckScript = {
+                param($ExtensionId, $ExtensionName, $UpdateUrl, $CurrentVersion, $BrowserVersion)
+
+                try {
+                    # Build update check URL (inline from Get-ExtensionUpdateInfo)
+                    $xParam = "id%3D$ExtensionId%26v%3D$CurrentVersion%26uc"
+                    $separator = if ($UpdateUrl.Contains("?")) { "&" } else { "?" }
+                    $randomBytes = New-Object byte[] 32
+                    [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($randomBytes)
+                    $machineId = [System.BitConverter]::ToString($randomBytes).Replace("-", "").ToLower()
+
+                    $checkUrl = "$UpdateUrl$separator" + `
+                        "response=updatecheck&os=win&arch=x64&os_arch=x86_64&" + `
+                        "prod=chromiumcrx&prodchannel=&prodversion=$BrowserVersion&" + `
+                        "lang=en-US&acceptformat=crx3,puff&machine=$machineId&x=$xParam"
+
+                    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+                    $wc = New-Object System.Net.WebClient
+                    $wc.Headers.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/$BrowserVersion")
+                    $content = $wc.DownloadString($checkUrl)
+                    $wc.Dispose()
+
+                    [xml]$xml = $content
+                    $ns = @{ g = "http://www.google.com/update2/response" }
+                    $app = Select-Xml -Xml $xml -XPath "//g:app[@appid='$ExtensionId']" -Namespace $ns
+
+                    if ($app -and $app.Node) {
+                        $node = $app.Node.updatecheck
+                        if ($node -and $node.version -and $node.codebase) {
+                            return @{
+                                Success      = $true
+                                Name         = $ExtensionName
+                                Version      = $node.version
+                                Codebase     = $node.codebase
+                                NeedsUpdate  = $true
+                            }
+                        }
+                    }
+                    return @{ Success = $true; Name = $ExtensionName; NeedsUpdate = $false }
+                }
+                catch {
+                    return @{ Success = $false; Name = $ExtensionName; Error = $_.ToString() }
+                }
+            }
+
+            # Build update check tasks
+            $updateTasks = @()
+            foreach ($ext in $extensionInfoList) {
+                $updateTasks += @{
+                    Script = $updateCheckScript
+                    Args   = @($ext.Id, $ext.Name, $updateUrl, $ext.CurrentVersion, $BrowserVersion)
+                }
+            }
+
+            $updateResults = Invoke-Parallel -Tasks $updateTasks -MaxThreads 4
+
+            # ═══════════════════════════════════════════════════════════════
+            # Phase 3: Parallel downloads for extensions needing updates
+            # ═══════════════════════════════════════════════════════════════
+            $downloadTasks = @()
+            $downloadInfoMap = @{}  # Map extension name to output dir
+
+            for ($idx = 0; $idx -lt $extensionInfoList.Count; $idx++) {
+                $ext = $extensionInfoList[$idx]
+                $result = $updateResults[$idx]
+
+                if ($result.Success -and $result.NeedsUpdate) {
+                    Write-Status "  $($ext.Name): v$($result.Version) available" -Type Detail
+                    $tempCrx = Join-Path $env:TEMP "meteor_ext_$($ext.Name)_$(Get-Random).crx"
+                    $downloadInfoMap[$ext.Name] = @{
+                        TempCrx   = $tempCrx
+                        OutputDir = $ext.OutputDir
+                        Version   = $result.Version
+                        Codebase  = $result.Codebase
+                    }
+
+                    # Inline download scriptblock
+                    $downloadScript = {
+                        param($Codebase, $TempCrx, $ExtName)
+                        try {
+                            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+                            $wc = New-Object System.Net.WebClient
+                            $wc.Headers.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0")
+                            $wc.DownloadFile($Codebase, $TempCrx)
+                            $wc.Dispose()
+                            return @{ Success = $true; Name = $ExtName; TempCrx = $TempCrx }
+                        }
+                        catch {
+                            return @{ Success = $false; Name = $ExtName; Error = $_.ToString() }
+                        }
+                    }
+
+                    $downloadTasks += @{
+                        Script = $downloadScript
+                        Args   = @($result.Codebase, $tempCrx, $ext.Name)
+                    }
+                }
+                elseif (-not $result.Success) {
+                    Write-Status "  $($ext.Name): update check failed - $($result.Error)" -Type Warning
+                    $extensionsToProcess[$ext.Name] = @{ OutputDir = $ext.OutputDir; FromServer = $false; NeedsFallback = $true }
+                }
+                else {
+                    Write-Status "  $($ext.Name): up to date" -Type Detail
+                    $extensionsToProcess[$ext.Name] = @{ OutputDir = $ext.OutputDir; FromServer = $false; NeedsFallback = $true }
+                }
+            }
+
+            # Run parallel downloads if any
+            if ($downloadTasks.Count -gt 0) {
+                Write-Status "Downloading $($downloadTasks.Count) extension(s) (parallel)..." -Type Detail
+                $downloadResults = Invoke-Parallel -Tasks $downloadTasks -MaxThreads 4
+
+                # ═══════════════════════════════════════════════════════════════
+                # Phase 4: Sequential extraction (file I/O must be serial)
+                # ═══════════════════════════════════════════════════════════════
+                foreach ($dlResult in $downloadResults) {
+                    $extName = $dlResult.Name
+                    $dlInfo = $downloadInfoMap[$extName]
+
+                    if ($dlResult.Success -and (Test-Path $dlResult.TempCrx)) {
+                        Write-Status "  Extracting: $extName" -Type Detail
+                        try {
+                            if (Test-Path $dlInfo.OutputDir) {
+                                Remove-Item -Path $dlInfo.OutputDir -Recurse -Force
+                            }
+                            $exportResult = Export-CrxToDirectory -CrxPath $dlResult.TempCrx -OutputDir $dlInfo.OutputDir -InjectKey
+                            if ($exportResult) {
+                                $extensionsToProcess[$extName] = @{
+                                    OutputDir     = $dlInfo.OutputDir
+                                    FromServer    = $true
+                                    NeedsFallback = $false
+                                    Version       = $dlInfo.Version
+                                }
+                            }
+                            else {
+                                Write-Status "  $extName`: extraction failed" -Type Warning
+                                $extensionsToProcess[$extName] = @{ OutputDir = $dlInfo.OutputDir; FromServer = $false; NeedsFallback = $true }
+                            }
+                        }
+                        finally {
+                            Remove-Item -Path $dlResult.TempCrx -Force -ErrorAction SilentlyContinue
+                        }
+                    }
+                    else {
+                        Write-Status "  $extName`: download failed - $($dlResult.Error)" -Type Warning
+                        $extensionsToProcess[$extName] = @{ OutputDir = $dlInfo.OutputDir; FromServer = $false; NeedsFallback = $true }
+                    }
+                }
             }
         }
     }
@@ -3651,23 +3865,27 @@ function Initialize-PakModifications {
         Apply content-based modifications to resources.pak.
         Searches all text resources for matching patterns and applies replacements.
         Also exports all resources to PatchedResourcesPath for manual editing.
+    .OUTPUTS
+        Hashtable with Success, Skipped, ModifiedResourceIds, HashAfterModification
     #>
     param(
         [string]$CometDir,
         [object]$PakConfig,
-        [string]$PatchedResourcesPath
+        [string]$PatchedResourcesPath,
+        [switch]$Force,
+        [hashtable]$State = @{}
     )
 
     if (-not $PakConfig.enabled) {
         Write-Status "PAK modifications disabled in config" -Type Detail
-        return $true
+        return @{ Success = $true; Skipped = $true }
     }
 
     # Early exit if no modifications configured - skip entire PAK processing
     # Use @() wrapper for PS 5.1 null-safety (ConvertFrom-Json returns $null for [])
     if (-not $PakConfig.modifications -or @($PakConfig.modifications).Count -eq 0) {
         Write-Status "No PAK modifications configured - skipping PAK processing" -Type Detail
-        return $true
+        return @{ Success = $true; Skipped = $true }
     }
 
     # 1. Locate resources.pak
@@ -3684,7 +3902,7 @@ function Initialize-PakModifications {
 
     if (-not (Test-Path $pakPath)) {
         Write-Status "resources.pak not found - skipping PAK modifications" -Type Warning
-        return $true
+        return @{ Success = $true; Skipped = $true }
     }
 
     Write-Status "Found resources.pak: $pakPath" -Type Detail
@@ -3696,6 +3914,25 @@ function Initialize-PakModifications {
         Copy-Item -Path $backupPath -Destination $pakPath -Force
     }
 
+    # 1.6. State-based skip (only when NOT forcing)
+    # If we have pak_state with matching hash and config, skip processing
+    if (-not $Force -and $State.pak_state) {
+        $currentHash = Get-FileHash256 -Path $pakPath
+        $sortedConfig = ConvertTo-SortedObject -InputObject $PakConfig
+        $configHash = Get-StringHash256 -Content ($sortedConfig | ConvertTo-Json -Compress -Depth 10)
+
+        if ($State.pak_state.hash_after_modification -eq $currentHash -and
+            $State.pak_state.modification_config_hash -eq $configHash) {
+            Write-Status "PAK already patched (verified via state hash) - skipping" -Type Detail
+            return @{
+                Success               = $true
+                Skipped               = $true
+                ModifiedResourceIds   = $State.pak_state.modified_resources
+                HashAfterModification = $currentHash
+            }
+        }
+    }
+
     # 2. Read and parse PAK
     try {
         $pak = Read-PakFile -Path $pakPath
@@ -3703,7 +3940,7 @@ function Initialize-PakModifications {
     }
     catch {
         Write-Status "Failed to parse PAK: $_" -Type Error
-        return $false
+        return @{ Success = $false; Error = "Failed to parse PAK: $_" }
     }
 
     # 2.5. Export resources to patched_resources directory (for manual editing)
@@ -3725,6 +3962,14 @@ function Initialize-PakModifications {
     $gzipCount = 0
     $textCount = 0
     $scannedCount = 0
+
+    # Track unmatched patterns for early exit optimization
+    # Once a pattern is matched, we remove its index - when set is empty, all patterns found
+    $unmatchedPatterns = New-Object 'System.Collections.Generic.HashSet[int]'
+    for ($j = 0; $j -lt @($PakConfig.modifications).Count; $j++) {
+        [void]$unmatchedPatterns.Add($j)
+    }
+    $totalPatterns = $unmatchedPatterns.Count
 
     # Iterate through all resources (skip sentinel at end)
     for ($i = 0; $i -lt $pak.Resources.Count - 1; $i++) {
@@ -3777,6 +4022,7 @@ function Initialize-PakModifications {
         }
 
         # Try each modification pattern
+        $modIndex = 0
         foreach ($mod in $PakConfig.modifications) {
             if ($content -match $mod.pattern) {
                 # Show context around the match for debugging
@@ -3788,7 +4034,10 @@ function Initialize-PakModifications {
                 Write-Status "  Resource $resourceId - $($mod.description)" -Type Detail
                 $resourceModified = $true
                 $appliedCount++
+                # Mark this pattern as matched for early exit
+                [void]$unmatchedPatterns.Remove($modIndex)
             }
+            $modIndex++
         }
 
         # Track modified resources (with compression flag)
@@ -3797,6 +4046,12 @@ function Initialize-PakModifications {
                 Content = $content
                 WasGzipped = $isGzipped
             }
+        }
+
+        # Early exit: stop scanning if all patterns have been matched
+        if ($unmatchedPatterns.Count -eq 0 -and $totalPatterns -gt 0) {
+            Write-Status "[PAK] All $totalPatterns patterns matched - stopping scan early at resource $($i+1) of $($pak.Resources.Count - 1)" -Type Detail
+            break
         }
     }
 
@@ -3856,6 +4111,9 @@ function Initialize-PakModifications {
     }
 
     # 5. Write modified PAK in single pass (with backup)
+    $finalHash = $null
+    $modifiedResourceIds = @([int[]]$modifiedResources.Keys)
+
     if ($byteModifications.Count -gt 0 -and -not $WhatIfPreference) {
         $backupPath = "$pakPath.meteor-backup"
 
@@ -3868,18 +4126,22 @@ function Initialize-PakModifications {
         }
 
         try {
-            # Calculate hash before write for verification
-            $beforeHash = Get-FileHash256 -Path $pakPath
-            Write-VerboseTimestamped "[PAK] Hash before write: $beforeHash"
+            # Skip beforeHash when -Force is used (we just restored from backup, so we know it's changing)
+            $beforeHash = $null
+            if (-not $Force) {
+                $beforeHash = Get-FileHash256 -Path $pakPath
+                Write-VerboseTimestamped "[PAK] Hash before write: $beforeHash"
+            }
 
             # Use optimized batch writer (single pass, no O(n²) memory)
             Write-PakFileWithModifications -Pak $pak -Path $pakPath -Modifications $byteModifications
 
-            # Verify write succeeded by comparing hashes
+            # Always calculate afterHash - needed for state
             $afterHash = Get-FileHash256 -Path $pakPath
+            $finalHash = $afterHash
             Write-VerboseTimestamped "[PAK] Hash after write: $afterHash"
 
-            if ($beforeHash -eq $afterHash) {
+            if ($beforeHash -and $beforeHash -eq $afterHash) {
                 Write-Status "PAK file unchanged after write - modifications may not have been applied!" -Type Warning
             }
             else {
@@ -3919,14 +4181,24 @@ function Initialize-PakModifications {
                 Copy-Item -Path $backupPath -Destination $pakPath -Force
                 Write-Status "Restored from backup" -Type Warning
             }
-            return $false
+            return @{ Success = $false; Error = "Failed to write PAK: $_" }
         }
     }
     elseif ($appliedCount -eq 0) {
         Write-Status "PAK modifications: No matching patterns found" -Type Warning
     }
 
-    return $true
+    # Calculate config hash for state storage
+    $sortedConfig = ConvertTo-SortedObject -InputObject $PakConfig
+    $configHash = Get-StringHash256 -Content ($sortedConfig | ConvertTo-Json -Compress -Depth 10)
+
+    return @{
+        Success                 = $true
+        Skipped                 = $false
+        ModifiedResourceIds     = $modifiedResourceIds
+        HashAfterModification   = $finalHash
+        ModificationConfigHash  = $configHash
+    }
 }
 
 #endregion
@@ -6566,7 +6838,24 @@ function Initialize-Extensions {
         Write-Status "Skipping PAK modifications (-SkipPak specified)" -Type Detail
     }
     elseif ($Config.pak_modifications.enabled) {
-        $null = Initialize-PakModifications -CometDir $Comet.Directory -PakConfig $Config.pak_modifications -PatchedResourcesPath $PatchedResourcesPath
+        $pakResult = Initialize-PakModifications `
+            -CometDir $Comet.Directory `
+            -PakConfig $Config.pak_modifications `
+            -PatchedResourcesPath $PatchedResourcesPath `
+            -Force:$NeedsSetup `
+            -State $State
+
+        if (-not $pakResult.Success) {
+            Write-Status "PAK modifications failed: $($pakResult.Error)" -Type Error
+        }
+        elseif (-not $pakResult.Skipped -and $pakResult.HashAfterModification) {
+            # Save pak_state for subsequent runs
+            $State.pak_state = @{
+                hash_after_modification   = $pakResult.HashAfterModification
+                modified_resources        = $pakResult.ModifiedResourceIds
+                modification_config_hash  = $pakResult.ModificationConfigHash
+            }
+        }
     }
 }
 
