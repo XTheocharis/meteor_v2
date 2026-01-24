@@ -519,6 +519,18 @@ function ConvertFrom-UInt16ToBytes {
     return [BitConverter]::GetBytes($Value)
 }
 
+function Write-BytesToStream {
+    <#
+    .SYNOPSIS
+        Write byte array to a stream.
+    #>
+    param(
+        [System.IO.Stream]$Stream,
+        [byte[]]$Bytes
+    )
+    $Stream.Write($Bytes, 0, $Bytes.Length)
+}
+
 function Expand-GzipData {
     <#
     .SYNOPSIS
@@ -529,19 +541,27 @@ function Expand-GzipData {
     #>
     param([byte[]]$CompressedBytes)
 
+    $inputStream = $null
+    $gzipStream = $null
+    $outputStream = $null
+
     try {
         $inputStream = New-Object System.IO.MemoryStream($CompressedBytes, $false)
-        $gzipStream = New-Object System.IO.Compression.GZipStream($inputStream, [System.IO.Compression.CompressionMode]::Decompress)
+        $gzipStream = New-Object System.IO.Compression.GZipStream(
+            $inputStream,
+            [System.IO.Compression.CompressionMode]::Decompress
+        )
         $outputStream = New-Object System.IO.MemoryStream
         $gzipStream.CopyTo($outputStream)
-        $gzipStream.Close()
-        $inputStream.Close()
-        $result = $outputStream.ToArray()
-        $outputStream.Close()
-        return $result
+        return $outputStream.ToArray()
     }
     catch {
         return $null
+    }
+    finally {
+        # GZipStream owns inputStream (leaveOpen=false by default)
+        if ($null -ne $gzipStream) { $gzipStream.Dispose() }
+        if ($null -ne $outputStream) { $outputStream.Dispose() }
     }
 }
 
@@ -551,16 +571,28 @@ function Compress-GzipData {
         Compress byte array using gzip.
     .DESCRIPTION
         Takes a byte array and returns gzip-compressed data.
+        Throws on compression failure (unlike Expand-GzipData which returns $null).
     #>
     param([byte[]]$UncompressedBytes)
 
-    $outputStream = New-Object System.IO.MemoryStream
-    $gzipStream = New-Object System.IO.Compression.GZipStream($outputStream, [System.IO.Compression.CompressionMode]::Compress)
-    $gzipStream.Write($UncompressedBytes, 0, $UncompressedBytes.Length)
-    $gzipStream.Close()
-    $result = $outputStream.ToArray()
-    $outputStream.Close()
-    return $result
+    $outputStream = $null
+    $gzipStream = $null
+
+    try {
+        $outputStream = New-Object System.IO.MemoryStream
+        $gzipStream = New-Object System.IO.Compression.GZipStream(
+            $outputStream,
+            [System.IO.Compression.CompressionMode]::Compress
+        )
+        $gzipStream.Write($UncompressedBytes, 0, $UncompressedBytes.Length)
+        $gzipStream.Close()  # Must close before ToArray to flush
+        return $outputStream.ToArray()
+    }
+    finally {
+        if ($null -ne $gzipStream) { $gzipStream.Dispose() }
+        if ($null -ne $outputStream) { $outputStream.Dispose() }
+    }
+    # No catch block - let exceptions propagate to prevent silent corruption
 }
 
 function Test-BinaryContent {
@@ -1244,83 +1276,108 @@ function Write-PakFile {
     <#
     .SYNOPSIS
         Write a PAK structure back to a file.
+    .DESCRIPTION
+        Optimized writer using FileStream for direct writes without intermediate
+        ArrayList allocation. Supports both RawBytes (from Read-PakFile) and
+        Data property (from Import-PakResources) source modes.
+        This function does NOT mutate $Pak.Resources[].Offset.
     #>
     param(
         [hashtable]$Pak,
         [string]$Path
     )
 
-    # Rebuild the header and resource table
-    $output = [System.Collections.ArrayList]@()
+    # Input validation
+    if ($null -eq $Pak -or $null -eq $Pak.Resources -or $Pak.Resources.Count -eq 0) {
+        throw "Invalid PAK structure: missing or empty Resources"
+    }
 
-    # Version (4 bytes)
-    [void]$output.AddRange((ConvertFrom-UInt32ToBytes -Value $Pak.Version))
-
-    # Encoding (1 byte)
-    [void]$output.Add($Pak.Encoding)
+    # Determine source mode: Data property (from Import) vs RawBytes (from Read)
+    $useDataProperty = ($Pak.Resources.Count -gt 0 -and
+                        $null -ne $Pak.Resources[0].Data -and
+                        $null -eq $Pak.RawBytes)
 
     $numResources = $Pak.Resources.Count - 1  # Exclude sentinel
 
+    # Calculate header size
     if ($Pak.Version -eq 4) {
-        # num_resources (4 bytes)
-        [void]$output.AddRange((ConvertFrom-UInt32ToBytes -Value $numResources))
+        $headerSize = 4 + 1 + 4  # version + encoding + num_resources
     }
     else {
-        # Version 5: padding(3) + num_resources(2) + num_aliases(2)
-        [void]$output.Add([byte]0)
-        [void]$output.Add([byte]0)
-        [void]$output.Add([byte]0)
-        [void]$output.AddRange((ConvertFrom-UInt16ToBytes -Value ([uint16]$numResources)))
-        [void]$output.AddRange((ConvertFrom-UInt16ToBytes -Value ([uint16]$Pak.Aliases.Count)))
+        $headerSize = 4 + 1 + 3 + 2 + 2  # version + encoding + padding + num_resources + num_aliases
     }
 
-    # Calculate header size
-    $headerSize = $output.Count
-    $resourceTableSize = $Pak.Resources.Count * 6  # 6 bytes per entry including sentinel
+    $resourceTableSize = $Pak.Resources.Count * 6
     $aliasTableSize = $Pak.Aliases.Count * 4
-
     $dataStartOffset = $headerSize + $resourceTableSize + $aliasTableSize
 
-    # Recalculate resource offsets
+    # Calculate new offsets
     $currentDataOffset = $dataStartOffset
-    $resourceData = [System.Collections.ArrayList]@()
+    $resourceInfo = New-Object System.Collections.ArrayList($Pak.Resources.Count)
 
     for ($i = 0; $i -lt $Pak.Resources.Count - 1; $i++) {
-        $startOffset = $Pak.Resources[$i].Offset
-        $endOffset = $Pak.Resources[$i + 1].Offset
-        $length = $endOffset - $startOffset
-
-        $data = New-Object byte[] $length
-        [Array]::Copy($Pak.RawBytes, $startOffset, $data, 0, $length)
-
-        $Pak.Resources[$i].Offset = $currentDataOffset
-        [void]$resourceData.Add($data)
-
+        if ($useDataProperty) {
+            $length = $Pak.Resources[$i].Data.Length
+            $info = @{ NewOffset = $currentDataOffset; Data = $Pak.Resources[$i].Data }
+        }
+        else {
+            $startOffset = $Pak.Resources[$i].Offset
+            $endOffset = $Pak.Resources[$i + 1].Offset
+            $length = $endOffset - $startOffset
+            $info = @{ NewOffset = $currentDataOffset; SrcOffset = $startOffset; Length = $length }
+        }
+        [void]$resourceInfo.Add($info)
         $currentDataOffset += $length
     }
 
-    # Update sentinel offset
-    $Pak.Resources[$Pak.Resources.Count - 1].Offset = $currentDataOffset
+    $sentinelOffset = $currentDataOffset
 
-    # Write resource entries
-    foreach ($res in $Pak.Resources) {
-        [void]$output.AddRange((ConvertFrom-UInt16ToBytes -Value ([uint16]$res.Id)))
-        [void]$output.AddRange((ConvertFrom-UInt32ToBytes -Value ([uint32]$res.Offset)))
+    # Write directly to file
+    $fileStream = [System.IO.File]::Create($Path)
+    try {
+        # Header
+        Write-BytesToStream -Stream $fileStream -Bytes (ConvertFrom-UInt32ToBytes -Value $Pak.Version)
+        $fileStream.WriteByte($Pak.Encoding)
+
+        if ($Pak.Version -eq 4) {
+            Write-BytesToStream -Stream $fileStream -Bytes (ConvertFrom-UInt32ToBytes -Value $numResources)
+        }
+        else {
+            $fileStream.WriteByte(0); $fileStream.WriteByte(0); $fileStream.WriteByte(0)
+            Write-BytesToStream -Stream $fileStream -Bytes (ConvertFrom-UInt16ToBytes -Value ([uint16]$numResources))
+            Write-BytesToStream -Stream $fileStream -Bytes (ConvertFrom-UInt16ToBytes -Value ([uint16]$Pak.Aliases.Count))
+        }
+
+        # Resource table
+        for ($i = 0; $i -lt $Pak.Resources.Count - 1; $i++) {
+            Write-BytesToStream -Stream $fileStream -Bytes (ConvertFrom-UInt16ToBytes -Value ([uint16]$Pak.Resources[$i].Id))
+            Write-BytesToStream -Stream $fileStream -Bytes (ConvertFrom-UInt32ToBytes -Value ([uint32]$resourceInfo[$i].NewOffset))
+        }
+
+        # Sentinel
+        Write-BytesToStream -Stream $fileStream -Bytes (ConvertFrom-UInt16ToBytes -Value ([uint16]$Pak.Resources[$Pak.Resources.Count - 1].Id))
+        Write-BytesToStream -Stream $fileStream -Bytes (ConvertFrom-UInt32ToBytes -Value ([uint32]$sentinelOffset))
+
+        # Aliases
+        foreach ($alias in $Pak.Aliases) {
+            Write-BytesToStream -Stream $fileStream -Bytes (ConvertFrom-UInt16ToBytes -Value ([uint16]$alias.Id))
+            Write-BytesToStream -Stream $fileStream -Bytes (ConvertFrom-UInt16ToBytes -Value ([uint16]$alias.ResourceIndex))
+        }
+
+        # Resource data - direct writes
+        for ($i = 0; $i -lt $Pak.Resources.Count - 1; $i++) {
+            if ($useDataProperty) {
+                Write-BytesToStream -Stream $fileStream -Bytes $resourceInfo[$i].Data
+            }
+            else {
+                $fileStream.Write($Pak.RawBytes, $resourceInfo[$i].SrcOffset, $resourceInfo[$i].Length)
+            }
+        }
     }
-
-    # Write alias entries
-    foreach ($alias in $Pak.Aliases) {
-        [void]$output.AddRange((ConvertFrom-UInt16ToBytes -Value ([uint16]$alias.Id)))
-        [void]$output.AddRange((ConvertFrom-UInt16ToBytes -Value ([uint16]$alias.ResourceIndex)))
+    finally {
+        $fileStream.Close()
+        $fileStream.Dispose()
     }
-
-    # Write resource data
-    foreach ($data in $resourceData) {
-        [void]$output.AddRange($data)
-    }
-
-    # Write to file
-    [System.IO.File]::WriteAllBytes($Path, [byte[]]$output.ToArray())
 }
 
 function Write-PakFileWithModifications {
@@ -1328,10 +1385,8 @@ function Write-PakFileWithModifications {
     .SYNOPSIS
         Write a PAK file with multiple resource modifications in a single pass.
     .DESCRIPTION
-        Optimized batch writer that avoids the O(n²) memory behavior of repeatedly
-        calling Set-PakResource. Takes a hashtable of modifications and applies
-        them all during the write operation.
-
+        Optimized batch writer using FileStream. Takes a hashtable of modifications
+        and applies them all during the write operation.
         This function does NOT modify Pak.RawBytes, making it safe for repeated use.
     .PARAMETER Pak
         The PAK structure from Read-PakFile.
@@ -1351,41 +1406,28 @@ function Write-PakFileWithModifications {
         [hashtable]$Modifications
     )
 
-    # Build output using ArrayList for efficiency
-    $output = [System.Collections.ArrayList]@()
-
-    # Version (4 bytes)
-    [void]$output.AddRange((ConvertFrom-UInt32ToBytes -Value $Pak.Version))
-
-    # Encoding (1 byte)
-    [void]$output.Add($Pak.Encoding)
+    # Input validation
+    if ($null -eq $Pak -or $null -eq $Pak.Resources -or $Pak.Resources.Count -eq 0) {
+        throw "Invalid PAK structure: missing or empty Resources"
+    }
 
     $numResources = $Pak.Resources.Count - 1  # Exclude sentinel
 
+    # Calculate header size
     if ($Pak.Version -eq 4) {
-        # num_resources (4 bytes)
-        [void]$output.AddRange((ConvertFrom-UInt32ToBytes -Value $numResources))
+        $headerSize = 4 + 1 + 4
     }
     else {
-        # Version 5: padding(3) + num_resources(2) + num_aliases(2)
-        [void]$output.Add([byte]0)
-        [void]$output.Add([byte]0)
-        [void]$output.Add([byte]0)
-        [void]$output.AddRange((ConvertFrom-UInt16ToBytes -Value ([uint16]$numResources)))
-        [void]$output.AddRange((ConvertFrom-UInt16ToBytes -Value ([uint16]$Pak.Aliases.Count)))
+        $headerSize = 4 + 1 + 3 + 2 + 2
     }
 
-    # Calculate header size
-    $headerSize = $output.Count
-    $resourceTableSize = $Pak.Resources.Count * 6  # 6 bytes per entry including sentinel
+    $resourceTableSize = $Pak.Resources.Count * 6
     $aliasTableSize = $Pak.Aliases.Count * 4
-
     $dataStartOffset = $headerSize + $resourceTableSize + $aliasTableSize
 
-    # Build resource data list and calculate new offsets
+    # Build resource info and calculate new offsets
     $currentDataOffset = $dataStartOffset
-    $resourceData = [System.Collections.ArrayList]@()
-    $newOffsets = @{}
+    $resourceInfo = New-Object System.Collections.ArrayList($Pak.Resources.Count)
 
     for ($i = 0; $i -lt $Pak.Resources.Count - 1; $i++) {
         $resourceId = $Pak.Resources[$i].Id
@@ -1393,43 +1435,72 @@ function Write-PakFileWithModifications {
         $endOffset = $Pak.Resources[$i + 1].Offset
         $originalLength = $endOffset - $startOffset
 
-        # Check if this resource has a modification
         if ($Modifications.ContainsKey($resourceId)) {
-            $data = [byte[]]$Modifications[$resourceId]
+            $info = @{
+                NewOffset = $currentDataOffset
+                ModifiedData = $Modifications[$resourceId]
+            }
+            $currentDataOffset += $Modifications[$resourceId].Length
         }
         else {
-            # Use original data
-            $data = New-Object byte[] $originalLength
-            [Array]::Copy($Pak.RawBytes, $startOffset, $data, 0, $originalLength)
+            $info = @{
+                NewOffset = $currentDataOffset
+                SrcOffset = $startOffset
+                Length = $originalLength
+            }
+            $currentDataOffset += $originalLength
         }
-
-        $newOffsets[$i] = $currentDataOffset
-        [void]$resourceData.Add($data)
-        $currentDataOffset += $data.Length
+        [void]$resourceInfo.Add($info)
     }
 
-    # Sentinel offset
-    $newOffsets[$Pak.Resources.Count - 1] = $currentDataOffset
-
-    # Write resource entries with new offsets
-    for ($i = 0; $i -lt $Pak.Resources.Count; $i++) {
-        [void]$output.AddRange((ConvertFrom-UInt16ToBytes -Value ([uint16]$Pak.Resources[$i].Id)))
-        [void]$output.AddRange((ConvertFrom-UInt32ToBytes -Value ([uint32]$newOffsets[$i])))
-    }
-
-    # Write alias entries
-    foreach ($alias in $Pak.Aliases) {
-        [void]$output.AddRange((ConvertFrom-UInt16ToBytes -Value ([uint16]$alias.Id)))
-        [void]$output.AddRange((ConvertFrom-UInt16ToBytes -Value ([uint16]$alias.ResourceIndex)))
-    }
-
-    # Write resource data
-    foreach ($data in $resourceData) {
-        [void]$output.AddRange($data)
-    }
+    $sentinelOffset = $currentDataOffset
 
     # Write to file
-    [System.IO.File]::WriteAllBytes($Path, [byte[]]$output.ToArray())
+    $fileStream = [System.IO.File]::Create($Path)
+    try {
+        # Header
+        Write-BytesToStream -Stream $fileStream -Bytes (ConvertFrom-UInt32ToBytes -Value $Pak.Version)
+        $fileStream.WriteByte($Pak.Encoding)
+
+        if ($Pak.Version -eq 4) {
+            Write-BytesToStream -Stream $fileStream -Bytes (ConvertFrom-UInt32ToBytes -Value $numResources)
+        }
+        else {
+            $fileStream.WriteByte(0); $fileStream.WriteByte(0); $fileStream.WriteByte(0)
+            Write-BytesToStream -Stream $fileStream -Bytes (ConvertFrom-UInt16ToBytes -Value ([uint16]$numResources))
+            Write-BytesToStream -Stream $fileStream -Bytes (ConvertFrom-UInt16ToBytes -Value ([uint16]$Pak.Aliases.Count))
+        }
+
+        # Resource table with new offsets
+        for ($i = 0; $i -lt $Pak.Resources.Count - 1; $i++) {
+            Write-BytesToStream -Stream $fileStream -Bytes (ConvertFrom-UInt16ToBytes -Value ([uint16]$Pak.Resources[$i].Id))
+            Write-BytesToStream -Stream $fileStream -Bytes (ConvertFrom-UInt32ToBytes -Value ([uint32]$resourceInfo[$i].NewOffset))
+        }
+
+        # Sentinel
+        Write-BytesToStream -Stream $fileStream -Bytes (ConvertFrom-UInt16ToBytes -Value ([uint16]$Pak.Resources[$Pak.Resources.Count - 1].Id))
+        Write-BytesToStream -Stream $fileStream -Bytes (ConvertFrom-UInt32ToBytes -Value ([uint32]$sentinelOffset))
+
+        # Aliases
+        foreach ($alias in $Pak.Aliases) {
+            Write-BytesToStream -Stream $fileStream -Bytes (ConvertFrom-UInt16ToBytes -Value ([uint16]$alias.Id))
+            Write-BytesToStream -Stream $fileStream -Bytes (ConvertFrom-UInt16ToBytes -Value ([uint16]$alias.ResourceIndex))
+        }
+
+        # Resource data - direct writes
+        for ($i = 0; $i -lt $Pak.Resources.Count - 1; $i++) {
+            if ($null -ne $resourceInfo[$i].ModifiedData) {
+                Write-BytesToStream -Stream $fileStream -Bytes $resourceInfo[$i].ModifiedData
+            }
+            else {
+                $fileStream.Write($Pak.RawBytes, $resourceInfo[$i].SrcOffset, $resourceInfo[$i].Length)
+            }
+        }
+    }
+    finally {
+        $fileStream.Close()
+        $fileStream.Dispose()
+    }
 }
 
 function Export-PakResources {
@@ -4198,19 +4269,23 @@ function Initialize-PakModifications {
 
     # 1.6. State-based skip (only when NOT forcing)
     # If we have pak_state with matching hash and config, skip processing
-    if (-not $Force -and $State.pak_state) {
+    # Optimization: Check file hash first (fast), only calculate config hash if file hash matches
+    if (-not $Force -and $State.pak_state -and $State.pak_state.hash_after_modification) {
         $currentHash = Get-FileHash256 -Path $pakPath
-        $sortedConfig = ConvertTo-SortedObject -InputObject $PakConfig
-        $configHash = Get-StringHash256 -Content ($sortedConfig | ConvertTo-Json -Compress -Depth 10)
 
-        if ($State.pak_state.hash_after_modification -eq $currentHash -and
-            $State.pak_state.modification_config_hash -eq $configHash) {
-            Write-Status "PAK already patched (verified via state hash) - skipping" -Type Detail
-            return @{
-                Success               = $true
-                Skipped               = $true
-                ModifiedResourceIds   = $State.pak_state.modified_resources
-                HashAfterModification = $currentHash
+        if ($State.pak_state.hash_after_modification -eq $currentHash) {
+            # File matches - now check config hash (slower)
+            $sortedConfig = ConvertTo-SortedObject -InputObject $PakConfig
+            $configHash = Get-StringHash256 -Content ($sortedConfig | ConvertTo-Json -Compress -Depth 10)
+
+            if ($State.pak_state.modification_config_hash -eq $configHash) {
+                Write-Status "PAK already patched (verified via state hash) - skipping" -Type Detail
+                return @{
+                    Success               = $true
+                    Skipped               = $true
+                    ModifiedResourceIds   = $State.pak_state.modified_resources
+                    HashAfterModification = $currentHash
+                }
             }
         }
     }
@@ -8142,29 +8217,38 @@ setTimeout(checkAndImport, 3000);
                 function Write-UInt32 { param([uint32]$V) [BitConverter]::GetBytes($V) }
                 function Write-UInt16 { param([uint16]$V) [BitConverter]::GetBytes($V) }
 
-                # Helper: Expand gzip
+                # Helper: Expand gzip (returns $null on failure)
                 function Expand-Gzip {
                     param([byte[]]$Bytes)
+                    $inStream = $null; $gzStream = $null; $outStream = $null
                     try {
                         $inStream = New-Object System.IO.MemoryStream($Bytes, $false)
                         $gzStream = New-Object System.IO.Compression.GZipStream($inStream, [System.IO.Compression.CompressionMode]::Decompress)
                         $outStream = New-Object System.IO.MemoryStream
                         $gzStream.CopyTo($outStream)
-                        $gzStream.Close(); $inStream.Close()
-                        $r = $outStream.ToArray(); $outStream.Close()
-                        return $r
+                        return $outStream.ToArray()
                     } catch { return $null }
+                    finally {
+                        if ($gzStream) { $gzStream.Dispose() }
+                        if ($outStream) { $outStream.Dispose() }
+                    }
                 }
 
-                # Helper: Compress gzip
+                # Helper: Compress gzip (throws on failure)
                 function Compress-Gzip {
                     param([byte[]]$Bytes)
-                    $outStream = New-Object System.IO.MemoryStream
-                    $gzStream = New-Object System.IO.Compression.GZipStream($outStream, [System.IO.Compression.CompressionMode]::Compress)
-                    $gzStream.Write($Bytes, 0, $Bytes.Length)
-                    $gzStream.Close()
-                    $r = $outStream.ToArray(); $outStream.Close()
-                    return $r
+                    $outStream = $null; $gzStream = $null
+                    try {
+                        $outStream = New-Object System.IO.MemoryStream
+                        $gzStream = New-Object System.IO.Compression.GZipStream($outStream, [System.IO.Compression.CompressionMode]::Compress)
+                        $gzStream.Write($Bytes, 0, $Bytes.Length)
+                        $gzStream.Close()
+                        return $outStream.ToArray()
+                    }
+                    finally {
+                        if ($gzStream) { $gzStream.Dispose() }
+                        if ($outStream) { $outStream.Dispose() }
+                    }
                 }
 
                 # Helper: Test binary content
@@ -8286,53 +8370,87 @@ setTimeout(checkAndImport, 3000);
                     return $null
                 }
 
-                # Helper: Write PAK with modifications
+                # Helper: Write PAK with modifications using FileStream
                 function Write-PakMod {
                     param([hashtable]$Pak, [string]$Path, [hashtable]$Mods)
-                    $output = [System.Collections.ArrayList]@()
-                    [void]$output.AddRange((Write-UInt32 -V $Pak.Version))
-                    [void]$output.Add($Pak.Encoding)
+
                     $numResources = $Pak.Resources.Count - 1
+
+                    # Calculate header size
                     if ($Pak.Version -eq 4) {
-                        [void]$output.AddRange((Write-UInt32 -V $numResources))
+                        $headerSize = 4 + 1 + 4
                     } else {
-                        [void]$output.Add([byte]0); [void]$output.Add([byte]0); [void]$output.Add([byte]0)
-                        [void]$output.AddRange((Write-UInt16 -V ([uint16]$numResources)))
-                        [void]$output.AddRange((Write-UInt16 -V ([uint16]$Pak.Aliases.Count)))
+                        $headerSize = 4 + 1 + 3 + 2 + 2
                     }
-                    $headerSize = $output.Count
+
                     $resourceTableSize = $Pak.Resources.Count * 6
                     $aliasTableSize = $Pak.Aliases.Count * 4
                     $dataStartOffset = $headerSize + $resourceTableSize + $aliasTableSize
+
+                    # Calculate offsets and track modifications
                     $currentDataOffset = $dataStartOffset
-                    $resourceData = [System.Collections.ArrayList]@()
-                    $newOffsets = @{}
+                    $resourceInfo = @{}
+
                     for ($i = 0; $i -lt $Pak.Resources.Count - 1; $i++) {
                         $resourceId = $Pak.Resources[$i].Id
                         $startOffset = $Pak.Resources[$i].Offset
                         $endOffset = $Pak.Resources[$i + 1].Offset
                         $originalLength = $endOffset - $startOffset
+
                         if ($Mods.ContainsKey($resourceId)) {
-                            $data = [byte[]]$Mods[$resourceId]
+                            $resourceInfo[$i] = @{ NewOffset = $currentDataOffset; ModData = $Mods[$resourceId] }
+                            $currentDataOffset += $Mods[$resourceId].Length
                         } else {
-                            $data = New-Object byte[] $originalLength
-                            [Array]::Copy($Pak.RawBytes, $startOffset, $data, 0, $originalLength)
+                            $resourceInfo[$i] = @{ NewOffset = $currentDataOffset; SrcOff = $startOffset; Len = $originalLength }
+                            $currentDataOffset += $originalLength
                         }
-                        $newOffsets[$i] = $currentDataOffset
-                        [void]$resourceData.Add($data)
-                        $currentDataOffset += $data.Length
                     }
-                    $newOffsets[$Pak.Resources.Count - 1] = $currentDataOffset
-                    for ($i = 0; $i -lt $Pak.Resources.Count; $i++) {
-                        [void]$output.AddRange((Write-UInt16 -V ([uint16]$Pak.Resources[$i].Id)))
-                        [void]$output.AddRange((Write-UInt32 -V ([uint32]$newOffsets[$i])))
+                    $sentinelOffset = $currentDataOffset
+
+                    # Write directly to FileStream
+                    $fs = [System.IO.File]::Create($Path)
+                    try {
+                        # Header
+                        $fs.Write((Write-UInt32 -V $Pak.Version), 0, 4)
+                        $fs.WriteByte($Pak.Encoding)
+
+                        if ($Pak.Version -eq 4) {
+                            $fs.Write((Write-UInt32 -V $numResources), 0, 4)
+                        } else {
+                            $fs.WriteByte(0); $fs.WriteByte(0); $fs.WriteByte(0)
+                            $fs.Write((Write-UInt16 -V ([uint16]$numResources)), 0, 2)
+                            $fs.Write((Write-UInt16 -V ([uint16]$Pak.Aliases.Count)), 0, 2)
+                        }
+
+                        # Resource table
+                        for ($i = 0; $i -lt $Pak.Resources.Count - 1; $i++) {
+                            $fs.Write((Write-UInt16 -V ([uint16]$Pak.Resources[$i].Id)), 0, 2)
+                            $fs.Write((Write-UInt32 -V ([uint32]$resourceInfo[$i].NewOffset)), 0, 4)
+                        }
+                        # Sentinel
+                        $fs.Write((Write-UInt16 -V ([uint16]$Pak.Resources[$Pak.Resources.Count - 1].Id)), 0, 2)
+                        $fs.Write((Write-UInt32 -V ([uint32]$sentinelOffset)), 0, 4)
+
+                        # Aliases
+                        foreach ($alias in $Pak.Aliases) {
+                            $fs.Write((Write-UInt16 -V ([uint16]$alias.Id)), 0, 2)
+                            $fs.Write((Write-UInt16 -V ([uint16]$alias.ResourceIndex)), 0, 2)
+                        }
+
+                        # Resource data - direct writes without intermediate copy
+                        for ($i = 0; $i -lt $Pak.Resources.Count - 1; $i++) {
+                            if ($null -ne $resourceInfo[$i].ModData) {  # Explicit null check
+                                $d = [byte[]]$resourceInfo[$i].ModData
+                                $fs.Write($d, 0, $d.Length)
+                            } else {
+                                $fs.Write($Pak.RawBytes, $resourceInfo[$i].SrcOff, $resourceInfo[$i].Len)
+                            }
+                        }
                     }
-                    foreach ($alias in $Pak.Aliases) {
-                        [void]$output.AddRange((Write-UInt16 -V ([uint16]$alias.Id)))
-                        [void]$output.AddRange((Write-UInt16 -V ([uint16]$alias.ResourceIndex)))
+                    finally {
+                        $fs.Close()
+                        $fs.Dispose()
                     }
-                    foreach ($data in $resourceData) { [void]$output.AddRange($data) }
-                    [System.IO.File]::WriteAllBytes($Path, [byte[]]$output.ToArray())
                 }
 
                 # 1. Locate resources.pak
@@ -8355,20 +8473,32 @@ setTimeout(checkAndImport, 3000);
                     Copy-Item -Path $backupPath -Destination $pakPath -Force
                 }
 
-                # 3. State-based skip check
+                # 3. State-based skip check (optimized: file hash first, config hash only if needed)
                 $modifications = @($PakConfig.modifications)
-                $sortedConfig = Sort-Obj -Value $PakConfig
-                $configHash = Get-StrHash -Content ($sortedConfig | ConvertTo-Json -Compress -Depth 10)
-                if (-not $Force -and $PakState) {
+                $configHash = $null  # Calculate lazily
+
+                if (-not $Force -and $PakState -and $PakState.hash_after_modification) {
                     $currentHash = Get-Hash -Path $pakPath
-                    if ($PakState.hash_after_modification -eq $currentHash -and
-                        $PakState.modification_config_hash -eq $configHash) {
-                        $result.Success = $true
-                        $result.Skipped = $true
-                        $result.HashAfterModification = $currentHash
-                        $result.ModificationConfigHash = $configHash
-                        return $result
+
+                    if ($PakState.hash_after_modification -eq $currentHash) {
+                        # Only calculate config hash if file hash matches
+                        $sortedConfig = Sort-Obj -Value $PakConfig
+                        $configHash = Get-StrHash -Content ($sortedConfig | ConvertTo-Json -Compress -Depth 10)
+
+                        if ($PakState.modification_config_hash -eq $configHash) {
+                            $result.Success = $true
+                            $result.Skipped = $true
+                            $result.HashAfterModification = $currentHash
+                            $result.ModificationConfigHash = $configHash
+                            return $result
+                        }
                     }
+                }
+
+                # Calculate config hash if not already done (for non-skip path)
+                if ($null -eq $configHash) {
+                    $sortedConfig = Sort-Obj -Value $PakConfig
+                    $configHash = Get-StrHash -Content ($sortedConfig | ConvertTo-Json -Compress -Depth 10)
                 }
 
                 # 4. Read and parse PAK
