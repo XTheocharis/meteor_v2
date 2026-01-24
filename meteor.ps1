@@ -879,6 +879,88 @@ function Invoke-Parallel {
     return , $results  # Comma preserves array in PS 5.1
 }
 
+function Start-BackgroundRunspace {
+    <#
+    .SYNOPSIS
+        Start a scriptblock in a background runspace (non-blocking).
+    .DESCRIPTION
+        Executes a scriptblock asynchronously in its own runspace.
+        Returns a task object that can be passed to Wait-BackgroundRunspace.
+        Use this for true parallel execution without blocking the main thread.
+    .PARAMETER Script
+        The scriptblock to execute.
+    .PARAMETER Args
+        Array of arguments to pass to the scriptblock.
+    .OUTPUTS
+        Hashtable with PowerShell, Handle, and Runspace objects for tracking.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [scriptblock]$Script,
+
+        [Parameter()]
+        [array]$Args = @()
+    )
+
+    $runspace = [runspacefactory]::CreateRunspace()
+    $runspace.Open()
+
+    $ps = [powershell]::Create()
+    $ps.Runspace = $runspace
+    [void]$ps.AddScript($Script)
+    foreach ($arg in $Args) {
+        [void]$ps.AddArgument($arg)
+    }
+
+    $handle = $ps.BeginInvoke()
+
+    return @{
+        PowerShell = $ps
+        Handle     = $handle
+        Runspace   = $runspace
+    }
+}
+
+function Wait-BackgroundRunspace {
+    <#
+    .SYNOPSIS
+        Wait for a background runspace to complete and retrieve its result.
+    .DESCRIPTION
+        Blocks until the background task completes, then returns the result.
+        Also cleans up the runspace resources.
+    .PARAMETER Task
+        The task object returned by Start-BackgroundRunspace.
+    .OUTPUTS
+        The result returned by the background scriptblock.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Task
+    )
+
+    try {
+        $result = $Task.PowerShell.EndInvoke($Task.Handle)
+
+        # Surface any errors from the runspace
+        if ($Task.PowerShell.HadErrors) {
+            foreach ($err in $Task.PowerShell.Streams.Error) {
+                Write-Warning "Background task error: $err"
+            }
+        }
+
+        # Return the last result (or $null if empty)
+        if ($result -and $result.Count -gt 0) {
+            return $result[$result.Count - 1]
+        }
+        return $null
+    }
+    finally {
+        $Task.PowerShell.Dispose()
+        $Task.Runspace.Close()
+        $Task.Runspace.Dispose()
+    }
+}
+
 #endregion
 
 #region State Management
@@ -3665,12 +3747,27 @@ function Initialize-PatchedExtensions {
 
                 if ($result.Success -and $result.NeedsUpdate) {
                     Write-Status "  $($ext.Name): v$($result.Version) available" -Type Detail
-                    $tempCrx = Join-Path $env:TEMP "meteor_ext_$($ext.Name)_$(Get-Random).crx"
-                    $downloadInfoMap[$ext.Name] = @{
-                        TempCrx   = $tempCrx
-                        OutputDir = $ext.OutputDir
-                        Version   = $result.Version
-                        Codebase  = $result.Codebase
+
+                    # comet_web_resources: download directly to default_apps (no extraction needed, no patches)
+                    if ($ext.Name -eq 'comet_web_resources') {
+                        $directCrxPath = Join-Path $defaultAppsDir "comet_web_resources.crx"
+                        $downloadInfoMap[$ext.Name] = @{
+                            TempCrx       = $directCrxPath
+                            OutputDir     = $null  # No extraction
+                            Version       = $result.Version
+                            Codebase      = $result.Codebase
+                            DirectInstall = $true  # Flag for direct CRX install
+                        }
+                    }
+                    else {
+                        $tempCrx = Join-Path $env:TEMP "meteor_ext_$($ext.Name)_$(Get-Random).crx"
+                        $downloadInfoMap[$ext.Name] = @{
+                            TempCrx       = $tempCrx
+                            OutputDir     = $ext.OutputDir
+                            Version       = $result.Version
+                            Codebase      = $result.Codebase
+                            DirectInstall = $false
+                        }
                     }
 
                     # Inline download scriptblock
@@ -3717,6 +3814,13 @@ function Initialize-PatchedExtensions {
                     $dlInfo = $downloadInfoMap[$extName]
 
                     if ($dlResult.Success -and (Test-Path $dlResult.TempCrx)) {
+                        # comet_web_resources: already downloaded to final location, no extraction needed
+                        if ($dlInfo.DirectInstall) {
+                            Write-Status "  $extName`: v$($dlInfo.Version) installed directly" -Type Success
+                            # Don't add to extensionsToProcess - no patching needed, loaded via external_extensions.json
+                            continue
+                        }
+
                         Write-Status "  Extracting: $extName" -Type Detail
                         try {
                             if (Test-Path $dlInfo.OutputDir) {
@@ -3741,6 +3845,11 @@ function Initialize-PatchedExtensions {
                         }
                     }
                     else {
+                        # For DirectInstall extensions that failed, they'll still be loaded from existing CRX
+                        if ($dlInfo.DirectInstall) {
+                            Write-Status "  $extName`: download failed, using existing CRX" -Type Warning
+                            continue
+                        }
                         Write-Status "  $extName`: download failed - $($dlResult.Error)" -Type Warning
                         $extensionsToProcess[$extName] = @{ OutputDir = $dlInfo.OutputDir; FromServer = $false; NeedsFallback = $true }
                     }
@@ -3749,9 +3858,10 @@ function Initialize-PatchedExtensions {
         }
     }
     else {
-        # Mark all extensions for local fallback
+        # Mark all extensions for local fallback (except comet_web_resources which loads directly from CRX)
         if ($bundledExtensions) {
             foreach ($extName in $bundledExtensions.PSObject.Properties.Name) {
+                if ($extName -eq 'comet_web_resources') { continue }  # Loaded via external_extensions.json
                 $extOutputDir = Join-Path $OutputDir $extName
                 $extensionsToProcess[$extName] = @{ OutputDir = $extOutputDir; FromServer = $false; NeedsFallback = $true }
             }
@@ -6210,8 +6320,10 @@ function Build-BrowserCommand {
 
     $extensions = [System.Collections.ArrayList]@()
 
-    # Add patched bundled extensions (perplexity, comet_web_resources, agents)
+    # Add patched bundled extensions (perplexity, agents)
+    # Note: comet_web_resources is loaded via external_extensions.json (no patches needed)
     foreach ($extName in $Config.extensions.bundled.PSObject.Properties.Name) {
+        if ($extName -eq 'comet_web_resources') { continue }  # Loaded via external_extensions.json
         $extDir = Join-Path $ExtPath $extName
         if (Test-Path $extDir) {
             [void]$extensions.Add($extDir)
@@ -6714,7 +6826,11 @@ function Test-SetupRequired {
         $defaultAppsDir = Get-DefaultAppsDirectory -CometDir $Comet.Directory
         if ($defaultAppsDir) {
             # Check both active CRX files and backed-up CRX files
-            $allCrx = Get-ChildItem -Path $defaultAppsDir -Filter "*.crx*" -ErrorAction SilentlyContinue | Where-Object { $_.Extension -eq '.crx' -or $_.Name.EndsWith('.crx.meteor-backup') }
+            # Exclude comet_web_resources.crx - it's loaded directly via external_extensions.json (no patching)
+            $allCrx = Get-ChildItem -Path $defaultAppsDir -Filter "*.crx*" -ErrorAction SilentlyContinue | Where-Object {
+                ($_.Extension -eq '.crx' -or $_.Name.EndsWith('.crx.meteor-backup')) -and
+                $_.Name -notlike 'comet_web_resources.crx*'
+            }
             foreach ($crx in $allCrx) {
                 if (Test-FileChanged -FilePath $crx.FullName -State $State) {
                     Write-Status "Changed: $($crx.Name)" -Type Detail
@@ -6759,33 +6875,61 @@ function Initialize-Extensions {
 
     Write-Status "Step 4: Extracting and Patching" -Type Step
 
-    # Always ensure bundled CRX extensions are disabled (even when using cached patches)
-    # This handles cases where Comet updates restore external_extensions.json
+    # Configure external_extensions.json for comet_web_resources (loaded directly from CRX)
+    # and backup other CRX files (which will be extracted and patched)
     if ($Comet) {
         # Find default_apps directory (may be in version subdirectory)
         $defaultAppsDir = Get-DefaultAppsDirectory -CometDir $Comet.Directory
         if ($defaultAppsDir) {
-            # Clear external_extensions.json to prevent CRX loading
             $extJsonPath = Join-Path $defaultAppsDir "external_extensions.json"
             $extJsonBackup = "$extJsonPath.meteor-backup"
-            if (Test-Path $extJsonPath) {
-                $content = Get-Content -Path $extJsonPath -Raw -ErrorAction SilentlyContinue
-                if ($content -and $content.Trim() -ne "{}") {
-                    if ($WhatIfPreference) {
-                        Write-Status "Would clear external_extensions.json" -Type Detail
-                    }
-                    else {
-                        if (-not (Test-Path $extJsonBackup)) {
-                            Copy-Item -Path $extJsonPath -Destination $extJsonBackup -Force
-                        }
-                        Set-Content -Path $extJsonPath -Value "{}" -Encoding UTF8
-                        Write-Status "Cleared external_extensions.json" -Type Detail
+
+            # Build external_extensions.json with comet_web_resources entry
+            # Other bundled extensions (perplexity, agents) are loaded via --load-extension
+            $cometWebResourcesCrx = Join-Path $defaultAppsDir "comet_web_resources.crx"
+            $externalExtensions = @{}
+
+            if (Test-Path $cometWebResourcesCrx) {
+                # Read version from CRX manifest
+                $crxManifest = Get-CrxManifest -CrxPath $cometWebResourcesCrx
+                if ($crxManifest -and $crxManifest.version) {
+                    # Extension ID for comet_web_resources
+                    $cometWebResourcesId = "mjdcklhepheaaemphcopihnmjlmjpcnh"
+                    $externalExtensions[$cometWebResourcesId] = @{
+                        external_crx     = "comet_web_resources.crx"
+                        external_version = $crxManifest.version
                     }
                 }
             }
 
-            # Backup any remaining .crx files
-            $crxFilesToBackup = Get-ChildItem -Path $defaultAppsDir -Filter "*.crx" -ErrorAction SilentlyContinue
+            # Write external_extensions.json
+            if ($WhatIfPreference) {
+                if ($externalExtensions.Count -gt 0) {
+                    Write-Status "Would configure external_extensions.json for comet_web_resources" -Type Detail
+                }
+                else {
+                    Write-Status "Would clear external_extensions.json" -Type Detail
+                }
+            }
+            else {
+                # Backup original if not already backed up
+                if ((Test-Path $extJsonPath) -and -not (Test-Path $extJsonBackup)) {
+                    Copy-Item -Path $extJsonPath -Destination $extJsonBackup -Force
+                }
+
+                if ($externalExtensions.Count -gt 0) {
+                    Save-JsonFile -Path $extJsonPath -Object $externalExtensions
+                    Write-Status "Configured external_extensions.json for comet_web_resources" -Type Detail
+                }
+                else {
+                    Set-Content -Path $extJsonPath -Value "{}" -Encoding UTF8
+                    Write-Status "Cleared external_extensions.json" -Type Detail
+                }
+            }
+
+            # Backup other .crx files (not comet_web_resources - it stays in place)
+            $crxFilesToBackup = Get-ChildItem -Path $defaultAppsDir -Filter "*.crx" -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -ne "comet_web_resources.crx" }
             foreach ($crx in $crxFilesToBackup) {
                 $backupPath = "$($crx.FullName).meteor-backup"
                 if (-not (Test-Path $backupPath)) {
@@ -7473,6 +7617,242 @@ function Main {
     $freshInstall = $installResult.FreshInstall
 
     # ═══════════════════════════════════════════════════════════════
+    # Start Adblock Installation in Background (runs parallel with Steps 1-4)
+    # ═══════════════════════════════════════════════════════════════
+    $adblockTask = $null
+    $ublockEnabled = $config.ublock.enabled -eq $true
+    $adguardEnabled = $config.adguard_extra.enabled -eq $true
+
+    if (-not $WhatIfPreference -and -not $NoLaunch -and ($ublockEnabled -or $adguardEnabled)) {
+        # Self-contained scriptblock for adblock installation (runspaces can't access main script functions)
+        $adblockScript = {
+            param(
+                [string]$UBlockPath,
+                [string]$AdGuardPath,
+                [string]$PreDownloadedUBlock,
+                [string]$PreDownloadedAdGuard,
+                [bool]$UBlockEnabled,
+                [bool]$AdGuardEnabled,
+                [string]$UBlockExtensionId,
+                [string]$AdGuardExtensionId,
+                [object]$UBlockDefaults,
+                [bool]$ForceDownload
+            )
+
+            # Helper: Get CRX ZIP offset (inline version)
+            function Get-InlineCrxZipOffset {
+                param([byte[]]$Bytes)
+                # CRX magic: "Cr24"
+                if ($Bytes.Length -lt 16 -or $Bytes[0] -ne 0x43 -or $Bytes[1] -ne 0x72 -or $Bytes[2] -ne 0x32 -or $Bytes[3] -ne 0x34) {
+                    throw "Invalid CRX magic"
+                }
+                $version = [BitConverter]::ToUInt32($Bytes, 4)
+                if ($version -eq 2) {
+                    # CRX2: magic(4) + version(4) + pubkey_len(4) + sig_len(4) + pubkey + sig + zip
+                    $pubkeyLen = [BitConverter]::ToUInt32($Bytes, 8)
+                    $sigLen = [BitConverter]::ToUInt32($Bytes, 12)
+                    return (16 + $pubkeyLen + $sigLen)
+                }
+                else {
+                    # CRX3: magic(4) + version(4) + header_len(4) + header + zip
+                    $headerLen = [BitConverter]::ToUInt32($Bytes, 8)
+                    return (12 + $headerLen)
+                }
+            }
+
+            # Helper: Extract CRX to directory (inline version)
+            function Extract-InlineCrx {
+                param([string]$CrxPath, [string]$OutputDir)
+                $bytes = [System.IO.File]::ReadAllBytes($CrxPath)
+                $zipOffset = Get-InlineCrxZipOffset -Bytes $bytes
+                $zipLength = $bytes.Length - $zipOffset
+                $zipBytes = New-Object byte[] $zipLength
+                [Array]::Copy($bytes, $zipOffset, $zipBytes, 0, $zipLength)
+
+                # Validate ZIP magic
+                if ($zipBytes.Length -lt 4 -or $zipBytes[0] -ne 0x50 -or $zipBytes[1] -ne 0x4B) {
+                    throw "Invalid ZIP magic in CRX"
+                }
+
+                # Write to temp file and extract using .NET
+                $tempZip = Join-Path $env:TEMP "meteor_adblock_$(Get-Random).zip"
+                try {
+                    [System.IO.File]::WriteAllBytes($tempZip, $zipBytes)
+                    if (Test-Path $OutputDir) { Remove-Item -Path $OutputDir -Recurse -Force }
+                    New-Item -Path $OutputDir -ItemType Directory -Force | Out-Null
+                    Add-Type -AssemblyName System.IO.Compression.FileSystem
+                    [System.IO.Compression.ZipFile]::ExtractToDirectory($tempZip, $OutputDir)
+                }
+                finally {
+                    if (Test-Path $tempZip) { Remove-Item -Path $tempZip -Force }
+                }
+                return $true
+            }
+
+            # Helper: Download CRX from Chrome Web Store
+            function Download-InlineCrx {
+                param([string]$ExtensionId, [string]$OutputPath)
+                [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+                $url = "https://clients2.google.com/service/update2/crx?response=redirect&os=win&arch=x86-64&os_arch=x86-64&prod=chromecrx&prodchannel=unknown&prodversion=120.0.0.0&acceptformat=crx3&x=id%3D$ExtensionId%26uc"
+                $wc = New-Object System.Net.WebClient
+                $wc.Headers.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0")
+                $wc.DownloadFile($url, $OutputPath)
+                $wc.Dispose()
+            }
+
+            # Helper: Configure uBlock auto-import
+            function Configure-InlineUBlock {
+                param([string]$UBlockDir, [object]$Defaults)
+                $jsDir = Join-Path $UBlockDir "js"
+                if (-not (Test-Path $jsDir) -or -not $Defaults) { return }
+
+                # Get custom filter lists
+                $customLists = @($Defaults.selectedFilterLists | Where-Object { $_ -match '^https?://' })
+                $customListsJson = if ($customLists.Count -gt 0) { $customLists | ConvertTo-Json -Compress } else { "[]" }
+
+                # Create auto-import.js
+                $autoImportPath = Join-Path $jsDir "auto-import.js"
+                $autoImportCode = @"
+/*******************************************************************************
+    Meteor - Auto-import custom defaults on first run
+*******************************************************************************/
+import µb from './background.js';
+import io from './assets.js';
+const customFilterLists = $customListsJson;
+const checkAndImport = async () => {
+    try {
+        await µb.isReadyPromise;
+        const stored = await vAPI.storage.get(['lastRestoreFile', 'importedLists']);
+        if (stored.lastRestoreFile === 'meteor-auto-import') { return; }
+        const importedLists = stored.importedLists || [];
+        const allPresent = customFilterLists.every(url => importedLists.includes(url));
+        if (allPresent) { return; }
+        const response = await fetch('/ublock-settings.json');
+        if (!response.ok) { return; }
+        const userData = await response.json();
+        io.rmrf();
+        await vAPI.storage.set({
+            ...userData.userSettings,
+            netWhitelist: userData.whitelist || [],
+            dynamicFilteringString: userData.dynamicFilteringString || '',
+            urlFilteringString: userData.urlFilteringString || '',
+            hostnameSwitchesString: userData.hostnameSwitchesString || '',
+            lastRestoreFile: 'meteor-auto-import',
+            lastRestoreTime: Date.now()
+        });
+        if (userData.userFilters) { await µb.saveUserFilters(userData.userFilters); }
+        if (Array.isArray(userData.selectedFilterLists)) { await µb.saveSelectedFilterLists(userData.selectedFilterLists); }
+        vAPI.app.restart();
+    } catch (ex) { }
+};
+setTimeout(checkAndImport, 3000);
+"@
+                Set-Content -Path $autoImportPath -Value $autoImportCode -Encoding UTF8
+
+                # Patch start.js
+                $startJsPath = Join-Path $jsDir "start.js"
+                if (Test-Path $startJsPath) {
+                    $startContent = Get-Content -Path $startJsPath -Raw
+                    if ($startContent -notmatch "import './auto-import.js';") {
+                        $importPattern = "(import .+ from .+;)\n"
+                        $importMatches = [regex]::Matches($startContent, $importPattern)
+                        if ($importMatches.Count -gt 0) {
+                            $lastMatch = $importMatches[$importMatches.Count - 1]
+                            $insertPos = $lastMatch.Index + $lastMatch.Length
+                            $newContent = $startContent.Substring(0, $insertPos) + "import './auto-import.js';`n" + $startContent.Substring($insertPos)
+                            Set-Content -Path $startJsPath -Value $newContent -Encoding UTF8 -NoNewline
+                        }
+                    }
+                }
+
+                # Save settings JSON
+                $settingsPath = Join-Path $UBlockDir "ublock-settings.json"
+                $Defaults | ConvertTo-Json -Depth 20 | Set-Content -Path $settingsPath -Encoding UTF8
+            }
+
+            $result = @{ UBlockPath = $null; AdGuardPath = $null; Success = $true; Error = $null }
+
+            try {
+                # Process uBlock Origin
+                if ($UBlockEnabled) {
+                    $ublockManifest = Join-Path $UBlockPath "manifest.json"
+                    $needsInstall = $ForceDownload -or -not (Test-Path $ublockManifest)
+
+                    if ($needsInstall) {
+                        $crxPath = $PreDownloadedUBlock
+                        if (-not $crxPath -or -not (Test-Path $crxPath)) {
+                            $crxPath = Join-Path $env:TEMP "meteor_ublock_bg_$(Get-Random).crx"
+                            Download-InlineCrx -ExtensionId $UBlockExtensionId -OutputPath $crxPath
+                        }
+                        Extract-InlineCrx -CrxPath $crxPath -OutputDir $UBlockPath
+                        if ($PreDownloadedUBlock -and (Test-Path $PreDownloadedUBlock)) {
+                            Remove-Item -Path $PreDownloadedUBlock -Force -ErrorAction SilentlyContinue
+                        }
+                        elseif (Test-Path $crxPath) {
+                            Remove-Item -Path $crxPath -Force -ErrorAction SilentlyContinue
+                        }
+                    }
+
+                    # Configure uBlock
+                    Configure-InlineUBlock -UBlockDir $UBlockPath -Defaults $UBlockDefaults
+                    $result.UBlockPath = $UBlockPath
+                }
+
+                # Process AdGuard Extra
+                if ($AdGuardEnabled) {
+                    $adguardManifest = Join-Path $AdGuardPath "manifest.json"
+                    $needsInstall = $ForceDownload -or -not (Test-Path $adguardManifest)
+
+                    if ($needsInstall) {
+                        $crxPath = $PreDownloadedAdGuard
+                        if (-not $crxPath -or -not (Test-Path $crxPath)) {
+                            $crxPath = Join-Path $env:TEMP "meteor_adguard_bg_$(Get-Random).crx"
+                            Download-InlineCrx -ExtensionId $AdGuardExtensionId -OutputPath $crxPath
+                        }
+                        Extract-InlineCrx -CrxPath $crxPath -OutputDir $AdGuardPath
+                        if ($PreDownloadedAdGuard -and (Test-Path $PreDownloadedAdGuard)) {
+                            Remove-Item -Path $PreDownloadedAdGuard -Force -ErrorAction SilentlyContinue
+                        }
+                        elseif (Test-Path $crxPath) {
+                            Remove-Item -Path $crxPath -Force -ErrorAction SilentlyContinue
+                        }
+                    }
+                    $result.AdGuardPath = $AdGuardPath
+                }
+            }
+            catch {
+                $result.Success = $false
+                $result.Error = $_.ToString()
+            }
+
+            return $result
+        }
+
+        # Convert uBlock defaults to hashtable for serialization
+        $ublockDefaults = $null
+        if ($config.ublock.defaults) {
+            $ublockDefaults = @{}
+            foreach ($prop in $config.ublock.defaults.PSObject.Properties) {
+                $ublockDefaults[$prop.Name] = $prop.Value
+            }
+        }
+
+        Write-Status "Starting adblock installation in background..." -Type Detail
+        $adblockTask = Start-BackgroundRunspace -Script $adblockScript -Args @(
+            $ublockPath,
+            $adguardExtraPath,
+            $preDownloadedUBlock,
+            $preDownloadedAdGuard,
+            $ublockEnabled,
+            $adguardEnabled,
+            $config.ublock.extension_id,
+            $config.adguard_extra.extension_id,
+            $ublockDefaults,
+            $Force
+        )
+    }
+
+    # ═══════════════════════════════════════════════════════════════
     # Step 1: Comet Update Check
     # ═══════════════════════════════════════════════════════════════
     if ($freshInstall) {
@@ -7514,17 +7894,39 @@ function Main {
         -FreshInstall:$freshInstall
 
     # ═══════════════════════════════════════════════════════════════
-    # Step 5 & 5.5: Ad-blocking Extensions
+    # Step 5 & 5.5: Wait for Adblock Background Task
     # ═══════════════════════════════════════════════════════════════
-    $adBlockResult = Initialize-AdBlockExtensions `
-        -Config $config `
-        -UBlockPath $ublockPath `
-        -AdGuardExtraPath $adguardExtraPath `
-        -Force:$Force `
-        -PreDownloadedUBlock $preDownloadedUBlock `
-        -PreDownloadedAdGuard $preDownloadedAdGuard
-    $ublockPath = $adBlockResult.UBlockPath
-    $adguardExtraPath = $adBlockResult.AdGuardExtraPath
+    if ($adblockTask) {
+        Write-Status "Step 5: Waiting for adblock installation..." -Type Step
+        $adBlockResult = Wait-BackgroundRunspace -Task $adblockTask
+        if ($adBlockResult.Success) {
+            $ublockPath = $adBlockResult.UBlockPath
+            $adguardExtraPath = $adBlockResult.AdGuardPath
+            Write-Status "Adblock extensions ready" -Type Success
+        }
+        else {
+            Write-Status "Adblock installation error: $($adBlockResult.Error)" -Type Warning
+            # Fall back to existing paths if installation failed
+        }
+    }
+    elseif ($WhatIfPreference) {
+        Write-Status "Step 5: Checking ad-block extensions" -Type Step
+        if ($ublockEnabled) { Write-Status "Would check/download uBlock Origin" -Type Detail }
+        if ($adguardEnabled) { Write-Status "Would check/download AdGuard Extra" -Type Detail }
+    }
+    elseif (-not $NoLaunch -and ($ublockEnabled -or $adguardEnabled)) {
+        # Fallback to sequential if background task wasn't started for some reason
+        Write-Status "Step 5: Checking ad-block extensions" -Type Step
+        $adBlockResult = Initialize-AdBlockExtensions `
+            -Config $config `
+            -UBlockPath $ublockPath `
+            -AdGuardExtraPath $adguardExtraPath `
+            -Force:$Force `
+            -PreDownloadedUBlock $preDownloadedUBlock `
+            -PreDownloadedAdGuard $preDownloadedAdGuard
+        $ublockPath = $adBlockResult.UBlockPath
+        $adguardExtraPath = $adBlockResult.AdGuardExtraPath
+    }
 
     # Save state
     if (-not $WhatIfPreference) {
