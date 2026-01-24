@@ -6754,7 +6754,7 @@ function Initialize-AdBlockExtensions {
                 if (Test-Path $ext.OutputDir) {
                     Remove-Item $ext.OutputDir -Recurse -Force
                 }
-                Export-CrxToDirectory -CrxPath $downloadResult.CrxPath -OutputDir $ext.OutputDir -InjectKey
+                $null = Export-CrxToDirectory -CrxPath $downloadResult.CrxPath -OutputDir $ext.OutputDir -InjectKey
 
                 # Apply uBlock configuration if applicable
                 if ($ext.Type -eq "ublock") {
