@@ -2,11 +2,31 @@
 """
 Try to find which subset of keys Chromium uses for MAC calculation.
 
-The hypothesis is that Chromium might:
-1. Exclude certain runtime-only keys from MAC calculation
-2. Use a different set of keys than what's stored in the JSON
+PURPOSE:
+    The hypothesis is that Chromium might:
+    1. Exclude certain runtime-only keys from MAC calculation
+    2. Use a different set of keys than what's stored in the JSON
 
-This script tests various key combinations to find the one that matches.
+    This script tests various key combinations to find the one that matches.
+
+TESTS PERFORMED:
+    1. Single key removal - tests if removing any single key produces correct MAC
+    2. Runtime key removal - tests excluding known runtime-only keys like
+       active_permissions, commands, events, last_update_time, etc.
+    3. Core keys only - tests if only certain "core" keys are used
+    4. JSON format variations - tests different serialization options
+    5. Path separator variations - tests forward vs back slashes in paths
+
+PREREQUISITES:
+    - browser-state.json: Contains device_id and expected MACs
+    - secure-preferences.json: Copy of Secure Preferences file from browser
+
+USAGE:
+    python find-mac-keys.py
+
+NOTE:
+    If any test shows "MATCH!", it reveals which keys Chromium actually uses.
+    This is exploratory - most tests will show "no match".
 """
 
 import json

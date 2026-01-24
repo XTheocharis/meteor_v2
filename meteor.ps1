@@ -132,28 +132,127 @@ $script:UserAgent = "Meteor/$script:MeteorVersion"
 # This is different from the 64-byte seed in resources.pak used for Secure Preferences file MACs
 $script:RegistryHashSeed = "ChromeRegistryHashStoreValidationSeed"
 
+# CRX Format Constants
+# CRX (Chrome Extension) files are signed ZIP archives with a header containing version info and signatures.
+# See: https://developer.chrome.com/docs/extensions/how-to/distribute/host-on-linux#packaging
+$script:CRX_MAGIC = [byte[]]@(0x43, 0x72, 0x32, 0x34)  # "Cr24" in ASCII
+$script:CRX_VERSION_2 = 2
+$script:CRX_VERSION_3 = 3
+$script:CRX_HEADER_SIZE_BASE = 8   # magic(4) + version(4)
+$script:CRX2_HEADER_SIZE_MIN = 16  # magic(4) + version(4) + pubkey_len(4) + sig_len(4)
+$script:CRX3_HEADER_SIZE_MIN = 12  # magic(4) + version(4) + header_len(4)
+
 #endregion
 
 #region Helper Functions
 
 function Write-Status {
+    <#
+    .SYNOPSIS
+        Write a timestamped status message to the console.
+    .DESCRIPTION
+        Outputs formatted status messages with consistent timestamps and color coding.
+        Supports common parameters like -Verbose through CmdletBinding.
+
+        Color Scheme:
+        - Info    (Cyan):       General informational messages [*]
+        - Success (Green):      Operation completed successfully [+]
+        - Warning (Yellow):     Non-critical issues or cautions [!]
+        - Error   (Red):        Errors or failures [!]
+        - Detail  (Gray):       Sub-item details, indented with ->
+        - Step    (Magenta):    Major workflow step headers ===
+        - DryRun  (DarkYellow): Dry-run mode indicators [DRY]
+    .OUTPUTS
+        [void]
+    #>
+    [CmdletBinding()]
+    [OutputType([void])]
     param(
         [string]$Message,
         [ValidateSet("Info", "Success", "Warning", "Error", "Detail", "Step", "DryRun")]
-        [string]$Type = "Info"
+        [string]$Type = "Info",
+        [switch]$NoNewline
     )
 
     $timestamp = Get-Date -Format "HH:mm:ss.fff"
 
+    # Build Write-Host parameters
+    $writeParams = @{ NoNewline = $NoNewline.IsPresent }
+
     switch ($Type) {
-        "Info"    { Write-Host "[$timestamp] [*] $Message" -ForegroundColor Cyan }
-        "Success" { Write-Host "[$timestamp] [+] $Message" -ForegroundColor Green }
-        "Warning" { Write-Host "[$timestamp] [!] $Message" -ForegroundColor Yellow }
-        "Error"   { Write-Host "[$timestamp] [!] $Message" -ForegroundColor Red }
-        "Detail"  { Write-Host "[$timestamp]     -> $Message" -ForegroundColor Gray }
-        "Step"    { Write-Host "`n[$timestamp] === $Message ===" -ForegroundColor Magenta }
-        "DryRun"  { Write-Host "[$timestamp] [DRY] $Message" -ForegroundColor DarkYellow }
+        "Info"    { Write-Host "[$timestamp] [*] $Message" -ForegroundColor Cyan @writeParams }
+        "Success" { Write-Host "[$timestamp] [+] $Message" -ForegroundColor Green @writeParams }
+        "Warning" { Write-Host "[$timestamp] [!] $Message" -ForegroundColor Yellow @writeParams }
+        "Error"   { Write-Host "[$timestamp] [!] $Message" -ForegroundColor Red @writeParams }
+        "Detail"  { Write-Host "[$timestamp]     -> $Message" -ForegroundColor Gray @writeParams }
+        "Step"    { Write-Host "`n[$timestamp] === $Message ===" -ForegroundColor Magenta @writeParams }
+        "DryRun"  { Write-Host "[$timestamp] [DRY] $Message" -ForegroundColor DarkYellow @writeParams }
     }
+}
+
+function ConvertTo-HexString {
+    <#
+    .SYNOPSIS
+        Convert a byte array to a hexadecimal string.
+    .DESCRIPTION
+        Converts each byte to its two-character hexadecimal representation.
+        Returns an empty string for empty arrays.
+    .OUTPUTS
+        [string]
+    .EXAMPLE
+        ConvertTo-HexString -Bytes @(0xDE, 0xAD, 0xBE, 0xEF)
+        # Returns "DEADBEEF"
+    #>
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)]
+        [ValidateNotNull()]
+        [byte[]]$Bytes
+    )
+
+    if ($Bytes.Length -eq 0) {
+        return [string]::Empty
+    }
+
+    return [BitConverter]::ToString($Bytes) -replace '-', ''
+}
+
+function ConvertFrom-HexString {
+    <#
+    .SYNOPSIS
+        Convert a hexadecimal string to a byte array.
+    .DESCRIPTION
+        Parses a hexadecimal string and returns the corresponding byte array.
+        Validates that the string has even length and contains only hex characters.
+    .OUTPUTS
+        [byte[]]
+    .EXAMPLE
+        ConvertFrom-HexString -HexString "DEADBEEF"
+        # Returns byte array @(0xDE, 0xAD, 0xBE, 0xEF)
+    #>
+    [OutputType([byte[]])]
+    param(
+        [Parameter(Mandatory)]
+        [ValidateNotNullOrEmpty()]
+        [string]$HexString
+    )
+
+    # Validate hex string length is even
+    if ($HexString.Length % 2 -ne 0) {
+        throw "Invalid hex string: length must be even (got $($HexString.Length) characters)"
+    }
+
+    # Validate hex string contains only valid hex characters
+    if ($HexString -notmatch '^[0-9A-Fa-f]*$') {
+        throw "Invalid hex string: contains non-hexadecimal characters"
+    }
+
+    $bytes = [byte[]]::new($HexString.Length / 2)
+    for ($i = 0; $i -lt $bytes.Length; $i++) {
+        $bytes[$i] = [Convert]::ToByte($HexString.Substring($i * 2, 2), 16)
+    }
+
+    return ,$bytes
 }
 
 function Write-VerboseTimestamped {
@@ -267,10 +366,47 @@ function Test-IsEmptyContainer {
     <#
     .SYNOPSIS
         Test if a value is an empty container (null, empty array, empty hashtable, etc.)
+
     .DESCRIPTION
-        Used for pruning empty containers during JSON serialization to match Chromium's behavior.
+        PURPOSE: Support function for ConvertTo-SortedObject to identify values that should
+        be pruned during JSON serialization to match Chromium's PrefHashCalculator behavior.
+
+        EMPTY CONTAINER TYPES:
+        - $null
+        - Empty array: @()
+        - Empty hashtable: @{}
+        - Empty OrderedDictionary: [ordered]@{}
+        - Empty PSCustomObject: New-Object PSCustomObject
+
+        WHY PRUNING MATTERS:
+        Chromium's MAC calculation prunes empty containers from dictionary values.
+        If we don't prune them, our serialized JSON won't match Chromium's format,
+        and the calculated MAC will be incorrect.
+
+        NOTE: This only checks if a container IS empty, not if it CONTAINS empty containers.
+        ConvertTo-SortedObject handles recursive pruning by calling this on each value.
+
+    .PARAMETER Value
+        The value to test for emptiness.
+
+    .OUTPUTS
+        $true if the value is null or an empty container, $false otherwise.
+
+    .EXAMPLE
+        Test-IsEmptyContainer -Value @()
+        # Returns: $true
+
+    .EXAMPLE
+        Test-IsEmptyContainer -Value @(1, 2, 3)
+        # Returns: $false
+
+    .NOTES
+        Used internally by ConvertTo-SortedObject for MAC calculation preparation.
     #>
-    param([object]$Value)
+    [OutputType([bool])]
+    param(
+        [object]$Value
+    )
 
     if ($null -eq $Value) { return $true }
     if ($Value -is [array] -and $Value.Count -eq 0) { return $true }
@@ -1528,17 +1664,189 @@ function Test-PakModifications {
 #endregion
 
 #region CRX Extraction
+# ====================================================================================
+# CRX File Format Documentation
+# ====================================================================================
+#
+# CRX (Chrome Extension) files are signed ZIP archives with a header containing
+# version information, public keys, and cryptographic signatures.
+#
+# CRX2 Format (legacy):
+# +------------------+------------------+------------------+------------------+
+# |    Magic (4)     |   Version (4)    | PubKey Len (4)   |   Sig Len (4)    |
+# +------------------+------------------+------------------+------------------+
+# |                          Public Key (variable)                            |
+# +----------------------------------------------------------------------------+
+# |                          Signature (variable)                              |
+# +----------------------------------------------------------------------------+
+# |                          ZIP Archive (variable)                            |
+# +----------------------------------------------------------------------------+
+#
+# CRX3 Format (current):
+# +------------------+------------------+------------------+
+# |    Magic (4)     |   Version (4)    | Header Len (4)   |
+# +------------------+------------------+------------------+
+# |                   Protobuf Header (variable)                               |
+# |   Contains: signed_header_data, sha256_with_rsa/ecdsa proofs with keys     |
+# +----------------------------------------------------------------------------+
+# |                          ZIP Archive (variable)                            |
+# +----------------------------------------------------------------------------+
+#
+# Magic: 0x43 0x72 0x32 0x34 ("Cr24")
+# All integers are little-endian.
+#
+# Reference: https://chromium.googlesource.com/chromium/src/+/HEAD/components/crx_file/crx3.proto
+# ====================================================================================
+
+function Test-CrxMagic {
+    <#
+    .SYNOPSIS
+        Validate that a byte array starts with the CRX magic header "Cr24".
+    .DESCRIPTION
+        Checks the first 4 bytes against the expected CRX magic bytes (0x43, 0x72, 0x32, 0x34).
+        Returns $true if valid, $false otherwise.
+    .OUTPUTS
+        System.Boolean
+    #>
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory)]
+        [ValidateNotNull()]
+        [byte[]]$Bytes
+    )
+
+    if ($Bytes.Length -lt 4) {
+        return $false
+    }
+
+    for ($i = 0; $i -lt 4; $i++) {
+        if ($Bytes[$i] -ne $script:CRX_MAGIC[$i]) {
+            return $false
+        }
+    }
+
+    return $true
+}
+
+function Get-CrxVersion {
+    <#
+    .SYNOPSIS
+        Extract and validate the CRX version from file header bytes.
+    .DESCRIPTION
+        Reads the version field (bytes 4-7) from CRX header and validates it.
+        Supports CRX version 2 and 3. Throws for invalid or unsupported versions.
+    .OUTPUTS
+        System.Int32
+    #>
+    [OutputType([int])]
+    param(
+        [Parameter(Mandatory)]
+        [ValidateNotNull()]
+        [byte[]]$Header
+    )
+
+    if ($Header.Length -lt $script:CRX_HEADER_SIZE_BASE) {
+        throw "CRX header too short: expected at least $($script:CRX_HEADER_SIZE_BASE) bytes, got $($Header.Length)"
+    }
+
+    if (-not (Test-CrxMagic -Bytes $Header)) {
+        throw "Invalid CRX file: missing Cr24 magic header (expected 0x43 0x72 0x32 0x34)"
+    }
+
+    $version = ConvertTo-LittleEndianUInt32 -Bytes $Header -Offset 4
+
+    if ($version -eq $script:CRX_VERSION_2) {
+        if ($Header.Length -lt $script:CRX2_HEADER_SIZE_MIN) {
+            throw "CRX2 header truncated: expected at least $($script:CRX2_HEADER_SIZE_MIN) bytes, got $($Header.Length)"
+        }
+        return $version
+    }
+    elseif ($version -eq $script:CRX_VERSION_3) {
+        if ($Header.Length -lt $script:CRX3_HEADER_SIZE_MIN) {
+            throw "CRX3 header truncated: expected at least $($script:CRX3_HEADER_SIZE_MIN) bytes, got $($Header.Length)"
+        }
+        return $version
+    }
+    else {
+        throw "Unsupported CRX version: $version (expected $($script:CRX_VERSION_2) or $($script:CRX_VERSION_3))"
+    }
+}
+
+function Get-CrxZipOffset {
+    <#
+    .SYNOPSIS
+        Calculate the offset where the ZIP archive starts within a CRX file.
+    .DESCRIPTION
+        Parses CRX header to determine where the embedded ZIP archive begins.
+        For CRX2: offset = 16 + pubkey_length + signature_length
+        For CRX3: offset = 12 + header_length
+    .OUTPUTS
+        System.Int32
+    #>
+    [OutputType([int])]
+    param(
+        [Parameter(Mandatory)]
+        [ValidateNotNull()]
+        [byte[]]$Bytes
+    )
+
+    $version = Get-CrxVersion -Header $Bytes
+
+    if ($version -eq $script:CRX_VERSION_2) {
+        # CRX2: magic(4) + version(4) + pubkey_len(4) + sig_len(4) + pubkey + sig + zip
+        $pubkeyLen = ConvertTo-LittleEndianUInt32 -Bytes $Bytes -Offset 8
+        $sigLen = ConvertTo-LittleEndianUInt32 -Bytes $Bytes -Offset 12
+        $offset = $script:CRX2_HEADER_SIZE_MIN + $pubkeyLen + $sigLen
+
+        if ($offset -gt $Bytes.Length) {
+            throw "CRX2 file truncated: ZIP offset ($offset) exceeds file size ($($Bytes.Length))"
+        }
+        return $offset
+    }
+    else {
+        # CRX3: magic(4) + version(4) + header_len(4) + header + zip
+        $headerLen = ConvertTo-LittleEndianUInt32 -Bytes $Bytes -Offset 8
+        $offset = $script:CRX3_HEADER_SIZE_MIN + $headerLen
+
+        if ($offset -gt $Bytes.Length) {
+            throw "CRX3 file truncated: ZIP offset ($offset) exceeds file size ($($Bytes.Length))"
+        }
+        return $offset
+    }
+}
 
 function Read-ProtobufVarint {
     <#
     .SYNOPSIS
-        Read a varint from byte array at given position, return value and new position.
+        Read a protobuf varint from byte array at given position.
+    .DESCRIPTION
+        Decodes a variable-length integer (varint) used in Protocol Buffers encoding.
+        Each byte uses 7 bits for the value and 1 bit (MSB) to indicate continuation.
+        Returns a hashtable with Value (the decoded integer) and Pos (new position).
+    .OUTPUTS
+        System.Collections.Hashtable
     #>
-    param([byte[]]$Bytes, [int]$Pos)
+    [OutputType([hashtable])]
+    param(
+        [Parameter(Mandatory)]
+        [ValidateNotNull()]
+        [byte[]]$Bytes,
+
+        [Parameter(Mandatory)]
+        [ValidateRange(0, [int]::MaxValue)]
+        [int]$Pos
+    )
+
+    if ($Pos -ge $Bytes.Length) {
+        throw "Protobuf varint read out of bounds: position $Pos >= length $($Bytes.Length)"
+    }
 
     $result = 0
     $shift = 0
     do {
+        if ($Pos -ge $Bytes.Length) {
+            throw "Protobuf varint truncated at position $Pos"
+        }
         $b = $Bytes[$Pos]
         $result = $result -bor (($b -band 0x7F) -shl $shift)
         $shift += 7
@@ -1556,33 +1864,53 @@ function Get-CrxPublicKey {
         Handles both CRX2 (direct key) and CRX3 (protobuf header) formats.
         For CRX3, finds the key that matches the CRX ID in signed_header_data.
         Returns the key as a base64 string suitable for manifest.json "key" field.
+    .OUTPUTS
+        System.String
     #>
-    param([string]$CrxPath)
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)]
+        [ValidateNotNullOrEmpty()]
+        [string]$CrxPath
+    )
+
+    if (-not (Test-Path -LiteralPath $CrxPath)) {
+        throw "CRX file not found: $CrxPath"
+    }
 
     $bytes = [System.IO.File]::ReadAllBytes($CrxPath)
 
-    # Check magic header "Cr24"
-    $magic = [System.Text.Encoding]::ASCII.GetString($bytes, 0, 4)
-    if ($magic -ne "Cr24") {
-        throw "Invalid CRX file: missing Cr24 magic header"
-    }
+    # Validate CRX format and get version using helper functions
+    $version = Get-CrxVersion -Header $bytes
 
-    $version = ConvertTo-LittleEndianUInt32 -Bytes $bytes -Offset 4
-
-    if ($version -eq 2) {
+    if ($version -eq $script:CRX_VERSION_2) {
         # CRX2: public key is at offset 16 for pubkeyLen bytes
         $pubkeyLen = ConvertTo-LittleEndianUInt32 -Bytes $bytes -Offset 8
+
+        if ($pubkeyLen -eq 0) {
+            throw "CRX2 file has zero-length public key"
+        }
+
+        $keyEndOffset = $script:CRX2_HEADER_SIZE_MIN + $pubkeyLen
+        if ($keyEndOffset -gt $bytes.Length) {
+            throw "CRX2 file truncated: public key extends beyond file (offset $keyEndOffset > size $($bytes.Length))"
+        }
+
         $pubkey = New-Object byte[] $pubkeyLen
-        [Array]::Copy($bytes, 16, $pubkey, 0, $pubkeyLen)
+        [Array]::Copy($bytes, $script:CRX2_HEADER_SIZE_MIN, $pubkey, 0, $pubkeyLen)
         return [Convert]::ToBase64String($pubkey)
     }
-    elseif ($version -eq 3) {
+    else {
         # CRX3: Find the key whose SHA256 hash matches the CRX ID
         $headerLen = ConvertTo-LittleEndianUInt32 -Bytes $bytes -Offset 8
-        $headerStart = 12
+        $headerStart = $script:CRX3_HEADER_SIZE_MIN
         $headerEnd = $headerStart + $headerLen
 
-        # First pass: collect all keys and find the CRX ID
+        if ($headerEnd -gt $bytes.Length) {
+            throw "CRX3 file truncated: header extends beyond file (offset $headerEnd > size $($bytes.Length))"
+        }
+
+        # Parse protobuf header to collect keys and find the CRX ID
         $keys = [System.Collections.ArrayList]@()
         $crxId = $null
 
@@ -1596,10 +1924,15 @@ function Get-CrxPublicKey {
             $wireType = $tag -band 0x07
 
             if ($wireType -eq 2) {
+                # Length-delimited field
                 $result = Read-ProtobufVarint -Bytes $bytes -Pos $pos
                 $len = $result.Value
                 $pos = $result.Pos
                 $fieldEnd = $pos + $len
+
+                if ($fieldEnd -gt $headerEnd) {
+                    throw "CRX3 protobuf field extends beyond header at position $pos"
+                }
 
                 if ($fieldNum -in @(2, 3)) {
                     # sha256_with_rsa (2) or sha256_with_ecdsa (3) - extract public_key
@@ -1660,11 +1993,15 @@ function Get-CrxPublicKey {
                 $pos = $fieldEnd
             }
             elseif ($wireType -eq 0) {
+                # Varint field
                 $result = Read-ProtobufVarint -Bytes $bytes -Pos $pos
                 $pos = $result.Pos
             }
-            elseif ($wireType -eq 1) { $pos += 8 }
-            elseif ($wireType -eq 5) { $pos += 4 }
+            elseif ($wireType -eq 1) { $pos += 8 }  # 64-bit fixed
+            elseif ($wireType -eq 5) { $pos += 4 }  # 32-bit fixed
+            else {
+                throw "CRX3 protobuf unknown wire type $wireType at position $pos"
+            }
         }
 
         # Find the key that matches the CRX ID
@@ -1673,24 +2010,27 @@ function Get-CrxPublicKey {
 
             foreach ($key in $keys) {
                 $sha = [System.Security.Cryptography.SHA256]::Create()
-                $hash = $sha.ComputeHash($key)
-                $hashHex = [BitConverter]::ToString($hash[0..15]).Replace("-", "").ToLower()
+                try {
+                    $hash = $sha.ComputeHash($key)
+                    $hashHex = [BitConverter]::ToString($hash[0..15]).Replace("-", "").ToLower()
 
-                if ($hashHex -eq $crxIdHex) {
-                    return [Convert]::ToBase64String($key)
+                    if ($hashHex -eq $crxIdHex) {
+                        return [Convert]::ToBase64String($key)
+                    }
+                }
+                finally {
+                    $sha.Dispose()
                 }
             }
         }
 
         # Fallback: return first key if no CRX ID match (shouldn't happen for valid CRX)
         if ($keys.Count -gt 0) {
+            Write-VerboseTimestamped "Warning: CRX ID not found in header, using first available key"
             return [Convert]::ToBase64String($keys[0])
         }
 
-        throw "Could not find public key in CRX3 header"
-    }
-    else {
-        throw "Unsupported CRX version: $version"
+        throw "Could not find public key in CRX3 header (found $($keys.Count) keys, crxId present: $($null -ne $crxId))"
     }
 }
 
@@ -1701,45 +2041,44 @@ function Export-CrxToDirectory {
     .DESCRIPTION
         Handles both CRX2 and CRX3 formats by detecting the header and extracting the ZIP payload.
         Optionally injects the public key into manifest.json for consistent extension ID.
+    .OUTPUTS
+        System.Boolean
     #>
+    [OutputType([bool])]
     param(
+        [Parameter(Mandatory)]
+        [ValidateNotNullOrEmpty()]
         [string]$CrxPath,
+
+        [Parameter(Mandatory)]
+        [ValidateNotNullOrEmpty()]
         [string]$OutputDir,
+
         [switch]$InjectKey
     )
 
+    if (-not (Test-Path -LiteralPath $CrxPath)) {
+        throw "CRX file not found: $CrxPath"
+    }
+
     $bytes = [System.IO.File]::ReadAllBytes($CrxPath)
 
-    # Check magic header "Cr24"
-    $magic = [System.Text.Encoding]::ASCII.GetString($bytes, 0, 4)
-    if ($magic -ne "Cr24") {
-        throw "Invalid CRX file: missing Cr24 magic header"
-    }
-
-    # Get version (4 bytes at offset 4)
-    $version = ConvertTo-LittleEndianUInt32 -Bytes $bytes -Offset 4
-
-    $zipOffset = 0
-
-    if ($version -eq 2) {
-        # CRX2: magic(4) + version(4) + pubkey_len(4) + sig_len(4) + pubkey + sig + zip
-        $pubkeyLen = ConvertTo-LittleEndianUInt32 -Bytes $bytes -Offset 8
-        $sigLen = ConvertTo-LittleEndianUInt32 -Bytes $bytes -Offset 12
-        $zipOffset = 16 + $pubkeyLen + $sigLen
-    }
-    elseif ($version -eq 3) {
-        # CRX3: magic(4) + version(4) + header_len(4) + header + zip
-        $headerLen = ConvertTo-LittleEndianUInt32 -Bytes $bytes -Offset 8
-        $zipOffset = 12 + $headerLen
-    }
-    else {
-        throw "Unsupported CRX version: $version"
-    }
+    # Calculate ZIP offset using helper function (validates format automatically)
+    $zipOffset = Get-CrxZipOffset -Bytes $bytes
 
     # Extract ZIP portion
-    $zipLength = $bytes.GetLength(0) - $zipOffset
+    $zipLength = $bytes.Length - $zipOffset
+    if ($zipLength -le 0) {
+        throw "CRX file has no ZIP content (ZIP length: $zipLength)"
+    }
+
     $zipBytes = New-Object byte[] $zipLength
     [Array]::Copy($bytes, $zipOffset, $zipBytes, 0, $zipLength)
+
+    # Validate ZIP magic (PK\x03\x04)
+    if ($zipBytes.Length -lt 4 -or $zipBytes[0] -ne 0x50 -or $zipBytes[1] -ne 0x4B) {
+        throw "CRX file contains invalid ZIP archive (missing PK signature at offset $zipOffset)"
+    }
 
     # Write to temp file and extract
     $tempZip = Join-Path $env:TEMP "meteor_crx_$(Get-Random).zip"
@@ -1785,41 +2124,54 @@ function Get-CrxManifest {
     .DESCRIPTION
         Extracts only manifest.json from the CRX's ZIP payload using .NET ZipArchive,
         avoiding the overhead of extracting all files.
+    .OUTPUTS
+        System.Management.Automation.PSCustomObject
     #>
-    param([string]$CrxPath)
+    [OutputType([PSCustomObject])]
+    param(
+        [Parameter(Mandatory)]
+        [ValidateNotNullOrEmpty()]
+        [string]$CrxPath
+    )
 
     try {
+        if (-not (Test-Path -LiteralPath $CrxPath)) {
+            Write-VerboseTimestamped "CRX file not found: $CrxPath"
+            return $null
+        }
+
         Add-Type -AssemblyName System.IO.Compression -ErrorAction SilentlyContinue
 
         $bytes = [System.IO.File]::ReadAllBytes($CrxPath)
 
-        # Check magic header "Cr24"
-        $magic = [System.Text.Encoding]::ASCII.GetString($bytes, 0, 4)
-        if ($magic -ne "Cr24") {
+        # Validate minimum size for CRX header
+        if ($bytes.Length -lt $script:CRX_HEADER_SIZE_BASE) {
+            Write-VerboseTimestamped "CRX file too small: $($bytes.Length) bytes"
+            return $null
+        }
+
+        # Check magic header using helper function
+        if (-not (Test-CrxMagic -Bytes $bytes)) {
             Write-VerboseTimestamped "Invalid CRX file: missing Cr24 magic header"
             return $null
         }
 
-        # Get version and calculate ZIP offset
-        $version = ConvertTo-LittleEndianUInt32 -Bytes $bytes -Offset 4
-        $zipOffset = 0
-
-        if ($version -eq 2) {
-            $pubkeyLen = ConvertTo-LittleEndianUInt32 -Bytes $bytes -Offset 8
-            $sigLen = ConvertTo-LittleEndianUInt32 -Bytes $bytes -Offset 12
-            $zipOffset = 16 + $pubkeyLen + $sigLen
+        # Get ZIP offset using helper function
+        try {
+            $zipOffset = Get-CrxZipOffset -Bytes $bytes
         }
-        elseif ($version -eq 3) {
-            $headerLen = ConvertTo-LittleEndianUInt32 -Bytes $bytes -Offset 8
-            $zipOffset = 12 + $headerLen
-        }
-        else {
-            Write-VerboseTimestamped "Unsupported CRX version: $version"
+        catch {
+            Write-VerboseTimestamped "Failed to parse CRX header: $_"
             return $null
         }
 
         # Create memory stream from ZIP portion and read manifest.json directly
         $zipLength = $bytes.Length - $zipOffset
+        if ($zipLength -le 0) {
+            Write-VerboseTimestamped "CRX file has no ZIP content"
+            return $null
+        }
+
         $memStream = New-Object System.IO.MemoryStream($bytes, $zipOffset, $zipLength)
 
         try {
@@ -1836,6 +2188,9 @@ function Get-CrxManifest {
                     finally {
                         $reader.Dispose()
                     }
+                }
+                else {
+                    Write-VerboseTimestamped "manifest.json not found in CRX archive"
                 }
             }
             finally {
@@ -3642,18 +3997,55 @@ function Get-HmacSeedFromLocalState {
 function ConvertTo-SortedObject {
     <#
     .SYNOPSIS
-        Recursively sort all keys and PRUNE empty containers.
+        Recursively sort all keys and PRUNE empty containers for internal state management.
+
     .DESCRIPTION
-        Chromium's JSONWriter sorts keys alphabetically. PowerShell's ConvertTo-Json
-        does NOT sort keys, so we must sort them first to match Chromium's output.
+        PURPOSE: Internal state management and preparation for JSON serialization.
+        This function prepares objects for consistent JSON output by sorting keys
+        alphabetically and pruning empty containers.
 
-        CRITICAL: Chromium's PrefHashCalculator PRUNES empty containers before MAC calculation!
-        Empty arrays [] and empty objects {} are removed from dict entries.
+        DISTINCT FROM ConvertTo-ChromiumJson:
+        - ConvertTo-SortedObject: Handles STRUCTURE (key ordering, pruning)
+        - ConvertTo-ChromiumJson: Handles STRING FORMAT (unicode escaping)
+        - ConvertTo-JsonForHmac: Orchestrates both for MAC calculation
 
-        CRITICAL: PowerShell 5.1 unrolls empty arrays to $null when returned from functions.
-        Use comma operator (return ,$result) to prevent this.
+        KEY BEHAVIORS:
+        1. Sorts hashtable/object keys alphabetically (Chromium's JSONWriter behavior)
+        2. Prunes empty containers (null, [], {}) from dictionary entries
+        3. Recursively processes nested structures
+        4. Preserves array element order (only sorts keys within array elements)
+
+        EDGE CASES:
+        - Empty arrays [] inside arrays: Preserved (not pruned from parent array)
+        - Empty arrays [] as dict values: Pruned (removed from parent dict)
+        - Null values: Pruned from dict entries
+        - Primitives (string, bool, number): Passed through unchanged
+
+        PowerShell 5.1 COMPATIBILITY:
+        - Empty arrays ([]) returned from pipelines become $null due to array unrolling
+        - SOLUTION: Use comma operator (return ,$result) to prevent unrolling
+        - Uses explicit foreach loops instead of pipelines for array processing
+        - Uses ArrayList for building arrays to avoid PS 5.1 quirks
+
+    .PARAMETER Value
+        The object to sort. Can be hashtable, PSCustomObject, array, or primitive.
+
+    .OUTPUTS
+        Returns the sorted object with the same type as input (hashtable -> ordered hashtable,
+        PSCustomObject -> ordered hashtable, array -> array, primitives unchanged).
+
+    .EXAMPLE
+        $sorted = ConvertTo-SortedObject -Value @{ z = 1; a = 2; m = @{ y = 3; b = 4 } }
+        # Result: [ordered]@{ a = 2; m = [ordered]@{ b = 4; y = 3 }; z = 1 }
+
+    .NOTES
+        Reference: Chromium's PrefHashCalculator prunes empty containers before MAC calculation.
+        See: services/preferences/tracked/pref_hash_calculator.cc
     #>
-    param([object]$Value)
+    [OutputType([object])]
+    param(
+        [object]$Value
+    )
 
     if ($null -eq $Value) {
         return $null
@@ -3700,22 +4092,57 @@ function ConvertTo-SortedObject {
 function ConvertTo-ChromiumJson {
     <#
     .SYNOPSIS
-        Normalize PowerShell JSON to match Chromium's JSONWriter format.
+        Normalize PowerShell JSON string to match Chromium's JSONWriter unicode escaping format.
+
     .DESCRIPTION
-        PowerShell's ConvertTo-Json uses different unicode escaping than Chromium:
-        - PowerShell: \u003c (lowercase), \u003e (escaped >), \u0027 (escaped ')
-        - Chromium:   \u003C (uppercase), > (not escaped), ' (not escaped)
+        PURPOSE: MAC calculation - ensures JSON strings match Chromium's exact format for HMAC.
+        This function performs STRING-LEVEL normalization on already-serialized JSON.
 
-        This function normalizes the JSON string to match Chromium's format,
-        which is critical for HMAC calculation to produce matching MACs.
+        DISTINCT FROM ConvertTo-SortedObject:
+        - ConvertTo-SortedObject: Handles STRUCTURE (key ordering, pruning) before serialization
+        - ConvertTo-ChromiumJson: Handles STRING FORMAT (unicode escaping) after serialization
+        - ConvertTo-JsonForHmac: Orchestrates both for complete MAC calculation
 
-        Chromium's JSONWriter (base/json/json_writer.cc):
-        - Escapes < as \u003C (uppercase hex, for HTML safety)
-        - Does NOT escape > (leaves as literal >)
-        - Does NOT escape ' (single quotes are valid in JSON strings)
-        - Uses uppercase hex for all unicode escapes
+        UNICODE ESCAPING DIFFERENCES:
+        +--------------+------------------+-------------------+
+        | Character    | PowerShell       | Chromium          |
+        +--------------+------------------+-------------------+
+        | <            | \u003c           | \u003C (uppercase)|
+        | >            | \u003e           | > (literal)       |
+        | '            | \u0027           | ' (literal)       |
+        | Other escapes| \uxxxx (lower)   | \uXXXX (upper)    |
+        +--------------+------------------+-------------------+
+
+        WHY THIS MATTERS:
+        HMAC-SHA256 is calculated on the byte-level representation of the JSON string.
+        Even a single character difference (e.g., lowercase 'c' vs uppercase 'C' in \u003c)
+        will produce a completely different MAC, causing Chromium to reject the preference.
+
+        TRANSFORMATIONS APPLIED:
+        1. Convert all \uXXXX escapes to uppercase hex (\u003c -> \u003C)
+        2. Unescape > character (\u003E -> >)
+        3. Unescape ' character (\u0027 -> ')
+
+    .PARAMETER Json
+        The JSON string to normalize. Must be valid JSON from ConvertTo-Json.
+
+    .OUTPUTS
+        The normalized JSON string with Chromium-compatible unicode escaping.
+
+    .EXAMPLE
+        $json = '{"url":"\u003cscript\u003e"}'
+        ConvertTo-ChromiumJson -Json $json
+        # Returns: '{"url":"\u003Cscript>"}'
+
+    .NOTES
+        Reference: Chromium's JSONWriter implementation
+        See: base/json/json_writer.cc
     #>
-    param([string]$Json)
+    [OutputType([string])]
+    param(
+        [ValidateNotNull()]
+        [string]$Json
+    )
 
     if ([string]::IsNullOrEmpty($Json)) {
         return $Json
@@ -3743,24 +4170,58 @@ function ConvertTo-ChromiumJson {
 function ConvertTo-JsonForHmac {
     <#
     .SYNOPSIS
-        Serialize value to JSON string for HMAC calculation.
+        Serialize any value to JSON string for HMAC/MAC calculation, matching Chromium's exact format.
+
     .DESCRIPTION
-        Chromium's serialization rules:
-        - Booleans: "true"/"false" (lowercase, no quotes)
-        - Numbers: String representation
-        - Strings: JSON-quoted
-        - Objects/Arrays: JSON with SORTED keys, compact
+        PURPOSE: MAC calculation - this is the MAIN entry point for serializing values
+        for HMAC calculation. Orchestrates ConvertTo-SortedObject and ConvertTo-ChromiumJson.
 
-        CRITICAL: Chromium's JSONWriter sorts keys alphabetically.
-        PowerShell's ConvertTo-Json does NOT sort keys, so we must
-        sort them first to produce matching output.
+        SERIALIZATION PIPELINE:
+        1. Handle special cases (null, booleans, numbers) with type-specific formatting
+        2. For complex types, sort keys via ConvertTo-SortedObject
+        3. Serialize to JSON via ConvertTo-Json
+        4. Normalize unicode escaping via ConvertTo-ChromiumJson
 
-        CRITICAL: Unicode escaping must match Chromium's format:
-        - Uppercase hex: \u003C not \u003c
-        - No > escaping: > not \u003E
-        ConvertTo-ChromiumJson handles this normalization.
+        TYPE-SPECIFIC RULES (must match Chromium's PrefHashCalculator):
+        +--------------+------------------------+---------------------------+
+        | Type         | PowerShell Default     | Chromium Format           |
+        +--------------+------------------------+---------------------------+
+        | null         | "null"                 | "" (empty string)         |
+        | bool true    | "True" or true         | "true" (lowercase)        |
+        | bool false   | "False" or false       | "false" (lowercase)       |
+        | numbers      | JSON number            | JSON number               |
+        | strings      | "value"                | "value" (with \u003C etc) |
+        | arrays       | [...]                  | [...] (sorted inner keys) |
+        | objects      | {...}                  | {...} (sorted keys)       |
+        +--------------+------------------------+---------------------------+
+
+        PowerShell 5.1 EMPTY ARRAY HANDLING:
+        - Problem: Empty arrays [] piped to ConvertTo-Json become $null due to unrolling
+        - Solution: Check for empty array BEFORE piping to ConvertTo-Json
+        - Returns literal "[]" string for empty arrays
+
+    .PARAMETER Value
+        The value to serialize. Can be any type: null, bool, number, string, array, or object.
+
+    .OUTPUTS
+        JSON string matching Chromium's exact format for HMAC calculation.
+
+    .EXAMPLE
+        ConvertTo-JsonForHmac -Value $true
+        # Returns: "true"
+
+    .EXAMPLE
+        ConvertTo-JsonForHmac -Value @{ b = 2; a = 1 }
+        # Returns: '{"a":1,"b":2}' (keys sorted alphabetically)
+
+    .NOTES
+        Reference: Chromium's PrefHashCalculator::Serialize
+        See: services/preferences/tracked/pref_hash_calculator.cc
     #>
-    param([object]$Value)
+    [OutputType([string])]
+    param(
+        [object]$Value
+    )
 
     if ($null -eq $Value) {
         return ""  # Chromium uses empty string for null values, not "null"
@@ -4698,17 +5159,63 @@ function Get-FlattenedMacs {
 function Convert-PSObjectToHashtable {
     <#
     .SYNOPSIS
-        Convert PSCustomObject to hashtable (for PS 5.1 compatibility).
-    .DESCRIPTION
-        CRITICAL for PS 5.1: Arrays of primitives (strings, numbers, bools) must be
-        returned as-is without processing. Only arrays containing PSCustomObjects
-        or hashtables need recursive conversion.
+        Convert PSCustomObject trees to hashtable trees for manipulation in PowerShell 5.1.
 
-        Uses explicit foreach loop instead of pipeline to avoid PS 5.1 quirks
-        with array handling in pipelines that can cause strings to serialize as
-        {"Length":N} instead of "string".
+    .DESCRIPTION
+        PURPOSE: PSCustomObject manipulation - enables modifying objects from ConvertFrom-Json.
+        ConvertFrom-Json returns PSCustomObjects which are read-only. This function converts
+        them to hashtables which can be freely modified.
+
+        DISTINCT FROM ConvertTo-SortedObject:
+        - Convert-PSObjectToHashtable: Converts TYPE (PSCustomObject -> hashtable) for modification
+        - ConvertTo-SortedObject: Transforms STRUCTURE (sorts keys, prunes empties) for serialization
+
+        WHEN TO USE:
+        - After ConvertFrom-Json when you need to modify the data
+        - Before re-serializing modified JSON data
+        - When working with nested config structures that need updates
+
+        TYPE HANDLING:
+        +-----------------+------------------------+
+        | Input Type      | Output                 |
+        +-----------------+------------------------+
+        | null            | @{} (empty hashtable)  |
+        | string          | string (unchanged)     |
+        | bool            | bool (unchanged)       |
+        | numbers         | number (unchanged)     |
+        | hashtable       | hashtable (unchanged)  |
+        | PSCustomObject  | hashtable (converted)  |
+        | array           | array (items converted)|
+        +-----------------+------------------------+
+
+        PowerShell 5.1 COMPATIBILITY:
+        - Problem: Arrays in pipelines cause serialization bugs (strings become {"Length":N})
+        - Solution: Use explicit foreach loops, not pipelines, for array processing
+        - Problem: Empty arrays unroll to $null when returned from functions
+        - Solution: Use comma operator (return ,$result) to preserve array wrapper
+        - Problem: Primitives must be detected BEFORE array check (strings are arrays in PS)
+        - Solution: Check primitive types first in the if-else chain
+
+    .PARAMETER InputObject
+        The object to convert. Typically a PSCustomObject from ConvertFrom-Json.
+
+    .OUTPUTS
+        Returns hashtable for PSCustomObjects, or the input unchanged for primitives/hashtables.
+
+    .EXAMPLE
+        $json = '{"nested":{"key":"value"}}'
+        $obj = ConvertFrom-Json $json
+        $hash = Convert-PSObjectToHashtable -InputObject $obj
+        $hash['nested']['key'] = 'modified'  # Now modifiable
+
+    .NOTES
+        This function does NOT sort keys or prune empty containers.
+        Use ConvertTo-SortedObject after modification if preparing for MAC calculation.
     #>
-    param([object]$InputObject)
+    [OutputType([object])]
+    param(
+        [object]$InputObject
+    )
 
     # Null returns empty hashtable (for root-level calls)
     if ($null -eq $InputObject) { return @{} }
@@ -5140,18 +5647,107 @@ function Update-AllMacs {
 
 #region Browser Launch
 
+function Test-FeatureConflicts {
+    <#
+    .SYNOPSIS
+        Check if any features appear in both enabled and disabled lists.
+    .DESCRIPTION
+        Validates that there are no conflicting feature flags that would cause
+        undefined browser behavior. Logs warnings for any conflicts found.
+    .PARAMETER EnableFeatures
+        Array of feature names to enable.
+    .PARAMETER DisableFeatures
+        Array of feature names to disable.
+    .OUTPUTS
+        [bool] $true if conflicts were found, $false otherwise.
+    #>
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        [AllowEmptyCollection()]
+        [string[]]$EnableFeatures,
+
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        [AllowEmptyCollection()]
+        [string[]]$DisableFeatures
+    )
+
+    # Handle null or empty arrays
+    if (-not $EnableFeatures -or $EnableFeatures.Count -eq 0) {
+        return $false
+    }
+    if (-not $DisableFeatures -or $DisableFeatures.Count -eq 0) {
+        return $false
+    }
+
+    # Find features that appear in both lists
+    $conflicts = $EnableFeatures | Where-Object { $DisableFeatures -contains $_ }
+
+    if ($conflicts -and $conflicts.Count -gt 0) {
+        Write-Status "Feature flag conflicts detected!" -Type Warning
+        foreach ($conflict in $conflicts) {
+            Write-Status "  Conflict: '$conflict' is in both enable and disable lists" -Type Warning
+        }
+        return $true
+    }
+
+    return $false
+}
+
 function Build-BrowserCommand {
     <#
     .SYNOPSIS
         Build the browser command line with all flags.
+    .DESCRIPTION
+        Constructs the complete command line for launching the browser with:
+        - User data directory (for portable mode)
+        - Profile directory
+        - Explicit flags (privacy, debugging, experimental)
+        - Extension loading
+        - Feature flags (enable/disable) in flag-switches block
+    .PARAMETER Config
+        The Meteor configuration object containing browser settings.
+    .PARAMETER BrowserExe
+        Full path to the browser executable.
+    .PARAMETER ExtPath
+        Path to the directory containing patched extensions.
+    .PARAMETER UBlockPath
+        Path to the uBlock Origin extension directory.
+    .PARAMETER AdGuardExtraPath
+        Path to the AdGuard Extra extension directory.
+    .PARAMETER UserDataPath
+        Path to store browser user data (bookmarks, cache, etc.).
+    .PARAMETER UseProxy
+        If specified, routes traffic through a local proxy (127.0.0.1:8888).
+    .OUTPUTS
+        [System.Collections.ArrayList] Command line components as an array.
     #>
+    [OutputType([System.Collections.ArrayList])]
     param(
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNull()]
         [object]$Config,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
         [string]$BrowserExe,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
         [string]$ExtPath,
+
+        [Parameter(Mandatory = $false)]
         [string]$UBlockPath,
+
+        [Parameter(Mandatory = $false)]
         [string]$AdGuardExtraPath,
+
+        [Parameter(Mandatory = $false)]
         [string]$UserDataPath,
+
+        [Parameter(Mandatory = $false)]
         [switch]$UseProxy
     )
 
@@ -5160,30 +5756,45 @@ function Build-BrowserCommand {
 
     $browserConfig = $Config.browser
 
-    # Add user data directory if specified (for portable mode)
+    # ========================================
+    # Section 1: Core Browser Configuration
+    # ========================================
+
+    # User data directory - enables portable mode by isolating all browser data
     if ($UserDataPath) {
         [void]$cmd.Add("--user-data-dir=`"$UserDataPath`"")
     }
 
-    # Add proxy server if specified
+    # Debug proxy - useful for inspecting traffic with tools like Fiddler/mitmproxy
     if ($UseProxy) {
         [void]$cmd.Add("--proxy-server=http://127.0.0.1:8888")
     }
 
-    # Add profile directory if specified
+    # Profile selection - defaults to "Default" profile
     if ($browserConfig.profile) {
         [void]$cmd.Add("--profile-directory=$($browserConfig.profile)")
     }
 
-    # Add explicit flags (outside flag-switches block)
+    # ========================================
+    # Section 2: Explicit Flags (outside flag-switches block)
+    # ========================================
+    # These flags control:
+    # - First-run experience (--no-first-run, --skip-onboarding-for-testing)
+    # - Privacy settings (--disable-client-side-phishing-detection, --no-pings)
+    # - Extension APIs (--enable-experimental-extension-apis)
+    # - MCP features (--enable-local-mcp, --enable-local-custom-mcp, --enable-dxt)
+
     foreach ($flag in $browserConfig.flags) {
         [void]$cmd.Add($flag)
     }
 
-    # Build extension list
+    # ========================================
+    # Section 3: Extension Loading
+    # ========================================
+
     $extensions = [System.Collections.ArrayList]@()
 
-    # Add patched extensions (use bundled keys as directory names)
+    # Add patched bundled extensions (perplexity, comet_web_resources, agents)
     foreach ($extName in $Config.extensions.bundled.PSObject.Properties.Name) {
         $extDir = Join-Path $ExtPath $extName
         if (Test-Path $extDir) {
@@ -5191,12 +5802,12 @@ function Build-BrowserCommand {
         }
     }
 
-    # Add uBlock Origin
+    # Add uBlock Origin MV2 (content blocking)
     if ($UBlockPath -and (Test-Path $UBlockPath)) {
         [void]$extensions.Add($UBlockPath)
     }
 
-    # Add AdGuard Extra
+    # Add AdGuard Extra (anti-adblock circumvention)
     if ($AdGuardExtraPath -and (Test-Path $AdGuardExtraPath)) {
         [void]$extensions.Add($AdGuardExtraPath)
     }
@@ -5208,27 +5819,45 @@ function Build-BrowserCommand {
         [void]$cmd.Add("--load-extension=$extList")
     }
 
-    # Add flag switches section (mimics comet://flags UI-enabled flags)
-    # These flags and features must be in this section to take effect
+    # ========================================
+    # Section 4: Flag Switches Block
+    # ========================================
+    # The --flag-switches-begin/end markers define a section that mimics
+    # chrome://flags UI-enabled flags. Features in this block take precedence.
+
     [void]$cmd.Add("--flag-switches-begin")
 
-    # Add flag_switches from config
+    # Additional flags that work better inside the flag-switches block
+    # (e.g., --disable-quic, --extensions-on-chrome-urls)
     if ($browserConfig.flag_switches) {
         foreach ($flag in $browserConfig.flag_switches) {
             [void]$cmd.Add($flag)
         }
     }
 
-    # Build --enable-features (inside flag-switches block)
-    if ($browserConfig.enable_features -and $browserConfig.enable_features.Count -gt 0) {
-        $enableFeatures = $browserConfig.enable_features -join ","
-        [void]$cmd.Add("--enable-features=$enableFeatures")
+    # Validate feature flags before building command line
+    $enableFeatures = $browserConfig.enable_features
+    $disableFeatures = $browserConfig.disable_features
+
+    $null = Test-FeatureConflicts -EnableFeatures $enableFeatures -DisableFeatures $disableFeatures
+
+    # Enable features - includes:
+    # - MV2 extension support (AllowLegacyMV2Extensions)
+    # - Developer features (DirectSockets, IsolatedWebApps)
+    # - Privacy features (WebRtcHideLocalIpsWithMdns)
+    if ($enableFeatures -and $enableFeatures.Count -gt 0) {
+        $enableFeaturesString = $enableFeatures -join ","
+        [void]$cmd.Add("--enable-features=$enableFeaturesString")
     }
 
-    # Build --disable-features (inside flag-switches block)
-    if ($browserConfig.disable_features -and $browserConfig.disable_features.Count -gt 0) {
-        $disableFeatures = $browserConfig.disable_features -join ","
-        [void]$cmd.Add("--disable-features=$disableFeatures")
+    # Disable features - includes:
+    # - MV2 deprecation warnings (ExtensionManifestV2*)
+    # - Telemetry/analytics (Glic*, HistoryEmbeddings, MlUrlScoring)
+    # - AI features (AI*API, Lens*, NtpComposebox)
+    # - Autofill tracking (Autofill*BuyNowPayLater, Autofill*CardBenefits)
+    if ($disableFeatures -and $disableFeatures.Count -gt 0) {
+        $disableFeaturesString = $disableFeatures -join ","
+        [void]$cmd.Add("--disable-features=$disableFeaturesString")
     }
 
     [void]$cmd.Add("--flag-switches-end")
@@ -5236,20 +5865,179 @@ function Build-BrowserCommand {
     return $cmd
 }
 
+function Format-BrowserCommandForDisplay {
+    <#
+    .SYNOPSIS
+        Format a browser command array for human-readable display.
+    .DESCRIPTION
+        Groups related flags together and formats them with one flag per line
+        for easier verification during dry-run mode.
+    .PARAMETER Command
+        The command array from Build-BrowserCommand.
+    .OUTPUTS
+        [string] Formatted multi-line string representation of the command.
+    #>
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNull()]
+        [array]$Command
+    )
+
+    $output = [System.Text.StringBuilder]::new()
+
+    # Executable path
+    [void]$output.AppendLine("Executable:")
+    [void]$output.AppendLine("  $($Command[0])")
+    [void]$output.AppendLine("")
+
+    # Group flags by category
+    $userDataFlags = @()
+    $profileFlags = @()
+    $privacyFlags = @()
+    $extensionFlags = @()
+    $mcpFlags = @()
+    $flagSwitchesSection = @()
+    $enableFeatures = @()
+    $disableFeatures = @()
+    $otherFlags = @()
+
+    $inFlagSwitches = $false
+
+    for ($i = 1; $i -lt $Command.Count; $i++) {
+        $flag = $Command[$i]
+
+        if ($flag -eq "--flag-switches-begin") {
+            $inFlagSwitches = $true
+            continue
+        }
+        if ($flag -eq "--flag-switches-end") {
+            $inFlagSwitches = $false
+            continue
+        }
+
+        if ($flag -match "^--enable-features=(.+)$") {
+            $enableFeatures = $Matches[1] -split ","
+            continue
+        }
+        if ($flag -match "^--disable-features=(.+)$") {
+            $disableFeatures = $Matches[1] -split ","
+            continue
+        }
+
+        if ($inFlagSwitches) {
+            $flagSwitchesSection += $flag
+            continue
+        }
+
+        # Categorize flags
+        switch -Regex ($flag) {
+            "^--user-data-dir=" { $userDataFlags += $flag }
+            "^--profile-directory=" { $profileFlags += $flag }
+            "^--proxy-server=" { $privacyFlags += $flag }
+            "^--load-extension=" { $extensionFlags += $flag }
+            "^--(enable-local-mcp|enable-local-custom-mcp|enable-dxt)" { $mcpFlags += $flag }
+            "^--(disable-|no-|skip-)" { $privacyFlags += $flag }
+            default { $otherFlags += $flag }
+        }
+    }
+
+    # Output each category
+    if ($userDataFlags.Count -gt 0) {
+        [void]$output.AppendLine("User Data:")
+        foreach ($f in $userDataFlags) { [void]$output.AppendLine("  $f") }
+        [void]$output.AppendLine("")
+    }
+
+    if ($profileFlags.Count -gt 0) {
+        [void]$output.AppendLine("Profile:")
+        foreach ($f in $profileFlags) { [void]$output.AppendLine("  $f") }
+        [void]$output.AppendLine("")
+    }
+
+    if ($privacyFlags.Count -gt 0) {
+        [void]$output.AppendLine("Privacy Flags:")
+        foreach ($f in $privacyFlags) { [void]$output.AppendLine("  $f") }
+        [void]$output.AppendLine("")
+    }
+
+    if ($mcpFlags.Count -gt 0) {
+        [void]$output.AppendLine("MCP Flags:")
+        foreach ($f in $mcpFlags) { [void]$output.AppendLine("  $f") }
+        [void]$output.AppendLine("")
+    }
+
+    if ($extensionFlags.Count -gt 0) {
+        [void]$output.AppendLine("Extensions:")
+        foreach ($f in $extensionFlags) {
+            # Parse and list each extension path on its own line
+            if ($f -match "^--load-extension=(.+)$") {
+                $extPaths = $Matches[1] -split ','
+                foreach ($ext in $extPaths) {
+                    $extName = Split-Path -Leaf ($ext -replace '"', '')
+                    [void]$output.AppendLine("  - $extName")
+                }
+            }
+        }
+        [void]$output.AppendLine("")
+    }
+
+    if ($otherFlags.Count -gt 0) {
+        [void]$output.AppendLine("Other Flags:")
+        foreach ($f in $otherFlags) { [void]$output.AppendLine("  $f") }
+        [void]$output.AppendLine("")
+    }
+
+    if ($flagSwitchesSection.Count -gt 0) {
+        [void]$output.AppendLine("Flag Switches:")
+        foreach ($f in $flagSwitchesSection) { [void]$output.AppendLine("  $f") }
+        [void]$output.AppendLine("")
+    }
+
+    if ($enableFeatures.Count -gt 0) {
+        [void]$output.AppendLine("Enabled Features ($($enableFeatures.Count)):")
+        foreach ($f in ($enableFeatures | Sort-Object)) { [void]$output.AppendLine("  + $f") }
+        [void]$output.AppendLine("")
+    }
+
+    if ($disableFeatures.Count -gt 0) {
+        [void]$output.AppendLine("Disabled Features ($($disableFeatures.Count)):")
+        foreach ($f in ($disableFeatures | Sort-Object)) { [void]$output.AppendLine("  - $f") }
+    }
+
+    return $output.ToString()
+}
+
 function Start-Browser {
     <#
     .SYNOPSIS
         Launch the browser with the built command.
+    .DESCRIPTION
+        Starts the browser process with the provided command line arguments.
+        In dry-run mode (WhatIf), displays a formatted summary of the command.
+    .PARAMETER Command
+        The command array from Build-BrowserCommand (first element is exe, rest are args).
+    .OUTPUTS
+        [System.Diagnostics.Process] The launched browser process, or $null in dry-run mode.
     #>
+    [OutputType([System.Diagnostics.Process])]
     param(
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNull()]
+        [ValidateScript({ $_.Count -ge 1 })]
         [array]$Command
     )
 
     if ($WhatIfPreference) {
         Write-Host ""
-        Write-Status "Would launch with command:" -Type Info
-        Write-Host $Command[0]
-        Write-Host "Flags: $($Command.Count - 1)"
+        Write-Status "Would launch browser with the following configuration:" -Type DryRun
+        Write-Host ""
+
+        # Use the formatter for nice grouped output
+        $formatted = Format-BrowserCommandForDisplay -Command $Command
+        Write-Host $formatted
+
+        Write-Status "Total flags: $($Command.Count - 1)" -Type Detail
         return $null
     }
 

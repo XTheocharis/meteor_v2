@@ -1,6 +1,23 @@
 <#
 .SYNOPSIS
     Debug script to see what types PowerShell produces for JSON parsing.
+
+.DESCRIPTION
+    This is a diagnostic utility for understanding PowerShell 5.1's JSON parsing quirks,
+    particularly around empty arrays and objects. PowerShell 5.1 has several behaviors
+    that can cause MAC calculation mismatches:
+
+    - Empty arrays [] are converted to $null in some cases
+    - Empty arrays can be "unrolled" to $null when returned from functions
+    - Empty objects {} become PSCustomObjects with zero properties
+    - Key ordering is not preserved
+
+    Use this script when debugging why a MAC calculation fails due to serialization
+    differences between Chromium and PowerShell.
+
+.NOTES
+    This script uses local test-data files (secure-preferences.json) when available.
+    It does not require the browser to be running or .meteor directory to exist.
 #>
 
 $ErrorActionPreference = "Stop"

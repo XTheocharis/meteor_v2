@@ -33,361 +33,20 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# Load shared utilities
+. "$PSScriptRoot\Test-Utilities.ps1"
+
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
 
 # Default to .meteor in parent directory (meteor_v2\.meteor)
 if ([string]::IsNullOrEmpty($DataPath)) {
-    $DataPath = Join-Path (Split-Path $PSScriptRoot -Parent) ".meteor"
+    $DataPath = Get-MeteorDataPath
 }
 
-$SecurePrefsFile = Join-Path $DataPath "User Data\Default\Secure Preferences"
-$RegistryPath = "HKCU:\Software\Perplexity\Comet\PreferenceMACs\Default"
-
-# MAC seeds - empty for Comet (non-Chrome branded), standard seed for registry
-$FileMacSeed = ""  # Comet uses empty string
-$RegistryMacSeed = "ChromeRegistryHashStoreValidationSeed"
-
-# ============================================================================
-# GET DEVICE ID (Windows SID without RID)
-# ============================================================================
-
-function Get-DeviceId {
-    <#
-    .SYNOPSIS
-        Get the Windows machine SID (without RID), which Chromium uses as the device ID.
-    .DESCRIPTION
-        Chromium uses the SID without the final RID (Relative ID) component.
-        Example: S-1-5-21-123456789-987654321-555555555-1001 → S-1-5-21-123456789-987654321-555555555
-    #>
-    try {
-        $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent()
-        $fullSid = $currentUser.User.Value
-        # Remove the RID (last component after final dash)
-        $sidWithoutRid = $fullSid -replace '-\d+$', ''
-        return $sidWithoutRid
-    }
-    catch {
-        Write-Host "ERROR: Failed to get Windows SID: $_" -ForegroundColor Red
-        exit 1
-    }
-}
-
-# ============================================================================
-# MAC CALCULATION FUNCTIONS
-# ============================================================================
-
-function Get-HmacSha256 {
-    param(
-        [string]$Key,
-        [string]$Message
-    )
-
-    $keyBytes = [System.Text.Encoding]::UTF8.GetBytes($Key)
-    $messageBytes = [System.Text.Encoding]::UTF8.GetBytes($Message)
-
-    $hmac = New-Object System.Security.Cryptography.HMACSHA256
-    $hmac.Key = $keyBytes
-    $hashBytes = $hmac.ComputeHash($messageBytes)
-
-    return ($hashBytes | ForEach-Object { $_.ToString("X2") }) -join ""
-}
-
-function ConvertTo-SortedAndPruned {
-    <#
-    .SYNOPSIS
-        Recursively sorts keys and prunes empty containers.
-    .DESCRIPTION
-        Chromium's PrefHashCalculator:
-        1. Sorts dictionary keys alphabetically
-        2. PRUNES empty Dict and List values (removes them entirely)
-
-        PowerShell's ConvertTo-Json does NOT sort keys or prune empties.
-        This function creates a copy with sorted keys and empty containers removed.
-    #>
-    param($Value)
-
-    if ($null -eq $Value) {
-        return $null
-    }
-    elseif ($Value -is [array]) {
-        # Process array items AND prune empty dicts/arrays from the list
-        # (Chromium's RemoveEmptyValueListEntries does this)
-        $result = @()
-        foreach ($item in $Value) {
-            $childValue = ConvertTo-SortedAndPruned -Value $item
-            # PRUNE: Skip empty arrays and empty dicts/ordered dicts from list items
-            if ($childValue -is [array] -and $childValue.Count -eq 0) {
-                continue
-            }
-            if ($childValue -is [hashtable] -and $childValue.Count -eq 0) {
-                continue
-            }
-            if ($childValue -is [System.Collections.Specialized.OrderedDictionary] -and $childValue.Count -eq 0) {
-                continue
-            }
-            $result += $childValue
-        }
-        # CRITICAL: Use comma operator to prevent PowerShell from unrolling empty arrays to $null
-        return ,$result
-    }
-    elseif ($Value -is [hashtable]) {
-        $sorted = [ordered]@{}
-        foreach ($key in ($Value.Keys | Sort-Object)) {
-            $childValue = ConvertTo-SortedAndPruned -Value $Value[$key]
-            # PRUNE: Skip null, empty arrays, empty hashtables, and empty PSCustomObjects
-            if ($null -eq $childValue) {
-                continue
-            }
-            if ($childValue -is [array] -and $childValue.Count -eq 0) {
-                continue
-            }
-            if ($childValue -is [hashtable] -and $childValue.Count -eq 0) {
-                continue
-            }
-            if ($childValue -is [System.Collections.Specialized.OrderedDictionary] -and $childValue.Count -eq 0) {
-                continue
-            }
-            if ($childValue -is [PSCustomObject] -and $childValue.PSObject.Properties.Count -eq 0) {
-                continue
-            }
-            $sorted[$key] = $childValue
-        }
-        return $sorted
-    }
-    elseif ($Value -is [PSCustomObject]) {
-        $sorted = [ordered]@{}
-        foreach ($prop in ($Value.PSObject.Properties | Sort-Object Name)) {
-            $childValue = ConvertTo-SortedAndPruned -Value $prop.Value
-            # PRUNE: Skip null, empty arrays, empty objects, and empty PSCustomObjects
-            if ($null -eq $childValue) {
-                continue
-            }
-            if ($childValue -is [array] -and $childValue.Count -eq 0) {
-                continue
-            }
-            if ($childValue -is [hashtable] -and $childValue.Count -eq 0) {
-                continue
-            }
-            if ($childValue -is [System.Collections.Specialized.OrderedDictionary] -and $childValue.Count -eq 0) {
-                continue
-            }
-            if ($childValue -is [PSCustomObject] -and $childValue.PSObject.Properties.Count -eq 0) {
-                continue
-            }
-            $sorted[$prop.Name] = $childValue
-        }
-        return $sorted
-    }
-    else {
-        return $Value
-    }
-}
-
-function ConvertTo-ChromiumJson {
-    <#
-    .SYNOPSIS
-        Normalize PowerShell JSON to match Chromium's JSONWriter format.
-    .DESCRIPTION
-        PowerShell's ConvertTo-Json uses different unicode escaping than Chromium:
-        - PowerShell: \u003c (lowercase), \u003e (escaped >), \u0027 (escaped ')
-        - Chromium:   \u003C (uppercase), > (not escaped), ' (not escaped)
-
-        This function normalizes the JSON string to match Chromium's format.
-    #>
-    param([string]$Json)
-
-    if ([string]::IsNullOrEmpty($Json)) {
-        return $Json
-    }
-
-    # Step 1: Convert all lowercase unicode escapes to uppercase
-    $result = [regex]::Replace($Json, '\\u([0-9a-fA-F]{4})', {
-        param($match)
-        "\u" + $match.Groups[1].Value.ToUpper()
-    })
-
-    # Step 2: Unescape > (Chromium doesn't escape it)
-    $result = $result -replace '\\u003E', '>'
-
-    # Step 3: Unescape single quotes (Chromium doesn't escape them)
-    $result = $result -replace '\\u0027', "'"
-
-    return $result
-}
-
-function ConvertTo-JsonForHmac {
-    <#
-    .SYNOPSIS
-        Serialize value to JSON string for HMAC calculation.
-    .DESCRIPTION
-        Chromium's serialization rules:
-        - Null:     "" (empty string, NOT "null")
-        - Boolean:  "true" or "false" (lowercase)
-        - Array:    "[]" for empty, or JSON with sorted keys (after pruning empty children)
-        - Object:   JSON with keys sorted alphabetically (empty containers pruned)
-        - String:   JSON-quoted
-        - Number:   String representation
-
-        CRITICAL: Chromium prunes empty Dict and List values before MAC calculation!
-        CRITICAL: Unicode escaping must match Chromium's format (uppercase hex, > not escaped)
-    #>
-    param($Value)
-
-    if ($null -eq $Value) {
-        return ""  # CRITICAL: Chromium uses empty string for null
-    }
-    elseif ($Value -is [bool]) {
-        return $Value.ToString().ToLower()
-    }
-    elseif ($Value -is [array]) {
-        if ($Value.Count -eq 0) {
-            return "[]"
-        }
-        # Sort and prune, then serialize
-        $pruned = ConvertTo-SortedAndPruned -Value $Value
-        $json = ConvertTo-Json -InputObject $pruned -Compress -Depth 20
-        return ConvertTo-ChromiumJson -Json $json
-    }
-    elseif ($Value -is [hashtable] -or $Value -is [PSCustomObject]) {
-        # Sort and prune empty containers, then serialize
-        $pruned = ConvertTo-SortedAndPruned -Value $Value
-        # After pruning, check if result is empty
-        if ($pruned -is [hashtable] -and $pruned.Count -eq 0) {
-            return "{}"
-        }
-        if ($pruned -is [System.Collections.Specialized.OrderedDictionary] -and $pruned.Count -eq 0) {
-            return "{}"
-        }
-        $json = ConvertTo-Json -InputObject $pruned -Compress -Depth 20
-        return ConvertTo-ChromiumJson -Json $json
-    }
-    elseif ($Value -is [string]) {
-        # JSON-encode the string (adds quotes and escapes)
-        $json = ConvertTo-Json -InputObject $Value -Compress
-        return ConvertTo-ChromiumJson -Json $json
-    }
-    elseif ($Value -is [int] -or $Value -is [long] -or $Value -is [double]) {
-        return $Value.ToString()
-    }
-    else {
-        $pruned = ConvertTo-SortedAndPruned -Value $Value
-        $json = ConvertTo-Json -InputObject $pruned -Compress -Depth 20
-        return ConvertTo-ChromiumJson -Json $json
-    }
-}
-
-function Calculate-Mac {
-    param(
-        [string]$Seed,
-        [string]$DeviceId,
-        [string]$Path,
-        $Value
-    )
-
-    $valueJson = ConvertTo-JsonForHmac -Value $Value
-    $message = $DeviceId + $Path + $valueJson
-    return Get-HmacSha256 -Key $Seed -Message $message
-}
-
-function Get-PrefValue {
-    <#
-    .SYNOPSIS
-        Navigate a dotted path like "extensions.settings.xyz" to get a value.
-    #>
-    param(
-        [PSCustomObject]$Root,
-        [string]$Path
-    )
-
-    $parts = $Path -split '\.'
-    $current = $Root
-
-    foreach ($part in $parts) {
-        if ($null -eq $current) {
-            return $null
-        }
-        elseif ($current -is [PSCustomObject]) {
-            if ($current.PSObject.Properties.Name -contains $part) {
-                $current = $current.$part
-            }
-            else {
-                return $null
-            }
-        }
-        elseif ($current -is [hashtable]) {
-            if ($current.ContainsKey($part)) {
-                $current = $current[$part]
-            }
-            else {
-                return $null
-            }
-        }
-        else {
-            return $null
-        }
-    }
-
-    return $current
-}
-
-function Test-RawJsonHasEmptyArray {
-    <#
-    .SYNOPSIS
-        Check if the raw JSON has an empty array [] for the given key.
-    #>
-    param(
-        [string]$RawJson,
-        [string]$Key
-    )
-
-    # Look for "key":[] pattern
-    $escapedKey = [regex]::Escape($Key)
-    $pattern = "`"$escapedKey`"\s*:\s*\[\s*\]"
-    return $RawJson -match $pattern
-}
-
-function Get-MacsFromNestedObject {
-    <#
-    .SYNOPSIS
-        Recursively extract all MAC paths and values from a nested PSCustomObject.
-    .DESCRIPTION
-        The protection.macs structure mirrors the preference structure:
-        protection.macs.extensions.settings.{id} = "MAC"
-        This becomes path "extensions.settings.{id}"
-    #>
-    param(
-        [PSCustomObject]$Object,
-        [string]$Prefix = ""
-    )
-
-    $results = @{}
-
-    if ($null -eq $Object) {
-        return $results
-    }
-
-    foreach ($prop in $Object.PSObject.Properties) {
-        $name = $prop.Name
-        $value = $prop.Value
-        $path = if ($Prefix) { "$Prefix.$name" } else { $name }
-
-        if ($value -is [PSCustomObject]) {
-            # Recurse into nested objects
-            $nested = Get-MacsFromNestedObject -Object $value -Prefix $path
-            foreach ($key in $nested.Keys) {
-                $results[$key] = $nested[$key]
-            }
-        }
-        elseif ($value -is [string]) {
-            # This is a MAC value
-            $results[$path] = $value
-        }
-    }
-
-    return $results
-}
+$SecurePrefsFile = Get-SecurePreferencesPath -DataPath $DataPath
+$RegistryPath = Get-RegistryMacsPath
 
 # ============================================================================
 # LOAD DATA
@@ -399,10 +58,10 @@ Write-Host "=" * 80 -ForegroundColor Cyan
 Write-Host ""
 
 # Get device ID
-$deviceId = Get-DeviceId
+$deviceId = Get-WindowsSidWithoutRid
 Write-Host "Device ID (SID without RID): $deviceId"
-Write-Host "File MAC Seed: '$FileMacSeed' (empty = Comet)"
-Write-Host "Registry MAC Seed: '$RegistryMacSeed'"
+Write-Host "File MAC Seed: '$($script:FileMacSeed)' (empty = Comet)"
+Write-Host "Registry MAC Seed: '$($script:RegistryMacSeed)'"
 Write-Host ""
 
 # Check for Secure Preferences file
@@ -502,7 +161,7 @@ foreach ($path in ($fileMacs.Keys | Sort-Object)) {
     }
 
     # Calculate MAC
-    $calculatedMac = Calculate-Mac -Seed $FileMacSeed -DeviceId $deviceId -Path $path -Value $value
+    $calculatedMac = Get-PreferenceHmac -DeviceId $deviceId -Path $path -Value $value
 
     $totalTests++
     $match = $calculatedMac -eq $expectedMac
@@ -572,7 +231,7 @@ foreach ($path in ($registryMacs.Keys | Sort-Object)) {
     }
 
     # Calculate MAC with registry seed
-    $calculatedMac = Calculate-Mac -Seed $RegistryMacSeed -DeviceId $deviceId -Path $path -Value $value
+    $calculatedMac = Get-RegistryPreferenceHmac -DeviceId $deviceId -Path $path -Value $value
 
     $regTotalTests++
     $match = $calculatedMac -eq $expectedMac

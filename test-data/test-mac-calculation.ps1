@@ -20,13 +20,16 @@
     Registry MAC Seed: "ChromeRegistryHashStoreValidationSeed"
 #>
 
+$ErrorActionPreference = "Stop"
+
+# Load shared utilities
+. "$PSScriptRoot\Test-Utilities.ps1"
+
 # ============================================================================
 # VERIFIED DATA FROM BROWSER
 # ============================================================================
 
 $DeviceId = "S-1-5-21-2625391329-1236784108-3013698973"
-$FileSeed = ""  # Empty for non-Chrome branded builds
-$RegistrySeed = "ChromeRegistryHashStoreValidationSeed"
 
 # Browser-generated MACs from Secure Preferences (protection.macs)
 $BrowserFileMACs = @{
@@ -98,82 +101,6 @@ $ActualValues = @{
 }
 
 # ============================================================================
-# MAC CALCULATION FUNCTIONS
-# ============================================================================
-
-function Get-HmacSha256 {
-    param(
-        [string]$Key,
-        [string]$Message
-    )
-
-    $keyBytes = [System.Text.Encoding]::UTF8.GetBytes($Key)
-    $messageBytes = [System.Text.Encoding]::UTF8.GetBytes($Message)
-
-    $hmac = New-Object System.Security.Cryptography.HMACSHA256
-    $hmac.Key = $keyBytes
-    $hashBytes = $hmac.ComputeHash($messageBytes)
-
-    return ($hashBytes | ForEach-Object { $_.ToString("X2") }) -join ""
-}
-
-function ConvertTo-JsonValue {
-    <#
-    .SYNOPSIS
-        Serialize value to JSON string for HMAC calculation.
-    .DESCRIPTION
-        Chromium's serialization rules:
-        - Null:     "" (empty string, NOT "null")
-        - Boolean:  "true" or "false" (lowercase)
-        - Array:    "[]" or JSON representation
-        - String:   JSON-quoted
-        - Number:   String representation
-    #>
-    param($Value)
-
-    if ($null -eq $Value) {
-        return ""  # CRITICAL: Chromium uses empty string for null, not "null"
-    }
-    elseif ($Value -is [bool]) {
-        return $Value.ToString().ToLower()
-    }
-    elseif ($Value -is [array]) {
-        if ($Value.Count -eq 0) {
-            return "[]"
-        }
-        return ($Value | ConvertTo-Json -Compress -Depth 10)
-    }
-    elseif ($Value -is [string]) {
-        return "`"$Value`""
-    }
-    elseif ($Value -is [int] -or $Value -is [long] -or $Value -is [double]) {
-        return $Value.ToString()
-    }
-    else {
-        return ($Value | ConvertTo-Json -Compress -Depth 10)
-    }
-}
-
-function Calculate-Mac {
-    <#
-    .SYNOPSIS
-        Calculate MAC using the verified formula.
-    .DESCRIPTION
-        Formula: HMAC-SHA256(key=seed, message=device_id + path + value_json)
-    #>
-    param(
-        [string]$Seed,
-        [string]$DeviceId,
-        [string]$Path,
-        $Value
-    )
-
-    $valueJson = ConvertTo-JsonValue $Value
-    $message = $DeviceId + $Path + $valueJson
-    return Get-HmacSha256 -Key $Seed -Message $message
-}
-
-# ============================================================================
 # RUN VERIFICATION
 # ============================================================================
 
@@ -184,8 +111,8 @@ Write-Host ""
 Write-Host "Formula: HMAC-SHA256(key=seed, message=device_id + path + value_json)"
 Write-Host ""
 Write-Host "Device ID: $DeviceId"
-Write-Host "File Seed: '$FileSeed' (empty)"
-Write-Host "Registry Seed: '$RegistrySeed'"
+Write-Host "File Seed: '$($script:FileMacSeed)' (empty)"
+Write-Host "Registry Seed: '$($script:RegistryMacSeed)'"
 Write-Host ""
 
 $totalTests = 0
@@ -203,8 +130,8 @@ Write-Host ""
 foreach ($path in $BrowserFileMACs.Keys | Sort-Object) {
     $expectedMac = $BrowserFileMACs[$path]
     $value = $ActualValues[$path]
-    $valueJson = ConvertTo-JsonValue $value
-    $calculatedMac = Calculate-Mac -Seed $FileSeed -DeviceId $DeviceId -Path $path -Value $value
+    $valueJson = ConvertTo-JsonForHmac -Value $value
+    $calculatedMac = Get-PreferenceHmac -DeviceId $DeviceId -Path $path -Value $value
 
     $totalTests++
     $match = $calculatedMac -eq $expectedMac
@@ -240,8 +167,8 @@ Write-Host ""
 foreach ($path in $BrowserRegistryMACs.Keys | Sort-Object) {
     $expectedMac = $BrowserRegistryMACs[$path]
     $value = $ActualValues[$path]
-    $valueJson = ConvertTo-JsonValue $value
-    $calculatedMac = Calculate-Mac -Seed $RegistrySeed -DeviceId $DeviceId -Path $path -Value $value
+    $valueJson = ConvertTo-JsonForHmac -Value $value
+    $calculatedMac = Get-RegistryPreferenceHmac -DeviceId $DeviceId -Path $path -Value $value
 
     $totalTests++
     $match = $calculatedMac -eq $expectedMac

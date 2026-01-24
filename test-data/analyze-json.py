@@ -2,10 +2,29 @@
 """
 Analyze JSON serialization differences between our output and Chromium's.
 
-This script helps debug why MAC calculations differ by:
-1. Loading the browser-captured test data
-2. Serializing values the way we think Chromium does
-3. Calculating MACs and comparing to browser's MACs
+PURPOSE:
+    This script helps debug why MAC calculations differ by:
+    1. Loading the browser-captured test data (browser-state.json, secure-preferences.json)
+    2. Serializing values the way we think Chromium does
+    3. Calculating MACs and comparing to browser's MACs
+
+PREREQUISITES:
+    - browser-state.json: Contains device_id, MAC seeds, and expected MACs from browser
+    - secure-preferences.json: Copy of Secure Preferences file from browser profile
+
+USAGE:
+    python analyze-json.py                    # Test all paths
+    python analyze-json.py extensions         # Test only paths containing "extensions"
+    python analyze-json.py browser.show       # Test only paths containing "browser.show"
+
+OUTPUTS:
+    For each path tested:
+    - [PASS] if calculated MAC matches expected
+    - [FAIL] with detailed JSON for debugging
+
+NOTE:
+    This is a Python reference implementation to cross-check PowerShell calculations.
+    If Python calculations match but PowerShell doesn't, the issue is in PS serialization.
 """
 
 import json

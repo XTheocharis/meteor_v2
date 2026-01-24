@@ -1,76 +1,21 @@
 <#
 .SYNOPSIS
     Debug registry MAC calculation for extension settings.
+
+.DESCRIPTION
+    Compares calculated registry MACs against stored values for extension
+    settings to identify serialization differences.
 #>
 
 $ErrorActionPreference = "Stop"
 
-# Get device ID (Windows SID WITHOUT the RID)
-$fullSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-$deviceId = $fullSid -replace '-\d+$', ''
+# Load shared utilities
+. "$PSScriptRoot\Test-Utilities.ps1"
+
+# Get device ID
+$deviceId = Get-WindowsSidWithoutRid
 Write-Host "Device ID: $deviceId" -ForegroundColor Cyan
 Write-Host ""
-
-# Chromium JSON conversion
-function ConvertTo-ChromiumJson {
-    param([string]$Json)
-    if ([string]::IsNullOrEmpty($Json)) { return $Json }
-    # Step 1: Convert all lowercase unicode escapes to uppercase
-    $result = [regex]::Replace($Json, '\\u([0-9a-fA-F]{4})', {
-        param($match)
-        "\u" + $match.Groups[1].Value.ToUpper()
-    })
-    # Step 2: Unescape > (Chromium doesn't escape it)
-    $result = $result -replace '\\u003E', '>'
-    # Step 3: Unescape single quotes (Chromium doesn't escape them)
-    $result = $result -replace '\\u0027', "'"
-    return $result
-}
-
-# Convert value to sorted ordered dictionary (recursively)
-function ConvertTo-SortedOrderedDict {
-    param($Value)
-
-    if ($null -eq $Value) {
-        return $null
-    }
-    elseif ($Value -is [array]) {
-        $result = @()
-        foreach ($item in $Value) {
-            $converted = ConvertTo-SortedOrderedDict -Value $item
-            $result += $converted
-        }
-        return ,$result
-    }
-    elseif ($Value -is [PSCustomObject]) {
-        $sorted = [ordered]@{}
-        $sortedProps = $Value.PSObject.Properties | Sort-Object Name
-        foreach ($prop in $sortedProps) {
-            $childValue = ConvertTo-SortedOrderedDict -Value $prop.Value
-            $sorted[$prop.Name] = $childValue
-        }
-        return $sorted
-    }
-    else {
-        return $Value
-    }
-}
-
-# Calculate MAC
-function Calculate-MAC {
-    param(
-        [string]$Seed,
-        [string]$Path,
-        [string]$ValueJson
-    )
-    $message = $deviceId + $Path + $ValueJson
-    $keyBytes = [System.Text.Encoding]::UTF8.GetBytes($Seed)
-    $messageBytes = [System.Text.Encoding]::UTF8.GetBytes($message)
-    $hmac = New-Object System.Security.Cryptography.HMACSHA256
-    $hmac.Key = $keyBytes
-    $hashBytes = $hmac.ComputeHash($messageBytes)
-    return ($hashBytes | ForEach-Object { $_.ToString("X2") }) -join ""
-}
 
 # Pick one failing extension to debug
 $extensionId = "mhjfbmdgcfjbbpaeojofohoefgiehjai"  # PDF Viewer
@@ -82,8 +27,7 @@ Write-Host "Path: $path"
 Write-Host ""
 
 # Read from Secure Preferences
-$meteorPath = Join-Path (Split-Path $PSScriptRoot -Parent) ".meteor"
-$securePrefsFile = Join-Path $meteorPath "User Data\Default\Secure Preferences"
+$securePrefsFile = Get-SecurePreferencesPath
 $rawJson = Get-Content $securePrefsFile -Raw
 $prefs = $rawJson | ConvertFrom-Json
 
@@ -92,15 +36,15 @@ $extValue = $prefs.extensions.settings.$extensionId
 
 # Get expected MACs
 $fileMac = $prefs.protection.macs.extensions.settings.$extensionId
-$regPath = "HKCU:\Software\Perplexity\Comet\PreferenceMACs\Default"
+$regPath = Get-RegistryMacsPath
 $regMac = (Get-ItemProperty -Path $regPath -Name $path -ErrorAction SilentlyContinue).$path
 
 Write-Host "Expected File MAC:     $fileMac"
 Write-Host "Expected Registry MAC: $regMac"
 Write-Host ""
 
-# Convert value to sorted JSON
-$sorted = ConvertTo-SortedOrderedDict -Value $extValue
+# Convert value to sorted JSON using shared utilities
+$sorted = ConvertTo-SortedAndPruned -Value $extValue
 $valueJson = ConvertTo-Json -InputObject $sorted -Compress -Depth 50
 $valueJson = ConvertTo-ChromiumJson -Json $valueJson
 
@@ -110,11 +54,8 @@ Write-Host "Value JSON length: $($valueJson.Length)"
 Write-Host ""
 
 # Calculate MACs with both seeds
-$fileSeed = ""
-$registrySeed = "ChromeRegistryHashStoreValidationSeed"
-
-$calcFileMac = Calculate-MAC -Seed $fileSeed -Path $path -ValueJson $valueJson
-$calcRegMac = Calculate-MAC -Seed $registrySeed -Path $path -ValueJson $valueJson
+$calcFileMac = Get-PreferenceHmac -DeviceId $deviceId -Path $path -Value $extValue
+$calcRegMac = Get-RegistryPreferenceHmac -DeviceId $deviceId -Path $path -Value $extValue
 
 Write-Host "=== FILE MAC ===" -ForegroundColor Cyan
 Write-Host "  Expected:   $fileMac"
@@ -164,7 +105,7 @@ if (Test-Path $cometRegPath) {
 Write-Host ""
 
 # Check what's actually stored in the PreferenceMACs key
-$macsPath = "HKCU:\Software\Perplexity\Comet\PreferenceMACs\Default"
+$macsPath = Get-RegistryMacsPath
 if (Test-Path $macsPath) {
     $allMacs = Get-ItemProperty -Path $macsPath
     $extMacProps = $allMacs.PSObject.Properties | Where-Object { $_.Name -like "extensions.settings.*" }
@@ -203,12 +144,9 @@ $extIds = @(
 foreach ($extId in $extIds) {
     $extPath = "extensions.settings.$extId"
     $extVal = $prefs.extensions.settings.$extId
-    $extSorted = ConvertTo-SortedOrderedDict -Value $extVal
-    $extJson = ConvertTo-Json -InputObject $extSorted -Compress -Depth 50
-    $extJson = ConvertTo-ChromiumJson -Json $extJson
+    $calcRegMac = Get-RegistryPreferenceHmac -DeviceId $deviceId -Path $extPath -Value $extVal
 
     $expectedRegMac = $allRegMacs.$extPath
-    $calcRegMac = Calculate-MAC -Seed $registrySeed -Path $extPath -ValueJson $extJson
 
     $status = if ($expectedRegMac -eq $calcRegMac) { "[PASS]" } else { "[FAIL]" }
     $color = if ($expectedRegMac -eq $calcRegMac) { "Green" } else { "Red" }

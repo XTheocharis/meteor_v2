@@ -2,7 +2,27 @@
 """
 Debug extension settings JSON serialization.
 
-Compares our JSON output against what Chromium might produce.
+PURPOSE:
+    Deep dive analysis of a specific extension's JSON serialization to understand
+    why MAC calculations might fail. Focuses on the comet_web_resources extension
+    (mjdcklhepheaaemphcopihnmjlmjpcnh) as a simpler test case.
+
+ANALYSIS PERFORMED:
+    1. Raw value inspection - shows the Python dict structure
+    2. JSON serialization experiments - tests different options (ASCII, sorting, etc.)
+    3. Key order analysis - checks if Chromium stores keys in sorted order
+    4. Detailed JSON output - shows first/last 500 chars for comparison
+
+PREREQUISITES:
+    - browser-state.json: Contains device_id and expected MACs
+    - secure-preferences.json: Copy of Secure Preferences file from browser
+
+USAGE:
+    python debug-extension.py
+
+NOTE:
+    This script tests a single extension to simplify debugging. If the calculated
+    MAC matches for this simpler extension, the core algorithm is correct.
 """
 
 import json

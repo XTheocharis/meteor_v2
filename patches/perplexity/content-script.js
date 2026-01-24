@@ -3,10 +3,30 @@
  * =====================
  * Runs at document_start in MAIN world before any CDN scripts.
  *
- * Functionality:
- * 1. SDK Neutralization - Pre-defines telemetry SDK globals as no-ops
- * 2. Feature Flag Interception - Overrides Eppo SDK to force-enable MCP UI
- * 3. Network Blocking - Patches fetch/XHR/sendBeacon as backup layer
+ * Defense Layer Responsibilities:
+ *
+ * 1. SDK STUBS (Error Prevention)
+ *    Pre-defines telemetry SDK globals (DataDog, Sentry, Mixpanel, Singular) as no-ops.
+ *    Purpose: Prevents runtime errors when application code calls SDK methods after
+ *    DNR has blocked the SDK scripts. Without stubs, the SPA would crash with
+ *    "undefined is not a function" errors.
+ *
+ * 2. SINGULAR SCRIPT INTERCEPTION (Unique Defense)
+ *    Intercepts fetch requests for singular-sdk*.js and returns a stub module.
+ *    Purpose: DNR can block the script request, but the dynamic import would fail.
+ *    By returning a valid stub module, we prevent import errors while neutralizing
+ *    the SDK. This is the only telemetry defense that requires JavaScript interception.
+ *
+ * 3. FEATURE FLAG INTERCEPTION (Eppo SDK)
+ *    Intercepts Eppo SDK fetch requests and returns mock config with local overrides.
+ *    Purpose: Force-enables MCP UI flags and disables telemetry-related flags.
+ *
+ * 4. BACKUP API BLOCKING
+ *    Patches fetch/XHR/sendBeacon for internal API endpoints not covered by DNR.
+ *    Returns fake success responses to prevent retry loops.
+ *
+ * NOTE: Primary telemetry blocking is handled by DNR rules in telemetry.json.
+ * The JavaScript patches here are for error prevention and edge cases only.
  *
  * @license MIT
  */
@@ -14,8 +34,12 @@
   "use strict";
 
   // ============================================================================
-  // SECTION 1: TELEMETRY SDK STUBS
+  // SECTION 1: TELEMETRY SDK STUBS (Error Prevention)
   // ============================================================================
+  // These stubs prevent runtime errors when application code calls SDK methods.
+  // DNR blocks the SDK scripts from loading, but the SPA still expects these
+  // globals to exist. Without stubs, calls like DD_RUM.init() would throw
+  // "Cannot read properties of undefined" errors.
 
   // --------------------------------------------------------------------------
   // DATADOG RUM STUB
@@ -335,10 +359,14 @@
   // ============================================================================
   // SECTION 3: NETWORK REQUEST INTERCEPTION
   // ============================================================================
+  // Primary telemetry blocking is handled by DNR rules in telemetry.json.
+  // This section provides:
+  // 1. Singular SDK script interception - returns stub module (unique defense)
+  // 2. Eppo SDK config interception - returns mock config with local overrides
+  // 3. Backup blocking for internal API endpoints with fake 200 responses
 
-  // Backup blocking patterns - DNR rules (telemetry.json) handle primary blocking,
-  // but JS-level interception provides defense-in-depth with fake success responses.
-  // Only patterns not covered by window.* stubs or needing fake 200 responses.
+  // Backup blocking patterns - these internal APIs need fake success responses
+  // to prevent retry loops. DNR blocks them, but the app may retry indefinitely.
   const BLOCKED_PATTERNS = [
     "/rest/event/analytics",
     "/cdn-cgi/trace",
@@ -416,6 +444,13 @@
   // --------------------------------------------------------------------------
   // PATCH FETCH
   // --------------------------------------------------------------------------
+  // Singular SDK Interception (Unique Defense):
+  // The SPA dynamically imports the Singular SDK via fetch(). DNR can block the
+  // request, but that causes an import error. By intercepting the fetch and
+  // returning a valid stub ES module, we:
+  // 1. Prevent the dynamic import from throwing an error
+  // 2. Provide a no-op implementation that satisfies the SPA's expectations
+  // This is the only case where DNR blocking alone is insufficient.
 
   const originalFetch = window.fetch;
 

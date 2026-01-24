@@ -97,7 +97,7 @@ When you run `.\meteor.ps1`, it performs these steps automatically:
 | `.meteor/User Data/` | Browser profile data (bookmarks, cache, extensions) |
 | `.meteor/patched_extensions/` | Extracted and patched browser extensions |
 | `.meteor/patched_resources/` | Extracted PAK resources (editable text/binary files + manifest.json) |
-| `patches/perplexity/telemetry.json` | 15 DNR rules for telemetry blocking |
+| `patches/perplexity/telemetry.json` | 17 DNR rules for telemetry blocking |
 | `patches/perplexity/meteor-prefs.js` | Service worker preference enforcement |
 | `patches/perplexity/content-script.js` | SDK stubs + feature flag interception |
 
@@ -141,13 +141,14 @@ By default, Meteor runs in **portable mode** (`config.json: comet.portable = tru
 - Redirects local URLs (chrome://, comet://) to perplexity.ai via `chrome.tabs` API
 
 **patches/perplexity/content-script.js**: Content script that:
-- Pre-defines telemetry SDK globals as no-ops (DataDog, Sentry, Mixpanel, Singular)
+- Pre-defines telemetry SDK globals as no-ops for error prevention (DataDog, Sentry, Mixpanel, Singular) - prevents runtime errors when application code calls SDK methods
+- Intercepts Singular SDK script requests and returns stub module - unique defense not covered by DNR since it requires serving replacement JavaScript
 - Intercepts Eppo SDK fetch requests and responds with mock config containing local feature flag overrides
 - Force-enables MCP UI flags (`comet-mcp-enabled`, `custom-remote-mcps`, `comet-dxt-enabled`)
-- Patches fetch/XHR/sendBeacon as backup telemetry blocking layer
+- Provides backup blocking for internal API endpoints with fake success responses
 
-**patches/perplexity/telemetry.json**: 15 DNR rules blocking:
-- DataDog RUM, Singular, Eppo, Mixpanel, Sentry, Intercom
+**patches/perplexity/telemetry.json**: 17 DNR rules (primary telemetry blocking mechanism):
+- DataDog RUM, Singular, Eppo, Mixpanel, Sentry, Intercom, Cloudflare (insights and RUM)
 - Perplexity internal telemetry (irontail, analytics endpoints)
 
 ## Configuration
@@ -245,6 +246,7 @@ The complete Chromium source code is available at `~/chromium/src` for reference
 - `test-mac-calculation.ps1` - Standalone HMAC calculation test with known values
 
 **In `test-data/`:**
+- `Test-Utilities.ps1` - Shared utility functions for MAC calculation tests (dot-source in other scripts)
 - `debug-registry-mac.ps1` - Inspects Windows Registry MAC entries at `HKCU:\SOFTWARE\Perplexity\Comet\PreferenceMACs`
 - `debug-mac.ps1` - Dumps MAC structures from Secure Preferences file
 - `verify-macs.ps1` - Compares calculated vs stored MACs to find mismatches
@@ -347,7 +349,7 @@ The script must run on PowerShell 5.1 (Windows default). Key quirks:
 
 ## Critical Rules for Changes
 
-1. **DNR Rules**: Must maintain exactly 15 rules with sequential IDs 1-15
+1. **DNR Rules**: Must maintain sequential rule IDs starting from 1 (currently 17 rules, IDs 1-17)
 2. **MCP Flags**: These flags MUST be `true` for MCP UI to work:
    - `comet-mcp-enabled`
    - `custom-remote-mcps`

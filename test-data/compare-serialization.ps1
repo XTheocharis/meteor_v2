@@ -16,15 +16,21 @@
 #>
 
 param(
-    [string]$DataPath = ".\.meteor",
+    [string]$DataPath = "",
     [string]$ExtensionId = "mhjfbmdgcfjbbpaeojofohoefgiehjai"
 )
 
 $ErrorActionPreference = "Stop"
 
+# Load shared utilities
+. "$PSScriptRoot\Test-Utilities.ps1"
+
 # Paths
-$SecurePrefsPath = Join-Path $DataPath "User Data\Default\Secure Preferences"
-$RegistryPath = "HKCU:\Software\Perplexity\Comet\PreferenceMACs\Default"
+if ([string]::IsNullOrEmpty($DataPath)) {
+    $DataPath = Get-MeteorDataPath
+}
+$SecurePrefsPath = Get-SecurePreferencesPath -DataPath $DataPath
+$RegistryPath = Get-RegistryMacsPath
 
 Write-Host "=" * 80 -ForegroundColor Cyan
 Write-Host "JSON SERIALIZATION COMPARISON" -ForegroundColor Cyan
@@ -304,49 +310,8 @@ Write-Host ""
 Write-Host "=== PART 7: NORMALIZED JSON COMPARISON ===" -ForegroundColor Yellow
 Write-Host ""
 
-# ConvertTo-ChromiumJson function (from meteor.ps1)
-function ConvertTo-ChromiumJson {
-    param([string]$Json)
-    if ([string]::IsNullOrEmpty($Json)) { return $Json }
-    $result = [regex]::Replace($Json, '\\u([0-9a-fA-F]{4})', {
-        param($match)
-        "\u" + $match.Groups[1].Value.ToUpper()
-    })
-    $result = $result -replace '\\u003E', '>'
-    return $result
-}
-
-# ConvertTo-SortedAndPruned function
-function ConvertTo-SortedAndPruned {
-    param($Value)
-    if ($null -eq $Value) { return $null }
-    elseif ($Value -is [array]) {
-        $result = @()
-        foreach ($item in $Value) {
-            $result += ConvertTo-SortedAndPruned -Value $item
-        }
-        # CRITICAL: Use comma operator to prevent PowerShell from unrolling empty arrays to $null
-        return ,$result
-    }
-    elseif ($Value -is [PSCustomObject]) {
-        $sorted = [ordered]@{}
-        foreach ($prop in ($Value.PSObject.Properties | Sort-Object Name)) {
-            $childValue = ConvertTo-SortedAndPruned -Value $prop.Value
-            # PRUNE: Skip null, empty arrays, empty objects, and empty PSCustomObjects
-            if ($null -eq $childValue) { continue }
-            if ($childValue -is [array] -and $childValue.Count -eq 0) { continue }
-            if ($childValue -is [hashtable] -and $childValue.Count -eq 0) { continue }
-            if ($childValue -is [System.Collections.Specialized.OrderedDictionary] -and $childValue.Count -eq 0) { continue }
-            if ($childValue -is [PSCustomObject] -and $childValue.PSObject.Properties.Count -eq 0) { continue }
-            $sorted[$prop.Name] = $childValue
-        }
-        return $sorted
-    }
-    else { return $Value }
-}
-
 if ($null -ne $extValue) {
-    # Get our serialized JSON (sorted, pruned, normalized)
+    # Get our serialized JSON (sorted, pruned, normalized) using shared utilities
     $pruned = ConvertTo-SortedAndPruned -Value $extValue
     $ourJson = ConvertTo-Json -InputObject $pruned -Compress -Depth 20
     $ourJsonNormalized = ConvertTo-ChromiumJson -Json $ourJson
