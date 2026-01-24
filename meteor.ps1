@@ -3748,11 +3748,15 @@ function Initialize-PatchedExtensions {
                 if ($result.Success -and $result.NeedsUpdate) {
                     Write-Status "  $($ext.Name): v$($result.Version) available" -Type Detail
 
-                    # comet_web_resources: download directly to default_apps (no extraction needed, no patches)
+                    # All extensions download to temp first, then get moved/extracted
+                    $tempCrx = Join-Path $env:TEMP "meteor_ext_$($ext.Name)_$(Get-Random).crx"
+
+                    # comet_web_resources: mark for direct install (no extraction, just move to default_apps)
                     if ($ext.Name -eq 'comet_web_resources') {
-                        $directCrxPath = Join-Path $defaultAppsDir "comet_web_resources.crx"
+                        $finalCrxPath = Join-Path $defaultAppsDir "comet_web_resources.crx"
                         $downloadInfoMap[$ext.Name] = @{
-                            TempCrx       = $directCrxPath
+                            TempCrx       = $tempCrx
+                            FinalCrxPath  = $finalCrxPath  # Where to move after download
                             OutputDir     = $null  # No extraction
                             Version       = $result.Version
                             Codebase      = $result.Codebase
@@ -3760,9 +3764,9 @@ function Initialize-PatchedExtensions {
                         }
                     }
                     else {
-                        $tempCrx = Join-Path $env:TEMP "meteor_ext_$($ext.Name)_$(Get-Random).crx"
                         $downloadInfoMap[$ext.Name] = @{
                             TempCrx       = $tempCrx
+                            FinalCrxPath  = $null
                             OutputDir     = $ext.OutputDir
                             Version       = $result.Version
                             Codebase      = $result.Codebase
@@ -3814,9 +3818,21 @@ function Initialize-PatchedExtensions {
                     $dlInfo = $downloadInfoMap[$extName]
 
                     if ($dlResult.Success -and (Test-Path $dlResult.TempCrx)) {
-                        # comet_web_resources: already downloaded to final location, no extraction needed
+                        # comet_web_resources: move from temp to final location, no extraction needed
                         if ($dlInfo.DirectInstall) {
-                            Write-Status "  $extName`: v$($dlInfo.Version) installed directly" -Type Success
+                            try {
+                                # Remove existing CRX if present
+                                if (Test-Path $dlInfo.FinalCrxPath) {
+                                    Remove-Item -Path $dlInfo.FinalCrxPath -Force
+                                }
+                                # Move temp CRX to final location
+                                Move-Item -Path $dlResult.TempCrx -Destination $dlInfo.FinalCrxPath -Force
+                                Write-Status "  $extName`: v$($dlInfo.Version) installed directly" -Type Success
+                            }
+                            catch {
+                                Write-Status "  $extName`: failed to install ($($_.Exception.Message)), using existing CRX" -Type Warning
+                                Remove-Item -Path $dlResult.TempCrx -Force -ErrorAction SilentlyContinue
+                            }
                             # Don't add to extensionsToProcess - no patching needed, loaded via external_extensions.json
                             continue
                         }
@@ -3847,7 +3863,8 @@ function Initialize-PatchedExtensions {
                     else {
                         # For DirectInstall extensions that failed, they'll still be loaded from existing CRX
                         if ($dlInfo.DirectInstall) {
-                            Write-Status "  $extName`: download failed, using existing CRX" -Type Warning
+                            $errMsg = if ($dlResult.Error) { $dlResult.Error } else { "unknown error" }
+                            Write-Status "  $extName`: download failed ($errMsg), using existing CRX" -Type Warning
                             continue
                         }
                         Write-Status "  $extName`: download failed - $($dlResult.Error)" -Type Warning
