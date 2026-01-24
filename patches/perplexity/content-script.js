@@ -11,7 +11,7 @@
  * @license MIT
  */
 (() => {
-  'use strict';
+  "use strict";
 
   // ============================================================================
   // SECTION 1: TELEMETRY SDK STUBS
@@ -35,7 +35,7 @@
     stopSession: () => {},
     getInternalContext: () => ({}),
     getInitConfiguration: () => ({}),
-    onReady: (cb) => cb?.()
+    onReady: (cb) => cb?.(),
   };
   window.datadogRum = window.DD_RUM;
 
@@ -58,68 +58,95 @@
       setHandler: () => {},
       setLevel: () => {},
       getContext: () => ({}),
-      getHandler: () => 'http',
-      getLevel: () => 'debug'
+      getHandler: () => "http",
+      getLevel: () => "debug",
     },
     setUser: () => {},
     setUserProperty: () => {},
     clearUser: () => {},
-    onReady: (cb) => cb?.()
+    onReady: (cb) => cb?.(),
   };
   window.datadogLogs = window.DD_LOGS;
 
   // --------------------------------------------------------------------------
-  // SINGULAR ANALYTICS STUB
+  // SINGULAR ANALYTICS STUB (shared between window globals and module interception)
   // --------------------------------------------------------------------------
 
-  // SingularConfig class stub - must be a proper constructor
+  // Singular SDK method signatures - single source of truth
+  const SINGULAR_SDK_METHODS = {
+    init: "() => {}",
+    event: "() => {}",
+    revenue: "() => {}",
+    setCustomUserId: "() => {}",
+    unsetCustomUserId: "() => {}",
+    setDeviceCustomUserId: "() => {}",
+    unsetDeviceCustomUserId: "() => {}",
+    setGlobalProperty: "() => {}",
+    unsetGlobalProperty: "() => {}",
+    clearGlobalProperties: "() => {}",
+    buildWebToAppLink: "() => ''",
+    openApp: "() => {}",
+    pageVisit: "() => {}",
+    setGlobalProperties: "() => {}",
+    getGlobalProperties: "() => ({})",
+    getSingularDeviceId: "() => ''",
+    getWebUrl: "() => ''",
+  };
+
+  // SingularConfig class stub
   class SingularConfigStub {
     constructor(apiKey, secretKey, productId) {
       this.apiKey = apiKey;
       this.secretKey = secretKey;
       this.productId = productId;
-      this._customUserId = null;
     }
-    withCustomUserId(userId) {
-      this._customUserId = userId;
+    withCustomUserId() {
       return this;
     }
-    withSessionIdleTimeout() { return this; }
-    withAutoPersistentSingularDeviceId() { return this; }
-    withSkipSingularLinkResolution() { return this; }
-    withWaitForTrackingAuthorizationTimeout() { return this; }
-    withGlobalProperty() { return this; }
-    withSingularLinks() { return this; }
-    withSupportedDomains() { return this; }
-    withInitFinishedCallback() { return this; }
-    withSessionTimeoutCallback() { return this; }
-    withShortLinkResolveTimeout() { return this; }
-    withLogLevel() { return this; }
-    toParams() { return {}; }
+    withSessionIdleTimeout() {
+      return this;
+    }
+    withAutoPersistentSingularDeviceId() {
+      return this;
+    }
+    withSkipSingularLinkResolution() {
+      return this;
+    }
+    withWaitForTrackingAuthorizationTimeout() {
+      return this;
+    }
+    withGlobalProperty() {
+      return this;
+    }
+    withSingularLinks() {
+      return this;
+    }
+    withSupportedDomains() {
+      return this;
+    }
+    withInitFinishedCallback() {
+      return this;
+    }
+    withSessionTimeoutCallback() {
+      return this;
+    }
+    withShortLinkResolveTimeout() {
+      return this;
+    }
+    withLogLevel() {
+      return this;
+    }
+    toParams() {
+      return {};
+    }
   }
 
   window.SingularConfig = SingularConfigStub;
 
-  window.singularSdk = {
-    init: () => {},
-    event: () => {},
-    revenue: () => {},
-    setCustomUserId: () => {},
-    unsetCustomUserId: () => {},
-    setDeviceCustomUserId: () => {},
-    unsetDeviceCustomUserId: () => {},
-    setGlobalProperty: () => {},
-    unsetGlobalProperty: () => {},
-    clearGlobalProperties: () => {},
-    buildWebToAppLink: () => '',
-    openApp: () => {},
-    // Additional methods that might be called
-    pageVisit: () => {},
-    setGlobalProperties: () => {},
-    getGlobalProperties: () => ({}),
-    getSingularDeviceId: () => '',
-    getWebUrl: () => ''
-  };
+  // Create window.singularSdk from shared method signatures
+  window.singularSdk = Object.fromEntries(
+    Object.entries(SINGULAR_SDK_METHODS).map(([k, v]) => [k, eval(v)]),
+  );
 
   // --------------------------------------------------------------------------
   // SENTRY STUB
@@ -142,7 +169,7 @@
     run: (cb) => cb?.({}),
     withScope: (cb) => cb?.({}),
     startTransaction: () => ({ finish: sentryNoOp, setTag: sentryNoOp }),
-    traceHeaders: () => ({})
+    traceHeaders: () => ({}),
   };
 
   window.Sentry = {
@@ -174,7 +201,7 @@
     showReportDialog: sentryNoOp,
     Integrations: {},
     Handlers: {},
-    SDK_VERSION: '0.0.0-meteor-stub'
+    SDK_VERSION: "0.0.0-meteor-stub",
   };
 
   // --------------------------------------------------------------------------
@@ -195,12 +222,12 @@
       union: () => {},
       track_charge: () => {},
       clear_charges: () => {},
-      delete_user: () => {}
+      delete_user: () => {},
     },
     register: () => {},
     register_once: () => {},
     unregister: () => {},
-    get_distinct_id: () => 'meteor-stub',
+    get_distinct_id: () => "meteor-stub",
     reset: () => {},
     opt_in_tracking: () => {},
     opt_out_tracking: () => {},
@@ -208,203 +235,150 @@
     has_opted_out_tracking: () => true,
     get_property: () => undefined,
     set_config: () => {},
-    get_config: () => ({})
+    get_config: () => ({}),
   };
 
   // ============================================================================
-  // SECTION 2: EPPO OVERRIDES VIA LOCALSTORAGE
+  // SECTION 2: LOCAL FEATURE FLAGS (single source of truth)
   // ============================================================================
 
-  // The SPA checks localStorage['eppo_overrides'] BEFORE making network requests.
-  // By setting this key early, we force the flags without needing to intercept Eppo SDK.
-  // This is the built-in override system used by the SPA.
-
-  // Eppo overrides - only include flags that are simple booleans (as strings)
-  // NOTE: Flags that are DICTIONARY types (like *-config, *-settings) should NOT
-  // be set to 'false' as the SPA expects objects, causing "Cannot use 'in' operator" errors
-  const EPPO_OVERRIDES = {
-    // MCP UI FORCE-ENABLE (Windows disabled by default)
-    'comet-mcp-enabled': 'true',
-    'custom-remote-mcps': 'true',
-    'comet-dxt-enabled': 'true',
-
-    // TELEMETRY (DISABLE) - simple boolean flags only
-    'use-mixpanel-analytics': 'false',
-    'report-omnibox-text': 'false',
-    'http-error-monitor': 'false',
-    'upload-client-context-async': 'false',
-    'cf-ping': 'false',
-
-    // URL/NAVIGATION TRACKING (DISABLE)
-    'show-perplexity-nav-suggestions': 'false',
-    'nav-intent-classifier': 'false',
-
-    // SHOPPING/ADVERTISING (DISABLE) - only simple boolean flags
-    'shopping-enabled': 'false',
-    'shopping-comparison': 'false',
-    'shopping-try-on-enabled': 'false',
-    'enable-sidecar-nudge-for-shopping-assistant': 'false',
-    'can-book-hotels': 'false',
-    'get-opentable-enabled': 'false',
-
-    // UPSELL/PROMO TRACKING (DISABLE)
-    'onboarding-comet-upsell': 'false',
-    'onboarding-pro-upsell': 'false',
-    'full-screen-comet-upsell': 'false',
-    'max-upsell': 'false',
-    'pro-free-trial-side-upsell': 'false',
-    'power-user-recruitment-banner': 'false',
-
-    // YOUTUBE/ADBLOCK (DISABLE auto-whitelist)
-    'adblock-youtube-autowhitelist-enabled': 'false',
-
-    // DISCOVERY/SUGGESTIONS (DISABLE tracking)
-    'discover-early-fetch': 'false',
-    'sidecar-personalized-query-suggestions': 'false',
-
-    // ENTERPRISE TELEMETRY (DISABLE)
-    'enterprise-insights': 'false',
-    'enterprise-insights-special-access': 'false'
-  };
-
-  // Inject Eppo overrides via COOKIE (primary) and localStorage (backup)
-  // The SPA checks cookies FIRST via js-cookie, then falls back to localStorage.
-  // Cookie must be set on the correct domain with path=/
-  try {
-    // Set as cookie (checked first by SPA)
-    const cookieValue = encodeURIComponent(JSON.stringify(EPPO_OVERRIDES));
-    // Set cookie with 1 year expiry, path=/, for current domain
-    const expires = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toUTCString();
-    document.cookie = `eppo_overrides=${cookieValue}; path=/; expires=${expires}; SameSite=Lax`;
-
-    // Also set localStorage as backup
-    localStorage.setItem('eppo_overrides', JSON.stringify(EPPO_OVERRIDES));
-  } catch (e) {
-    console.warn('[Meteor] Could not set eppo_overrides:', e);
-  }
-
-  // ============================================================================
-  // SECTION 3: LOCAL FEATURE FLAG OVERRIDES (for network interception fallback)
-  // ============================================================================
-
-  // Local feature flags for network interception fallback
+  // Local feature flags - single source of truth for all flag overrides
   // NOTE: Only include flags that are simple types (boolean, number, array)
   // Dictionary/config flags should NOT be set to false as SPA expects objects
   const LOCAL_FEATURE_FLAGS = {
     // MCP UI FORCE-ENABLE (Windows disabled by default)
-    'comet-mcp-enabled': true,
-    'custom-remote-mcps': true,
-    'comet-dxt-enabled': true,
+    "comet-mcp-enabled": true,
+    "custom-remote-mcps": true,
+    "comet-dxt-enabled": true,
 
     // DIRECT TELEMETRY (DISABLE)
-    'use-mixpanel-analytics': false,
-    'report-omnibox-text': false,
-    'http-error-monitor': false,
-    'upload-client-context-async': false,
-    'cf-ping': false,
+    "use-mixpanel-analytics": false,
+    "report-omnibox-text": false,
+    "http-error-monitor": false,
+    "upload-client-context-async": false,
+    "cf-ping": false,
 
     // URL/NAVIGATION TRACKING (DISABLE)
-    'send-visited-urls-event-interval-minutes': 999999,
-    'browser-analytics-event-blacklist': [
-      'page navigation',
-      'omnibox navigation completed',
-      'urls visited',
-      'app entered background',
-      'app entered foreground',
-      'session start',
-      'session end',
-      'bookmark actions',
-      'comet plus pageview',
-      'memory usage',
-      'cpu usage',
-      'tab count',
-      'system log'
+    "send-visited-urls-event-interval-minutes": 999999,
+    "browser-analytics-event-blacklist": [
+      "page navigation",
+      "omnibox navigation completed",
+      "urls visited",
+      "app entered background",
+      "app entered foreground",
+      "session start",
+      "session end",
+      "bookmark actions",
+      "comet plus pageview",
+      "memory usage",
+      "cpu usage",
+      "tab count",
+      "system log",
     ],
-    'show-perplexity-nav-suggestions': false,
-    'nav-intent-classifier': false,
+    "show-perplexity-nav-suggestions": false,
+    "nav-intent-classifier": false,
 
     // EXTERNAL SEARCH (ENABLE with privacy settings)
-    'enable-external-search': true,
-    'external-search-anonymity': { cookies: ['NID', 'AEC', '__Secure-ENID'] },
-    'enable-external-search-sapi-navigation': false,
+    "enable-external-search": true,
+    "external-search-anonymity": { cookies: ["NID", "AEC", "__Secure-ENID"] },
+    "enable-external-search-sapi-navigation": false,
 
     // SHOPPING/ADVERTISING (DISABLE) - simple boolean flags only
-    'shopping-enabled': false,
-    'shopping-comparison': false,
-    'shopping-try-on-enabled': false,
-    'enable-sidecar-nudge-for-shopping-assistant': false,
-    'can-book-hotels': false,
-    'get-opentable-enabled': false,
+    "shopping-enabled": false,
+    "shopping-comparison": false,
+    "shopping-try-on-enabled": false,
+    "enable-sidecar-nudge-for-shopping-assistant": false,
+    "can-book-hotels": false,
+    "get-opentable-enabled": false,
 
     // UPSELL/PROMO TRACKING (DISABLE)
-    'onboarding-comet-upsell': false,
-    'onboarding-pro-upsell': false,
-    'full-screen-comet-upsell': false,
-    'max-upsell': false,
-    'pro-free-trial-side-upsell': false,
-    'power-user-recruitment-banner': false,
+    "onboarding-comet-upsell": false,
+    "onboarding-pro-upsell": false,
+    "full-screen-comet-upsell": false,
+    "max-upsell": false,
+    "pro-free-trial-side-upsell": false,
+    "power-user-recruitment-banner": false,
 
     // YOUTUBE/ADBLOCK (DISABLE auto-whitelist)
-    'adblock-youtube-autowhitelist-enabled': false,
+    "adblock-youtube-autowhitelist-enabled": false,
 
     // DISCOVERY/SUGGESTIONS (DISABLE tracking)
-    'discover-early-fetch': false,
-    'sidecar-personalized-query-suggestions': false,
+    "discover-early-fetch": false,
+    "sidecar-personalized-query-suggestions": false,
 
     // ENTERPRISE TELEMETRY (DISABLE)
-    'enterprise-insights': false,
-    'enterprise-insights-special-access': false
+    "enterprise-insights": false,
+    "enterprise-insights-special-access": false,
   };
+
+  // Generate EPPO_OVERRIDES from LOCAL_FEATURE_FLAGS (boolean/number flags only, as strings)
+  // The SPA checks localStorage['eppo_overrides'] BEFORE making network requests.
+  const EPPO_OVERRIDES = Object.fromEntries(
+    Object.entries(LOCAL_FEATURE_FLAGS)
+      .filter(([_, v]) => typeof v === "boolean" || typeof v === "number")
+      .map(([k, v]) => [k, String(v)]),
+  );
+
+  // Inject Eppo overrides via COOKIE (primary) and localStorage (backup)
+  // The SPA checks cookies FIRST via js-cookie, then falls back to localStorage.
+  try {
+    const cookieValue = encodeURIComponent(JSON.stringify(EPPO_OVERRIDES));
+    const expires = new Date(
+      Date.now() + 365 * 24 * 60 * 60 * 1000,
+    ).toUTCString();
+    document.cookie = `eppo_overrides=${cookieValue}; path=/; expires=${expires}; SameSite=Lax`;
+    localStorage.setItem("eppo_overrides", JSON.stringify(EPPO_OVERRIDES));
+  } catch (e) {
+    console.warn("[Meteor] Could not set eppo_overrides:", e);
+  }
 
   // ============================================================================
   // SECTION 3: NETWORK REQUEST INTERCEPTION
   // ============================================================================
 
+  // Backup blocking patterns - DNR rules (telemetry.json) handle primary blocking,
+  // but JS-level interception provides defense-in-depth with fake success responses.
+  // Only patterns not covered by window.* stubs or needing fake 200 responses.
   const BLOCKED_PATTERNS = [
-    'browser-intake-datadoghq.com',
-    'sdk-api-v1.singular.net',
-    'ingest.sentry.io',
-    'api.mixpanel.com',
-    'irontail.perplexity.ai',
-    '/rest/event/analytics',
-    '/rest/attribution/',
-    '/cdn-cgi/trace',
-    '/api/intercom',
-    '/rest/homepage-widgets/upsell/interacted',
-    '/rest/ntp/upsell/interacted',
-    '/rest/autosuggest/track-query-clicked',
-    '/rest/live-events/subscription'
+    "/rest/event/analytics",
+    "/cdn-cgi/trace",
+    "/cdn-cgi/rum",
+    "/api/intercom",
+    "/rest/homepage-widgets/upsell/interacted",
+    "/rest/ntp/upsell/interacted",
+    "/rest/autosuggest/track-query-clicked",
+    "/rest/live-events/subscription",
   ];
 
-  const EPPO_ENDPOINTS = [
-    'fscdn.eppo.cloud',
-    'fs-edge-assignment.eppo.cloud'
-  ];
+  const EPPO_ENDPOINTS = ["fscdn.eppo.cloud", "fs-edge-assignment.eppo.cloud"];
 
   function getUrlString(input) {
-    if (typeof input === 'string') return input;
+    if (typeof input === "string") return input;
     if (input instanceof URL) return input.href;
     if (input instanceof Request) return input.url;
-    return '';
+    return "";
   }
 
   function shouldBlock(url) {
     if (!url) return false;
     const urlStr = url.toLowerCase();
-    return BLOCKED_PATTERNS.some(pattern => urlStr.includes(pattern.toLowerCase()));
+    return BLOCKED_PATTERNS.some((pattern) =>
+      urlStr.includes(pattern.toLowerCase()),
+    );
   }
 
   function isEppoEndpoint(url) {
     if (!url) return false;
-    return EPPO_ENDPOINTS.some(endpoint => url.includes(endpoint));
+    return EPPO_ENDPOINTS.some((endpoint) => url.includes(endpoint));
   }
 
   function getVariationType(value) {
-    if (typeof value === 'boolean') return 'BOOLEAN';
-    if (typeof value === 'number') return Number.isInteger(value) ? 'INTEGER' : 'NUMERIC';
-    if (typeof value === 'string') return 'STRING';
-    if (Array.isArray(value) || typeof value === 'object') return 'JSON';
-    return 'STRING';
+    if (typeof value === "boolean") return "BOOLEAN";
+    if (typeof value === "number")
+      return Number.isInteger(value) ? "INTEGER" : "NUMERIC";
+    if (typeof value === "string") return "STRING";
+    if (Array.isArray(value) || typeof value === "object") return "JSON";
+    return "STRING";
   }
 
   function createMockEppoConfig() {
@@ -414,24 +388,28 @@
         key: key,
         enabled: true,
         variationType: getVariationType(value),
-        variations: { 'local-override': { key: 'local-override', value: value } },
-        allocations: [{
-          key: 'default',
-          rules: [],
-          startAt: null,
-          endAt: null,
-          splits: [{ variationKey: 'local-override', shards: [] }],
-          doLog: false
-        }],
-        totalShards: 10000
+        variations: {
+          "local-override": { key: "local-override", value: value },
+        },
+        allocations: [
+          {
+            key: "default",
+            rules: [],
+            startAt: null,
+            endAt: null,
+            splits: [{ variationKey: "local-override", shards: [] }],
+            doLog: false,
+          },
+        ],
+        totalShards: 10000,
       };
     }
     return {
       flags: flags,
       bandits: {},
       createdAt: new Date().toISOString(),
-      format: 'SERVER',
-      environment: { name: 'local-override' }
+      format: "SERVER",
+      environment: { name: "local-override" },
     };
   }
 
@@ -441,16 +419,17 @@
 
   const originalFetch = window.fetch;
 
-  // Stub module for Singular SDK - exported as 's' to match bundler convention
+  // Generate Singular stub module from shared SINGULAR_SDK_METHODS
+  const singularSdkMethods = Object.entries(SINGULAR_SDK_METHODS)
+    .map(([k, v]) => `${k}: ${v}`)
+    .join(",\n        ");
   const SINGULAR_STUB_MODULE = `
     export const s = {
       SingularConfig: class SingularConfig {
         constructor(apiKey, secretKey, productId) {
-          this.apiKey = apiKey;
-          this.secretKey = secretKey;
-          this.productId = productId;
+          this.apiKey = apiKey; this.secretKey = secretKey; this.productId = productId;
         }
-        withCustomUserId(userId) { return this; }
+        withCustomUserId() { return this; }
         withSessionIdleTimeout() { return this; }
         withAutoPersistentSingularDeviceId() { return this; }
         withSkipSingularLinkResolution() { return this; }
@@ -464,53 +443,50 @@
         withLogLevel() { return this; }
         toParams() { return {}; }
       },
-      singularSdk: {
-        init: () => {},
-        event: () => {},
-        revenue: () => {},
-        setCustomUserId: () => {},
-        unsetCustomUserId: () => {},
-        setDeviceCustomUserId: () => {},
-        unsetDeviceCustomUserId: () => {},
-        setGlobalProperty: () => {},
-        unsetGlobalProperty: () => {},
-        clearGlobalProperties: () => {},
-        buildWebToAppLink: () => '',
-        openApp: () => {},
-        pageVisit: () => {},
-        setGlobalProperties: () => {},
-        getGlobalProperties: () => ({}),
-        getSingularDeviceId: () => '',
-        getWebUrl: () => ''
-      }
+      singularSdk: { ${singularSdkMethods} }
     };
   `;
 
-  window.fetch = function(input, init) {
+  window.fetch = function (input, init) {
     const url = getUrlString(input);
 
     // Intercept Singular SDK script requests with stub module
-    if (url.includes('singular-sdk') && url.endsWith('.js')) {
-      return Promise.resolve(new Response(SINGULAR_STUB_MODULE, {
-        status: 200,
-        headers: { 'Content-Type': 'application/javascript', 'X-Meteor-Intercepted': 'singular' }
-      }));
+    if (url.includes("singular-sdk") && url.endsWith(".js")) {
+      return Promise.resolve(
+        new Response(SINGULAR_STUB_MODULE, {
+          status: 200,
+          headers: {
+            "Content-Type": "application/javascript",
+            "X-Meteor-Intercepted": "singular",
+          },
+        }),
+      );
     }
 
     // Intercept Eppo SDK requests with mock config
     if (isEppoEndpoint(url)) {
-      return Promise.resolve(new Response(JSON.stringify(createMockEppoConfig()), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json', 'X-Meteor-Intercepted': 'eppo' }
-      }));
+      return Promise.resolve(
+        new Response(JSON.stringify(createMockEppoConfig()), {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json",
+            "X-Meteor-Intercepted": "eppo",
+          },
+        }),
+      );
     }
 
     // Block telemetry requests
     if (shouldBlock(url)) {
-      return Promise.resolve(new Response('{}', {
-        status: 200,
-        headers: { 'Content-Type': 'application/json', 'X-Meteor-Blocked': 'true' }
-      }));
+      return Promise.resolve(
+        new Response("{}", {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json",
+            "X-Meteor-Blocked": "true",
+          },
+        }),
+      );
     }
 
     return originalFetch.apply(this, arguments);
@@ -523,20 +499,23 @@
   const originalXHROpen = XMLHttpRequest.prototype.open;
   const originalXHRSend = XMLHttpRequest.prototype.send;
 
-  XMLHttpRequest.prototype.open = function(method, url, ...rest) {
+  XMLHttpRequest.prototype.open = function (method, url, ...rest) {
     this._meteorUrl = url;
     return originalXHROpen.apply(this, [method, url, ...rest]);
   };
 
-  XMLHttpRequest.prototype.send = function(body) {
+  XMLHttpRequest.prototype.send = function (body) {
     if (shouldBlock(this._meteorUrl)) {
-      Object.defineProperty(this, 'status', { value: 200, writable: false });
-      Object.defineProperty(this, 'responseText', { value: '{}', writable: false });
-      Object.defineProperty(this, 'response', { value: '{}', writable: false });
-      Object.defineProperty(this, 'readyState', { value: 4, writable: false });
+      Object.defineProperty(this, "status", { value: 200, writable: false });
+      Object.defineProperty(this, "responseText", {
+        value: "{}",
+        writable: false,
+      });
+      Object.defineProperty(this, "response", { value: "{}", writable: false });
+      Object.defineProperty(this, "readyState", { value: 4, writable: false });
       setTimeout(() => {
-        this.dispatchEvent(new Event('load'));
-        this.dispatchEvent(new Event('loadend'));
+        this.dispatchEvent(new Event("load"));
+        this.dispatchEvent(new Event("loadend"));
       }, 0);
       return;
     }
@@ -549,7 +528,7 @@
 
   const originalSendBeacon = navigator.sendBeacon?.bind(navigator);
   if (originalSendBeacon) {
-    navigator.sendBeacon = function(url, data) {
+    navigator.sendBeacon = function (url, data) {
       if (shouldBlock(url)) return true;
       return originalSendBeacon(url, data);
     };
@@ -563,17 +542,22 @@
     if (!client || client.__meteorPatched) return;
 
     const methods = [
-      'getBooleanAssignment',
-      'getStringAssignment',
-      'getNumericAssignment',
-      'getIntegerAssignment',
-      'getJSONAssignment'
+      "getBooleanAssignment",
+      "getStringAssignment",
+      "getNumericAssignment",
+      "getIntegerAssignment",
+      "getJSONAssignment",
     ];
 
     for (const method of methods) {
-      if (typeof client[method] === 'function') {
+      if (typeof client[method] === "function") {
         const original = client[method].bind(client);
-        client[method] = function(flagKey, subjectKey, subjectAttributes, defaultValue) {
+        client[method] = function (
+          flagKey,
+          subjectKey,
+          subjectAttributes,
+          defaultValue,
+        ) {
           if (LOCAL_FEATURE_FLAGS.hasOwnProperty(flagKey)) {
             return LOCAL_FEATURE_FLAGS[flagKey];
           }
@@ -585,7 +569,7 @@
   }
 
   function patchEppoClient() {
-    const windowKeys = ['eppoClient', 'EppoClient', '__eppo__', '_eppo'];
+    const windowKeys = ["eppoClient", "EppoClient", "__eppo__", "_eppo"];
     for (const key of windowKeys) {
       if (window[key]) patchClientMethods(window[key]);
     }
@@ -593,13 +577,15 @@
     try {
       if (window.EppoSdk?.getInstance) {
         const originalGetInstance = window.EppoSdk.getInstance;
-        window.EppoSdk.getInstance = function() {
+        window.EppoSdk.getInstance = function () {
           const client = originalGetInstance.apply(this, arguments);
           patchClientMethods(client);
           return client;
         };
       }
-    } catch (e) { /* ignore */ }
+    } catch (e) {
+      /* ignore */
+    }
   }
 
   patchEppoClient();
@@ -614,10 +600,10 @@
   // Enforce Meteor color theme (purple/magenta accent)
   // Equivalent to uBlock rule: www.perplexity.ai##*:style(--max-color: 55% .25 295 !important; --super-color: 55% .25 295 !important;)
   function injectMeteorStyles() {
-    if (document.getElementById('meteor-styles')) return;
+    if (document.getElementById("meteor-styles")) return;
 
-    const style = document.createElement('style');
-    style.id = 'meteor-styles';
+    const style = document.createElement("style");
+    style.id = "meteor-styles";
     style.textContent = `
       * {
         --max-color: 55% .25 295 !important;
@@ -638,7 +624,10 @@
           observer.disconnect();
         }
       });
-      observer.observe(document.documentElement || document, { childList: true, subtree: true });
+      observer.observe(document.documentElement || document, {
+        childList: true,
+        subtree: true,
+      });
     }
   }
 
@@ -648,7 +637,7 @@
   // SECTION 6: NEW THREAD BUTTON LINK WRAPPER
   // ============================================================================
 
-  const HOMEPAGE_URL = 'https://www.perplexity.ai/b/home';
+  const HOMEPAGE_URL = "https://www.perplexity.ai/b/home";
 
   /**
    * Wrap "New Thread" button in an <a> element to enable native link behavior.
@@ -661,7 +650,7 @@
       if (button.__meteorWrapped) return;
 
       // Skip if already wrapped in an <a>
-      if (button.parentElement?.tagName === 'A') {
+      if (button.parentElement?.tagName === "A") {
         button.__meteorWrapped = true;
         return;
       }
@@ -669,20 +658,25 @@
       button.__meteorWrapped = true;
 
       // Create wrapper link
-      const link = document.createElement('a');
+      const link = document.createElement("a");
       link.href = HOMEPAGE_URL;
-      link.style.cssText = 'text-decoration: none; color: inherit; display: contents;';
+      link.style.cssText =
+        "text-decoration: none; color: inherit; display: contents;";
 
       // Wrap the button
       button.parentNode.insertBefore(link, button);
       link.appendChild(button);
 
       // Prevent the button's default behavior from interfering
-      button.addEventListener('click', (e) => {
-        // Let the <a> handle navigation naturally for normal clicks
-        // Stop propagation to prevent React handlers
-        e.stopPropagation();
-      }, true);
+      button.addEventListener(
+        "click",
+        (e) => {
+          // Let the <a> handle navigation naturally for normal clicks
+          // Stop propagation to prevent React handlers
+          e.stopPropagation();
+        },
+        true,
+      );
     }
 
     // Wrap any existing buttons
@@ -720,7 +714,10 @@
           bodyObserver.disconnect();
         }
       });
-      bodyObserver.observe(document.documentElement || document, { childList: true, subtree: true });
+      bodyObserver.observe(document.documentElement || document, {
+        childList: true,
+        subtree: true,
+      });
     }
   }
 
@@ -732,9 +729,13 @@
 
   window.__meteorFeatureFlags = {
     get: (flagKey) => LOCAL_FEATURE_FLAGS[flagKey],
-    set: (flagKey, value) => { LOCAL_FEATURE_FLAGS[flagKey] = value; },
-    getAll: () => ({ ...LOCAL_FEATURE_FLAGS })
+    set: (flagKey, value) => {
+      LOCAL_FEATURE_FLAGS[flagKey] = value;
+    },
+    getAll: () => ({ ...LOCAL_FEATURE_FLAGS }),
   };
 
-  console.log('[Meteor] Content script active - SDK stubs + eppo_overrides localStorage + styles enabled');
+  console.log(
+    "[Meteor] Content script active - SDK stubs + eppo_overrides localStorage + styles enabled",
+  );
 })();

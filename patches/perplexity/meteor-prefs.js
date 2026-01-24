@@ -8,7 +8,7 @@
  */
 
 (() => {
-  'use strict';
+  "use strict";
 
   // ============================================================================
   // CONFIGURATION
@@ -22,51 +22,51 @@
     // ========================================================================
 
     // Disable built-in adblock (use uBlock instead)
-    'perplexity.adblock.enabled': false,
-    'perplexity.adblock.fb_embed_default': false,
-    'perplexity.adblock.linkedin_embed_default': false,
-    'perplexity.adblock.twitter_embed_default': false,
-    'perplexity.adblock.whitelist': [],
-    'perplexity.adblock.hidden_whitelisted_dst': [],
-    'perplexity.adblock.hidden_whitelisted_src': [],
+    "perplexity.adblock.enabled": false,
+    "perplexity.adblock.fb_embed_default": false,
+    "perplexity.adblock.linkedin_embed_default": false,
+    "perplexity.adblock.twitter_embed_default": false,
+    "perplexity.adblock.whitelist": [],
+    "perplexity.adblock.hidden_whitelisted_dst": [],
+    "perplexity.adblock.hidden_whitelisted_src": [],
 
     // Disable telemetry and analytics
-    'perplexity.metrics_allowed': false,
-    'perplexity.analytics_observer_initialised': false,
+    "perplexity.metrics_allowed": false,
+    "perplexity.analytics_observer_initialised": false,
 
     // Disable data collection features
-    'perplexity.history_search_enabled': false,
-    'perplexity.external_search_enabled': false,
-    'perplexity.help_me_with_text.enabled': false,
-    'perplexity.proactive_scraping.enabled': false,
-    'perplexity.always_allow_browser_agent': false,
+    "perplexity.history_search_enabled": false,
+    "perplexity.external_search_enabled": false,
+    "perplexity.help_me_with_text.enabled": false,
+    "perplexity.proactive_scraping.enabled": false,
+    "perplexity.always_allow_browser_agent": false,
 
     // Disable proactive notifications
-    'perplexity.notifications.proactive_assistance.enabled': false,
+    "perplexity.notifications.proactive_assistance.enabled": false,
 
     // Skip setup/onboarding
-    'perplexity.onboarding_completed': true,
-    'perplexity.was_site_onboarding_started': true,
+    "perplexity.onboarding_completed": true,
+    "perplexity.was_site_onboarding_started": true,
 
     // ========================================================================
     // Chromium Privacy Settings (available in Comet)
     // ========================================================================
 
     // Search & Omnibox
-    'search.suggest_enabled': false,
-    'omnibox.prevent_url_elisions': true,
+    "search.suggest_enabled": false,
+    "omnibox.prevent_url_elisions": true,
 
     // Safe Browsing - disable telemetry but keep protection
-    'safebrowsing.scout_reporting_enabled': false,
+    "safebrowsing.scout_reporting_enabled": false,
 
     // Disable URL-keyed data collection
-    'url_keyed_anonymized_data_collection.enabled': false,
+    "url_keyed_anonymized_data_collection.enabled": false,
 
     // Disable feedback
-    'feedback_allowed': false,
+    feedback_allowed: false,
 
     // UI Preferences
-    'browser.show_home_button': true
+    "browser.show_home_button": true,
   };
 
   // ============================================================================
@@ -82,15 +82,18 @@
     try {
       for (const [name, value] of Object.entries(ENFORCED_PREFERENCES)) {
         await new Promise((resolve) => {
-          chrome.settingsPrivate.setPref(name, value, '', () => {
+          chrome.settingsPrivate.setPref(name, value, "", () => {
             if (chrome.runtime.lastError) {
-              console.warn(`[Meteor] Failed to set ${name}:`, chrome.runtime.lastError.message);
+              console.warn(
+                `[Meteor] Failed to set ${name}:`,
+                chrome.runtime.lastError.message,
+              );
             }
             resolve();
           });
         });
       }
-      console.log('[Meteor] Preferences enforced');
+      console.log("[Meteor] Preferences enforced");
     } finally {
       isApplying = false;
     }
@@ -100,7 +103,7 @@
     if (!chrome?.settingsPrivate?.onPrefsChanged) return;
 
     chrome.settingsPrivate.onPrefsChanged.addListener((prefs) => {
-      const changed = prefs.some(p => p.key in ENFORCED_PREFERENCES);
+      const changed = prefs.some((p) => p.key in ENFORCED_PREFERENCES);
       if (changed && !isApplying) {
         setTimeout(applyPreferences, 100);
       }
@@ -114,56 +117,25 @@
   // Direct access to chrome.perplexity.mcp is already available in this context.
   // This wrapper provides a cleaner async/await interface.
 
+  // Helper to promisify chrome.perplexity.mcp methods
+  const promisifyMcp =
+    (method, defaultValue = undefined) =>
+    (...args) =>
+      new Promise((resolve, reject) => {
+        chrome.perplexity.mcp[method](...args, (result) => {
+          chrome.runtime.lastError
+            ? reject(new Error(chrome.runtime.lastError.message))
+            : resolve(result ?? defaultValue);
+        });
+      });
+
   globalThis.MeteorMCP = {
-    async getServers() {
-      return new Promise((resolve, reject) => {
-        chrome.perplexity.mcp.getStdioServers((servers) => {
-          chrome.runtime.lastError
-            ? reject(new Error(chrome.runtime.lastError.message))
-            : resolve(servers || []);
-        });
-      });
-    },
-
-    async addServer(name, command, args = [], env = {}) {
-      return new Promise((resolve, reject) => {
-        chrome.perplexity.mcp.addStdioServer(name, command, args, env, (server) => {
-          chrome.runtime.lastError
-            ? reject(new Error(chrome.runtime.lastError.message))
-            : resolve(server);
-        });
-      });
-    },
-
-    async removeServer(name) {
-      return new Promise((resolve, reject) => {
-        chrome.perplexity.mcp.removeStdioServer(name, () => {
-          chrome.runtime.lastError
-            ? reject(new Error(chrome.runtime.lastError.message))
-            : resolve();
-        });
-      });
-    },
-
-    async getTools(serverName) {
-      return new Promise((resolve, reject) => {
-        chrome.perplexity.mcp.getTools(serverName, (tools) => {
-          chrome.runtime.lastError
-            ? reject(new Error(chrome.runtime.lastError.message))
-            : resolve(tools || []);
-        });
-      });
-    },
-
-    async callTool(serverName, toolName, args) {
-      return new Promise((resolve, reject) => {
-        chrome.perplexity.mcp.callTool(serverName, toolName, args, (result) => {
-          chrome.runtime.lastError
-            ? reject(new Error(chrome.runtime.lastError.message))
-            : resolve(result);
-        });
-      });
-    }
+    getServers: promisifyMcp("getStdioServers", []),
+    addServer: (name, command, args = [], env = {}) =>
+      promisifyMcp("addStdioServer")(name, command, args, env),
+    removeServer: promisifyMcp("removeStdioServer"),
+    getTools: promisifyMcp("getTools", []),
+    callTool: promisifyMcp("callTool"),
   };
 
   // ============================================================================
@@ -172,8 +144,8 @@
 
   // Extension IDs to auto-enable in incognito
   const METEOR_EXTENSIONS = {
-    'cjpalhdlnbpafiamejdnhcphjbkeiagm': 'uBlock Origin',
-    'gkeojjjcdcopjkbelgbcpckplegclfeg': 'AdGuard Extra'
+    cjpalhdlnbpafiamejdnhcphjbkeiagm: "uBlock Origin",
+    gkeojjjcdcopjkbelgbcpckplegclfeg: "AdGuard Extra",
   };
 
   /**
@@ -188,9 +160,11 @@
     chrome.management.getAll((extensions) => {
       if (chrome.runtime.lastError) return;
 
-      const meteorExts = extensions.filter(e => METEOR_EXTENSIONS[e.id] && e.enabled);
+      const meteorExts = extensions.filter(
+        (e) => METEOR_EXTENSIONS[e.id] && e.enabled,
+      );
       if (meteorExts.length > 0) {
-        const names = meteorExts.map(e => METEOR_EXTENSIONS[e.id]).join(', ');
+        const names = meteorExts.map((e) => METEOR_EXTENSIONS[e.id]).join(", ");
         console.log(`[Meteor] Extensions loaded: ${names}`);
       }
     });
@@ -210,6 +184,6 @@
   // Re-apply periodically (catch edge cases)
   setInterval(applyPreferences, 60000);
 
-  console.log('[Meteor] Preference enforcement initialized');
-  console.log('[Meteor] Remote URL redirection active');
+  console.log("[Meteor] Preference enforcement initialized");
+  console.log("[Meteor] Remote URL redirection active");
 })();
