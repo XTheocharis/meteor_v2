@@ -21,9 +21,9 @@
  *    Intercepts Eppo SDK fetch requests and returns mock config with local overrides.
  *    Purpose: Force-enables MCP UI flags and disables telemetry-related flags.
  *
- * 4. BACKUP API BLOCKING
- *    Patches fetch/XHR/sendBeacon for internal API endpoints not covered by DNR.
- *    Returns fake success responses to prevent retry loops.
+ * 4. TELEMETRY REQUEST INTERCEPTION
+ *    Patches fetch/XHR/sendBeacon to intercept telemetry requests BEFORE DNR.
+ *    DNR blocking still logs console errors; intercepting at fetch level is silent.
  *
  * NOTE: Primary telemetry blocking is handled by DNR rules in telemetry.json.
  * The JavaScript patches here are for error prevention and edge cases only.
@@ -365,9 +365,11 @@
   // 2. Eppo SDK config interception - returns mock config with local overrides
   // 3. Backup blocking for internal API endpoints with fake 200 responses
 
-  // Backup blocking patterns - these internal APIs need fake success responses
-  // to prevent retry loops. DNR blocks them, but the app may retry indefinitely.
+  // Blocking patterns - intercept these BEFORE they reach DNR to prevent
+  // console errors. DNR blocks at network level which still logs errors.
+  // By intercepting at fetch level, we return silent fake responses.
   const BLOCKED_PATTERNS = [
+    // Internal API endpoints (prevent retry loops)
     "/rest/event/analytics",
     "/cdn-cgi/trace",
     "/cdn-cgi/rum",
@@ -376,6 +378,15 @@
     "/rest/ntp/upsell/interacted",
     "/rest/autosuggest/track-query-clicked",
     "/rest/live-events/subscription",
+    // External telemetry domains (intercept before DNR to suppress errors)
+    "browser-intake-datadoghq.com",
+    "cloudflareinsights.com",
+    "api.mixpanel.com",
+    ".ingest.sentry.io",
+    "sdk-api-v1.singular.net",
+    "irontail.perplexity.ai",
+    // Restricted debug features (require Cloudflare Access auth, cause CORS errors)
+    "_restricted/restricted-feature",
   ];
 
   const EPPO_ENDPOINTS = ["fscdn.eppo.cloud", "fs-edge-assignment.eppo.cloud"];
