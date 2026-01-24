@@ -2355,8 +2355,9 @@ function Get-CrxManifest {
     .SYNOPSIS
         Read manifest.json from a CRX file without full extraction.
     .DESCRIPTION
-        Extracts only manifest.json from the CRX's ZIP payload using .NET ZipArchive,
-        avoiding the overhead of extracting all files.
+        Uses streaming to read only the CRX header and manifest.json entry,
+        avoiding loading the entire CRX file into memory. This is critical
+        for large CRX files (10+ MB) where ReadAllBytes would be slow.
     .OUTPUTS
         System.Management.Automation.PSCustomObject
     #>
@@ -2367,6 +2368,8 @@ function Get-CrxManifest {
         [string]$CrxPath
     )
 
+    $fileStream = $null
+
     try {
         if (-not (Test-Path -LiteralPath $CrxPath)) {
             Write-VerboseTimestamped "CRX file not found: $CrxPath"
@@ -2375,67 +2378,122 @@ function Get-CrxManifest {
 
         Add-Type -AssemblyName System.IO.Compression -ErrorAction SilentlyContinue
 
-        $bytes = [System.IO.File]::ReadAllBytes($CrxPath)
+        # Open file stream (don't load entire file into memory)
+        $fileStream = [System.IO.File]::OpenRead($CrxPath)
 
-        # Validate minimum size for CRX header
-        if ($bytes.Length -lt $script:CRX_HEADER_SIZE_BASE) {
-            Write-VerboseTimestamped "CRX file too small: $($bytes.Length) bytes"
+        # Read only the CRX header (first 16 bytes max needed)
+        $header = New-Object byte[] 16
+        $bytesRead = $fileStream.Read($header, 0, 16)
+        if ($bytesRead -lt 12) {
+            Write-VerboseTimestamped "CRX file too small: $bytesRead bytes read"
             return $null
         }
 
-        # Check magic header using helper function
-        if (-not (Test-CrxMagic -Bytes $bytes)) {
+        # Check magic header "Cr24"
+        if ($header[0] -ne 0x43 -or $header[1] -ne 0x72 -or $header[2] -ne 0x32 -or $header[3] -ne 0x34) {
             Write-VerboseTimestamped "Invalid CRX file: missing Cr24 magic header"
             return $null
         }
 
-        # Get ZIP offset using helper function
-        try {
-            $zipOffset = Get-CrxZipOffset -Bytes $bytes
+        # Calculate ZIP offset from header
+        $version = [BitConverter]::ToUInt32($header, 4)
+        if ($version -eq 2) {
+            # CRX2: magic(4) + version(4) + pubkey_len(4) + sig_len(4) + pubkey + sig + zip
+            $pubkeyLen = [BitConverter]::ToUInt32($header, 8)
+            $sigLen = [BitConverter]::ToUInt32($header, 12)
+            $zipOffset = 16 + $pubkeyLen + $sigLen
         }
-        catch {
-            Write-VerboseTimestamped "Failed to parse CRX header: $_"
+        elseif ($version -eq 3) {
+            # CRX3: magic(4) + version(4) + header_len(4) + header + zip
+            $headerLen = [BitConverter]::ToUInt32($header, 8)
+            $zipOffset = 12 + $headerLen
+        }
+        else {
+            Write-VerboseTimestamped "Unsupported CRX version: $version"
             return $null
         }
 
-        # Create memory stream from ZIP portion and read manifest.json directly
-        $zipLength = $bytes.Length - $zipOffset
-        if ($zipLength -le 0) {
-            Write-VerboseTimestamped "CRX file has no ZIP content"
-            return $null
-        }
+        # manifest.json is typically at the start of the ZIP and small (<10KB)
+        # Read only first 256KB of ZIP portion to find it, avoiding full file load
+        $remainingLength = $fileStream.Length - $zipOffset
+        $readSize = [Math]::Min(262144, $remainingLength)  # 256KB max
 
-        $memStream = New-Object System.IO.MemoryStream($bytes, $zipOffset, $zipLength)
+        # Seek to ZIP start and read limited portion
+        $fileStream.Seek($zipOffset, [System.IO.SeekOrigin]::Begin) | Out-Null
+        $zipBytes = New-Object byte[] $readSize
+        $actualRead = $fileStream.Read($zipBytes, 0, $readSize)
 
-        try {
-            $archive = New-Object System.IO.Compression.ZipArchive($memStream, [System.IO.Compression.ZipArchiveMode]::Read)
+        # Parse ZIP local file headers to find manifest.json without full archive
+        # ZIP local file header: signature(4) + version(2) + flags(2) + compression(2) +
+        #                        modtime(2) + moddate(2) + crc(4) + compressed_size(4) +
+        #                        uncompressed_size(4) + name_len(2) + extra_len(2) + name + extra + data
+        $pos = 0
+        while ($pos + 30 -lt $actualRead) {
+            # Check local file header signature (0x04034b50)
+            if ($zipBytes[$pos] -ne 0x50 -or $zipBytes[$pos+1] -ne 0x4b -or
+                $zipBytes[$pos+2] -ne 0x03 -or $zipBytes[$pos+3] -ne 0x04) {
+                break  # Not a local file header
+            }
 
-            try {
-                $manifestEntry = $archive.GetEntry("manifest.json")
-                if ($manifestEntry) {
-                    $reader = New-Object System.IO.StreamReader($manifestEntry.Open())
+            $compression = [BitConverter]::ToUInt16($zipBytes, $pos + 8)
+            $compressedSize = [BitConverter]::ToUInt32($zipBytes, $pos + 18)
+            $nameLen = [BitConverter]::ToUInt16($zipBytes, $pos + 26)
+            $extraLen = [BitConverter]::ToUInt16($zipBytes, $pos + 28)
+            $nameStart = $pos + 30
+            $dataStart = $nameStart + $nameLen + $extraLen
+
+            if ($nameStart + $nameLen -gt $actualRead) { break }
+
+            $fileName = [System.Text.Encoding]::UTF8.GetString($zipBytes, $nameStart, $nameLen)
+
+            if ($fileName -eq "manifest.json") {
+                # Found it! Extract and decompress
+                $dataEnd = $dataStart + $compressedSize
+                if ($dataEnd -gt $actualRead) {
+                    Write-VerboseTimestamped "manifest.json data extends beyond read buffer"
+                    break
+                }
+
+                $compressedData = New-Object byte[] $compressedSize
+                [Array]::Copy($zipBytes, $dataStart, $compressedData, 0, $compressedSize)
+
+                if ($compression -eq 0) {
+                    # Stored (no compression)
+                    $content = [System.Text.Encoding]::UTF8.GetString($compressedData)
+                }
+                elseif ($compression -eq 8) {
+                    # Deflate
+                    $compStream = New-Object System.IO.MemoryStream($compressedData, $false)
+                    $deflateStream = New-Object System.IO.Compression.DeflateStream($compStream, [System.IO.Compression.CompressionMode]::Decompress)
+                    $reader = New-Object System.IO.StreamReader($deflateStream)
                     try {
                         $content = $reader.ReadToEnd()
-                        return $content | ConvertFrom-Json
                     }
                     finally {
                         $reader.Dispose()
+                        $deflateStream.Dispose()
+                        $compStream.Dispose()
                     }
                 }
                 else {
-                    Write-VerboseTimestamped "manifest.json not found in CRX archive"
+                    Write-VerboseTimestamped "Unsupported compression method: $compression"
+                    break
                 }
+
+                return $content | ConvertFrom-Json
             }
-            finally {
-                $archive.Dispose()
-            }
+
+            # Move to next entry
+            $pos = $dataStart + $compressedSize
         }
-        finally {
-            $memStream.Dispose()
-        }
+
+        Write-VerboseTimestamped "manifest.json not found in first 256KB of CRX archive"
     }
     catch {
         Write-VerboseTimestamped "Failed to read CRX manifest: $_"
+    }
+    finally {
+        if ($fileStream) { $fileStream.Dispose() }
     }
 
     return $null
