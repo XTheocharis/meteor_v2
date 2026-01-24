@@ -6014,7 +6014,6 @@ function Start-Browser {
     param(
         [Parameter(Mandatory = $true)]
         [ValidateNotNull()]
-        [ValidateScript({ $_.Count -ge 1 })]
         [array]$Command
     )
 
