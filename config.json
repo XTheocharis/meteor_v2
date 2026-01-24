@@ -247,7 +247,9 @@
                 "https://www.perplexity.ai/*",
                 "https://perplexity.ai/*"
               ],
-              "js": ["content/content-script.js"],
+              "js": [
+                "content/content-script.js"
+              ],
               "run_at": "document_start",
               "world": "MAIN",
               "all_frames": true
@@ -264,7 +266,7 @@
     }
   },
   "pak_modifications": {
-    "enabled": false,
+    "enabled": true,
     "modifications": [
       {
         "pattern": "!isPerplexityInternalUser",
