@@ -7987,6 +7987,391 @@ setTimeout(checkAndImport, 3000);
     }
 
     # ═══════════════════════════════════════════════════════════════
+    # Start PAK Modifications in Background (runs parallel with Steps 1-4)
+    # ═══════════════════════════════════════════════════════════════
+    $pakTask = $null
+    $pakEnabled = $config.pak_modifications.enabled -eq $true
+    $pakHasModifications = $config.pak_modifications.modifications -and @($config.pak_modifications.modifications).Count -gt 0
+
+    if (-not $WhatIfPreference -and -not $SkipPak -and $comet -and $pakEnabled -and $pakHasModifications) {
+        # Self-contained scriptblock for PAK processing (runspaces can't access main script functions)
+        $pakScript = {
+            param(
+                [string]$CometDir,
+                [hashtable]$PakConfig,
+                [hashtable]$PakState,
+                [bool]$Force
+            )
+
+            $result = @{
+                Success               = $false
+                Skipped               = $false
+                HashAfterModification = $null
+                ModifiedResourceIds   = @()
+                ModificationConfigHash = $null
+                Error                 = $null
+            }
+
+            try {
+                # Helper: Read little-endian integers
+                function Read-UInt32 { param([byte[]]$B, [int]$O) [BitConverter]::ToUInt32($B, $O) }
+                function Read-UInt16 { param([byte[]]$B, [int]$O) [BitConverter]::ToUInt16($B, $O) }
+                function Write-UInt32 { param([uint32]$V) [BitConverter]::GetBytes($V) }
+                function Write-UInt16 { param([uint16]$V) [BitConverter]::GetBytes($V) }
+
+                # Helper: Expand gzip
+                function Expand-Gzip {
+                    param([byte[]]$Bytes)
+                    try {
+                        $inStream = New-Object System.IO.MemoryStream($Bytes, $false)
+                        $gzStream = New-Object System.IO.Compression.GZipStream($inStream, [System.IO.Compression.CompressionMode]::Decompress)
+                        $outStream = New-Object System.IO.MemoryStream
+                        $gzStream.CopyTo($outStream)
+                        $gzStream.Close(); $inStream.Close()
+                        $r = $outStream.ToArray(); $outStream.Close()
+                        return $r
+                    } catch { return $null }
+                }
+
+                # Helper: Compress gzip
+                function Compress-Gzip {
+                    param([byte[]]$Bytes)
+                    $outStream = New-Object System.IO.MemoryStream
+                    $gzStream = New-Object System.IO.Compression.GZipStream($outStream, [System.IO.Compression.CompressionMode]::Compress)
+                    $gzStream.Write($Bytes, 0, $Bytes.Length)
+                    $gzStream.Close()
+                    $r = $outStream.ToArray(); $outStream.Close()
+                    return $r
+                }
+
+                # Helper: Test binary content
+                function Test-Binary {
+                    param([byte[]]$Bytes)
+                    if ($null -eq $Bytes -or $Bytes.Length -eq 0) { return $false }
+                    $len = [Math]::Min($Bytes.Length, 8192)
+                    for ($i = 0; $i -lt $len; $i++) {
+                        $b = $Bytes[$i]
+                        if ($b -eq 0 -or ($b -lt 32 -and $b -ne 9 -and $b -ne 10 -and $b -ne 13)) { return $true }
+                    }
+                    return $false
+                }
+
+                # Helper: Find version directory
+                function Find-VersionDir {
+                    param([string]$Path)
+                    if (-not (Test-Path $Path)) { return $null }
+                    $dirs = @(Get-ChildItem -Path $Path -Directory -ErrorAction SilentlyContinue |
+                        Where-Object { $_.Name -match '^\d+\.\d+\.\d+' } |
+                        Sort-Object { [Version]($_.Name -replace '^(\d+\.\d+\.\d+\.\d+).*', '$1') } -Descending)
+                    if ($dirs.Count -gt 0) { return $dirs[0] }
+                    return $null
+                }
+
+                # Helper: Get file hash
+                function Get-Hash {
+                    param([string]$Path)
+                    if (-not (Test-Path $Path)) { return $null }
+                    return (Get-FileHash -Path $Path -Algorithm SHA256).Hash
+                }
+
+                # Helper: Get string hash
+                function Get-StrHash {
+                    param([string]$Content)
+                    $sha = [System.Security.Cryptography.SHA256]::Create()
+                    try {
+                        $bytes = [System.Text.Encoding]::UTF8.GetBytes($Content)
+                        return [BitConverter]::ToString($sha.ComputeHash($bytes)).Replace("-", "")
+                    } finally { $sha.Dispose() }
+                }
+
+                # Helper: Sort object for consistent hashing
+                function Sort-Obj {
+                    param([object]$Value)
+                    if ($null -eq $Value) { return $null }
+                    if ($Value -is [hashtable]) {
+                        $sorted = [ordered]@{}
+                        foreach ($key in ($Value.Keys | Sort-Object)) {
+                            $sorted[$key] = Sort-Obj -Value $Value[$key]
+                        }
+                        return $sorted
+                    }
+                    if ($Value -is [System.Collections.IEnumerable] -and $Value -isnot [string]) {
+                        $arr = [System.Collections.ArrayList]@()
+                        foreach ($item in $Value) { [void]$arr.Add((Sort-Obj -Value $item)) }
+                        return ,$arr
+                    }
+                    return $Value
+                }
+
+                # Helper: Read PAK file
+                function Read-Pak {
+                    param([string]$Path)
+                    $bytes = [System.IO.File]::ReadAllBytes($Path)
+                    $version = Read-UInt32 -B $bytes -O 0
+                    if ($version -ne 4 -and $version -ne 5) { throw "Unsupported PAK version: $version" }
+
+                    $pak = @{
+                        Version = $version; Encoding = $bytes[4]
+                        Resources = [System.Collections.ArrayList]@()
+                        Aliases = [System.Collections.ArrayList]@()
+                        RawBytes = $bytes
+                    }
+                    $offset = 5
+                    if ($version -eq 4) {
+                        $numResources = Read-UInt32 -B $bytes -O $offset; $offset += 4; $numAliases = 0
+                    } else {
+                        $offset += 3
+                        $numResources = Read-UInt16 -B $bytes -O $offset; $offset += 2
+                        $numAliases = Read-UInt16 -B $bytes -O $offset; $offset += 2
+                    }
+                    for ($i = 0; $i -le $numResources; $i++) {
+                        $resId = Read-UInt16 -B $bytes -O $offset
+                        $resOffset = Read-UInt32 -B $bytes -O ($offset + 2)
+                        [void]$pak.Resources.Add(@{ Id = $resId; Offset = $resOffset })
+                        $offset += 6
+                    }
+                    if ($version -eq 5 -and $numAliases -gt 0) {
+                        for ($i = 0; $i -lt $numAliases; $i++) {
+                            $aliasId = Read-UInt16 -B $bytes -O $offset
+                            $aliasIndex = Read-UInt16 -B $bytes -O ($offset + 2)
+                            [void]$pak.Aliases.Add(@{ Id = $aliasId; ResourceIndex = $aliasIndex })
+                            $offset += 4
+                        }
+                    }
+                    $pak.DataStartOffset = $offset
+                    $resourceIndex = @{}
+                    for ($i = 0; $i -lt $pak.Resources.Count; $i++) {
+                        $resourceIndex[[int]$pak.Resources[$i].Id] = $i
+                    }
+                    $pak.ResourceIndex = $resourceIndex
+                    return $pak
+                }
+
+                # Helper: Get PAK resource
+                function Get-Resource {
+                    param([hashtable]$Pak, [int]$Id)
+                    if ($Pak.ResourceIndex -and $Pak.ResourceIndex.ContainsKey($Id)) {
+                        $i = $Pak.ResourceIndex[$Id]
+                        if ($i -ge $Pak.Resources.Count - 1) { return $null }
+                        $startOffset = $Pak.Resources[$i].Offset
+                        $endOffset = $Pak.Resources[$i + 1].Offset
+                        $length = $endOffset - $startOffset
+                        $data = New-Object byte[] $length
+                        [Array]::Copy($Pak.RawBytes, $startOffset, $data, 0, $length)
+                        return ,$data
+                    }
+                    return $null
+                }
+
+                # Helper: Write PAK with modifications
+                function Write-PakMod {
+                    param([hashtable]$Pak, [string]$Path, [hashtable]$Mods)
+                    $output = [System.Collections.ArrayList]@()
+                    [void]$output.AddRange((Write-UInt32 -V $Pak.Version))
+                    [void]$output.Add($Pak.Encoding)
+                    $numResources = $Pak.Resources.Count - 1
+                    if ($Pak.Version -eq 4) {
+                        [void]$output.AddRange((Write-UInt32 -V $numResources))
+                    } else {
+                        [void]$output.Add([byte]0); [void]$output.Add([byte]0); [void]$output.Add([byte]0)
+                        [void]$output.AddRange((Write-UInt16 -V ([uint16]$numResources)))
+                        [void]$output.AddRange((Write-UInt16 -V ([uint16]$Pak.Aliases.Count)))
+                    }
+                    $headerSize = $output.Count
+                    $resourceTableSize = $Pak.Resources.Count * 6
+                    $aliasTableSize = $Pak.Aliases.Count * 4
+                    $dataStartOffset = $headerSize + $resourceTableSize + $aliasTableSize
+                    $currentDataOffset = $dataStartOffset
+                    $resourceData = [System.Collections.ArrayList]@()
+                    $newOffsets = @{}
+                    for ($i = 0; $i -lt $Pak.Resources.Count - 1; $i++) {
+                        $resourceId = $Pak.Resources[$i].Id
+                        $startOffset = $Pak.Resources[$i].Offset
+                        $endOffset = $Pak.Resources[$i + 1].Offset
+                        $originalLength = $endOffset - $startOffset
+                        if ($Mods.ContainsKey($resourceId)) {
+                            $data = [byte[]]$Mods[$resourceId]
+                        } else {
+                            $data = New-Object byte[] $originalLength
+                            [Array]::Copy($Pak.RawBytes, $startOffset, $data, 0, $originalLength)
+                        }
+                        $newOffsets[$i] = $currentDataOffset
+                        [void]$resourceData.Add($data)
+                        $currentDataOffset += $data.Length
+                    }
+                    $newOffsets[$Pak.Resources.Count - 1] = $currentDataOffset
+                    for ($i = 0; $i -lt $Pak.Resources.Count; $i++) {
+                        [void]$output.AddRange((Write-UInt16 -V ([uint16]$Pak.Resources[$i].Id)))
+                        [void]$output.AddRange((Write-UInt32 -V ([uint32]$newOffsets[$i])))
+                    }
+                    foreach ($alias in $Pak.Aliases) {
+                        [void]$output.AddRange((Write-UInt16 -V ([uint16]$alias.Id)))
+                        [void]$output.AddRange((Write-UInt16 -V ([uint16]$alias.ResourceIndex)))
+                    }
+                    foreach ($data in $resourceData) { [void]$output.AddRange($data) }
+                    [System.IO.File]::WriteAllBytes($Path, [byte[]]$output.ToArray())
+                }
+
+                # 1. Locate resources.pak
+                $pakPath = Join-Path $CometDir "resources.pak"
+                if (-not (Test-Path $pakPath)) {
+                    $versionDir = Find-VersionDir -Path $CometDir
+                    if ($versionDir) {
+                        $testPath = Join-Path $versionDir.FullName "resources.pak"
+                        if (Test-Path $testPath) { $pakPath = $testPath }
+                    }
+                }
+                if (-not (Test-Path $pakPath)) {
+                    $result.Success = $true; $result.Skipped = $true
+                    return $result
+                }
+
+                # 2. Restore from backup if Force
+                $backupPath = "$pakPath.meteor-backup"
+                if ($Force -and (Test-Path $backupPath)) {
+                    Copy-Item -Path $backupPath -Destination $pakPath -Force
+                }
+
+                # 3. State-based skip check
+                $modifications = @($PakConfig.modifications)
+                $sortedConfig = Sort-Obj -Value $PakConfig
+                $configHash = Get-StrHash -Content ($sortedConfig | ConvertTo-Json -Compress -Depth 10)
+                if (-not $Force -and $PakState) {
+                    $currentHash = Get-Hash -Path $pakPath
+                    if ($PakState.hash_after_modification -eq $currentHash -and
+                        $PakState.modification_config_hash -eq $configHash) {
+                        $result.Success = $true
+                        $result.Skipped = $true
+                        $result.HashAfterModification = $currentHash
+                        $result.ModificationConfigHash = $configHash
+                        return $result
+                    }
+                }
+
+                # 4. Read and parse PAK
+                $pak = Read-Pak -Path $pakPath
+
+                # 5. Search resources and apply modifications
+                $modifiedResources = @{}
+                $appliedCount = 0
+                $unmatchedPatterns = New-Object 'System.Collections.Generic.HashSet[int]'
+                for ($j = 0; $j -lt $modifications.Count; $j++) { [void]$unmatchedPatterns.Add($j) }
+                $totalPatterns = $unmatchedPatterns.Count
+
+                for ($i = 0; $i -lt $pak.Resources.Count - 1; $i++) {
+                    $resource = $pak.Resources[$i]
+                    $resourceId = $resource.Id
+                    $resourceBytes = Get-Resource -Pak $pak -Id $resourceId
+                    if ($null -eq $resourceBytes) { continue }
+                    [byte[]]$resourceBytes = $resourceBytes
+                    if ($resourceBytes.Length -lt 2) { continue }
+
+                    $isGzipped = ($resourceBytes[0] -eq 0x1f -and $resourceBytes[1] -eq 0x8b)
+                    $contentBytes = $resourceBytes
+                    if ($isGzipped) {
+                        $decompressed = Expand-Gzip -Bytes $resourceBytes
+                        if ($null -eq $decompressed) { continue }
+                        $contentBytes = $decompressed
+                    }
+
+                    if (Test-Binary -Bytes $contentBytes) { continue }
+                    $content = [System.Text.Encoding]::UTF8.GetString($contentBytes)
+                    $resourceModified = $false
+                    $modIndex = 0
+
+                    foreach ($mod in $modifications) {
+                        if ($content -match $mod.pattern) {
+                            $content = $content -replace $mod.pattern, $mod.replacement
+                            $resourceModified = $true
+                            $appliedCount++
+                            [void]$unmatchedPatterns.Remove($modIndex)
+                        }
+                        $modIndex++
+                    }
+
+                    if ($resourceModified) {
+                        $modifiedResources[$resourceId] = @{ Content = $content; WasGzipped = $isGzipped }
+                    }
+
+                    if ($unmatchedPatterns.Count -eq 0 -and $totalPatterns -gt 0) { break }
+                }
+
+                # 6. Prepare byte modifications
+                $byteModifications = @{}
+                foreach ($resourceId in $modifiedResources.Keys) {
+                    $entry = $modifiedResources[$resourceId]
+                    $contentString = $entry['Content']
+                    $wasGzipped = $entry['WasGzipped']
+                    [byte[]]$newBytes = [System.Text.Encoding]::UTF8.GetBytes($contentString)
+                    if ($wasGzipped) {
+                        $compressedBytes = Compress-Gzip -Bytes $newBytes
+                        $newBytes = [byte[]]$compressedBytes
+                    }
+                    $byteModifications[$resourceId] = $newBytes
+                }
+
+                # 7. Write modified PAK
+                $modifiedResourceIds = @([int[]]$modifiedResources.Keys)
+                if ($byteModifications.Count -gt 0) {
+                    if (-not (Test-Path $backupPath)) {
+                        Copy-Item -Path $pakPath -Destination $backupPath -Force
+                    }
+                    Write-PakMod -Pak $pak -Path $pakPath -Mods $byteModifications
+                }
+
+                $finalHash = Get-Hash -Path $pakPath
+                $result.Success = $true
+                $result.Skipped = $false
+                $result.HashAfterModification = $finalHash
+                $result.ModifiedResourceIds = $modifiedResourceIds
+                $result.ModificationConfigHash = $configHash
+            }
+            catch {
+                $result.Success = $false
+                $result.Error = $_.ToString()
+            }
+
+            return $result
+        }
+
+        # Convert pak_state to hashtable for serialization
+        $pakStateHash = $null
+        if ($state.pak_state) {
+            $pakStateHash = @{
+                hash_after_modification   = $state.pak_state.hash_after_modification
+                modified_resources        = $state.pak_state.modified_resources
+                modification_config_hash  = $state.pak_state.modification_config_hash
+            }
+        }
+
+        # Convert pak_modifications config to hashtable
+        $pakConfigHash = @{
+            enabled       = $config.pak_modifications.enabled
+            modifications = @()
+        }
+        if ($config.pak_modifications.modifications) {
+            foreach ($mod in $config.pak_modifications.modifications) {
+                $pakConfigHash.modifications += @{
+                    pattern     = $mod.pattern
+                    replacement = $mod.replacement
+                    description = $mod.description
+                }
+            }
+        }
+
+        Write-Status "Starting PAK modifications in background..." -Type Detail
+        $pakTask = Start-BackgroundRunspace -Script $pakScript -Args @(
+            $comet.Directory,
+            $pakConfigHash,
+            $pakStateHash,
+            $Force
+        )
+    }
+
+    # Track if PAK is being handled in background
+    $pakInBackground = $null -ne $pakTask
+
+    # ═══════════════════════════════════════════════════════════════
     # Step 1: Comet Update Check
     # ═══════════════════════════════════════════════════════════════
     if ($freshInstall) {
@@ -8024,7 +8409,7 @@ setTimeout(checkAndImport, 3000);
         -CometVersion $cometVersion `
         -PortableMode:$portableMode `
         -NeedsSetup:$needsSetup `
-        -SkipPak:$SkipPak `
+        -SkipPak:($SkipPak -or $pakInBackground) `
         -FreshInstall:$freshInstall
 
     # ═══════════════════════════════════════════════════════════════
@@ -8060,6 +8445,33 @@ setTimeout(checkAndImport, 3000);
             -PreDownloadedAdGuard $preDownloadedAdGuard
         $ublockPath = $adBlockResult.UBlockPath
         $adguardExtraPath = $adBlockResult.AdGuardExtraPath
+    }
+
+    # ═══════════════════════════════════════════════════════════════
+    # Wait for PAK Background Task
+    # ═══════════════════════════════════════════════════════════════
+    if ($pakTask) {
+        Write-Status "Waiting for PAK modifications to complete..." -Type Detail
+        $pakResult = Wait-BackgroundRunspace -Task $pakTask
+        if ($pakResult.Success) {
+            if ($pakResult.Skipped) {
+                Write-Status "PAK already patched (verified via state hash)" -Type Detail
+            }
+            else {
+                Write-Status "PAK modifications applied" -Type Success
+            }
+            # Update pak_state
+            if ($pakResult.HashAfterModification) {
+                $state.pak_state = @{
+                    hash_after_modification   = $pakResult.HashAfterModification
+                    modified_resources        = $pakResult.ModifiedResourceIds
+                    modification_config_hash  = $pakResult.ModificationConfigHash
+                }
+            }
+        }
+        else {
+            Write-Status "PAK modifications error: $($pakResult.Error)" -Type Warning
+        }
     }
 
     # Save state
