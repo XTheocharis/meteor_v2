@@ -13,8 +13,8 @@
 .PARAMETER Config
     Path to config.json file. Defaults to config.json in script directory.
 
-.PARAMETER DryRun
-    Show what would be done without making changes or launching browser.
+.PARAMETER WhatIf
+    Shows what would happen if the command runs. The command is not executed.
 
 .PARAMETER Force
     Force re-extraction and re-patching even if files haven't changed.
@@ -48,7 +48,7 @@
     Run full workflow and launch browser.
 
 .EXAMPLE
-    .\Meteor.ps1 -DryRun
+    .\Meteor.ps1 -WhatIf
     Show what would be done without making changes.
 
 .EXAMPLE
@@ -73,28 +73,33 @@
 #>
 
 # Suppress PSScriptAnalyzer warnings for internal helper functions
-# These are internal functions that don't need ShouldProcess support
+# These functions don't need individual ShouldProcess - they are called from workflow functions that check $WhatIfPreference
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Scope = 'Function', Target = 'New-DirectoryIfNotExists')]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Scope = 'Function', Target = 'Set-NestedValue')]
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Scope = 'Function', Target = 'Update-FileHash')]
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Scope = 'Function', Target = 'Set-PakResource')]
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Scope = 'Function', Target = 'Update-Extension')]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Scope = 'Function', Target = 'Set-CometRegistryValues')]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Scope = 'Function', Target = 'Set-RegistryPreferenceMacs')]
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Scope = 'Function', Target = 'Set-BrowserPreferences')]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Scope = 'Function', Target = 'Update-TrackedPreferences')]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Scope = 'Function', Target = 'Update-ModifiedMacs')]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Scope = 'Function', Target = 'Update-AllMacs')]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Scope = 'Function', Target = 'Update-CometBrowser')]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Scope = 'Function', Target = 'Update-BundledExtensions')]
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Scope = 'Function', Target = 'Start-Browser')]
 # Script parameters are used in Main function via direct variable access
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'Config', Justification = 'Used in Main function')]
-[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'DryRun', Justification = 'Used in Main function')]
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'Force', Justification = 'Used in Main function')]
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'NoLaunch', Justification = 'Used in Main function')]
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'VerifyPak', Justification = 'Used in Main function')]
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'PakPath', Justification = 'Used in Main function')]
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'DataPath', Justification = 'Used in Main function')]
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'SkipPak', Justification = 'Used in Main function')]
-[CmdletBinding()]
+[CmdletBinding(SupportsShouldProcess)]
 param(
     [Parameter()]
     [string]$Config,
-
-    [Parameter()]
-    [switch]$DryRun,
 
     [Parameter()]
     [switch]$Force,
@@ -112,10 +117,7 @@ param(
     [string]$DataPath,
 
     [Parameter()]
-    [switch]$SkipPak,
-
-    [Parameter()]
-    [switch]$Proxy
+    [switch]$SkipPak
 )
 
 Set-StrictMode -Version Latest
@@ -213,6 +215,133 @@ function Get-FileHash256 {
 
     $hash = Get-FileHash -Path $Path -Algorithm SHA256
     return $hash.Hash
+}
+
+function New-DirectoryIfNotExists {
+    <#
+    .SYNOPSIS
+        Create a directory if it doesn't exist.
+    .DESCRIPTION
+        Wrapper for New-Item -ItemType Directory that checks existence first.
+        Reduces boilerplate and suppresses output.
+    #>
+    param([string]$Path)
+
+    if (-not (Test-Path $Path)) {
+        $null = New-Item -ItemType Directory -Path $Path -Force
+    }
+}
+
+function Get-JsonFile {
+    <#
+    .SYNOPSIS
+        Read and parse a JSON file.
+    .DESCRIPTION
+        Wrapper for Get-Content + ConvertFrom-Json with consistent UTF8 encoding.
+    #>
+    param([string]$Path)
+
+    $content = Get-Content -Path $Path -Raw -Encoding UTF8
+    return $content | ConvertFrom-Json
+}
+
+function Save-JsonFile {
+    <#
+    .SYNOPSIS
+        Save object to JSON file.
+    .DESCRIPTION
+        Wrapper for ConvertTo-Json + Set-Content with consistent UTF8 encoding and depth.
+    #>
+    param(
+        [string]$Path,
+        [object]$Object,
+        [int]$Depth = 30,
+        [switch]$Compress
+    )
+
+    $json = ConvertTo-Json -InputObject $Object -Depth $Depth -Compress:$Compress
+    Set-Content -Path $Path -Value $json -Encoding UTF8
+}
+
+function Test-IsEmptyContainer {
+    <#
+    .SYNOPSIS
+        Test if a value is an empty container (null, empty array, empty hashtable, etc.)
+    .DESCRIPTION
+        Used for pruning empty containers during JSON serialization to match Chromium's behavior.
+    #>
+    param([object]$Value)
+
+    if ($null -eq $Value) { return $true }
+    if ($Value -is [array] -and $Value.Count -eq 0) { return $true }
+    if ($Value -is [hashtable] -and $Value.Count -eq 0) { return $true }
+    if ($Value -is [System.Collections.Specialized.OrderedDictionary] -and $Value.Count -eq 0) { return $true }
+    if ($Value -is [PSCustomObject] -and $Value.PSObject.Properties.Count -eq 0) { return $true }
+    return $false
+}
+
+function Set-NestedValue {
+    <#
+    .SYNOPSIS
+        Set a value in a nested hashtable using a dot-separated path.
+    .DESCRIPTION
+        Navigates/creates nested hashtable structure and sets the final value.
+        Example: Set-NestedValue -Hashtable $h -Path "browser.show_home_button" -Value $true
+    #>
+    param(
+        [hashtable]$Hashtable,
+        [string]$Path,
+        [object]$Value
+    )
+
+    $parts = $Path -split '\.'
+    $current = $Hashtable
+
+    for ($i = 0; $i -lt $parts.Count - 1; $i++) {
+        $part = $parts[$i]
+        if (-not $current.ContainsKey($part)) {
+            $current[$part] = @{}
+        }
+        elseif ($current[$part] -isnot [hashtable]) {
+            $current[$part] = @{}
+        }
+        $current = $current[$part]
+    }
+
+    $current[$parts[-1]] = $Value
+}
+
+function Get-NestedValue {
+    <#
+    .SYNOPSIS
+        Get a value from a nested hashtable using a dot-separated path.
+    .DESCRIPTION
+        Navigates nested hashtable structure and returns the value.
+        Returns $null if path doesn't exist.
+    .OUTPUTS
+        Hashtable with Found (bool) and Value properties.
+    #>
+    param(
+        [object]$Object,
+        [string]$Path
+    )
+
+    $parts = $Path -split '\.'
+    $current = $Object
+
+    foreach ($part in $parts) {
+        if ($current -is [hashtable] -and $current.ContainsKey($part)) {
+            $current = $current[$part]
+        }
+        elseif ($current -is [PSCustomObject] -and $current.PSObject.Properties.Name -contains $part) {
+            $current = $current.$part
+        }
+        else {
+            return @{ Found = $false; Value = $null }
+        }
+    }
+
+    return @{ Found = $true; Value = $current }
 }
 
 function ConvertTo-LittleEndianUInt32 {
@@ -327,6 +456,33 @@ function Find-CometVersionDirectory {
     return $null
 }
 
+function Get-DefaultAppsDirectory {
+    <#
+    .SYNOPSIS
+        Find the default_apps directory in a Comet installation.
+    .DESCRIPTION
+        Searches for the default_apps directory, which may be in the root
+        or in a version subdirectory (e.g., .meteor/comet/143.2.7499.37654/default_apps).
+    #>
+    param([string]$CometDir)
+
+    $defaultAppsDir = Join-Path $CometDir "default_apps"
+    if (Test-Path $defaultAppsDir) {
+        return $defaultAppsDir
+    }
+
+    # Try version subdirectory
+    $versionDirs = Get-ChildItem -Path $CometDir -Directory -ErrorAction SilentlyContinue
+    foreach ($vDir in $versionDirs) {
+        $subDefaultApps = Join-Path $vDir.FullName "default_apps"
+        if (Test-Path $subDefaultApps) {
+            return $subDefaultApps
+        }
+    }
+
+    return $null
+}
+
 function Invoke-MeteorWebRequest {
     <#
     .SYNOPSIS
@@ -431,8 +587,7 @@ function Get-MeteorConfig {
         throw "Config not found: $ConfigPath"
     }
 
-    $content = Get-Content -Path $ConfigPath -Raw -Encoding UTF8
-    return $content | ConvertFrom-Json
+    return Get-JsonFile -Path $ConfigPath
 }
 
 function Resolve-MeteorPath {
@@ -534,9 +689,7 @@ function Get-MeteorState {
         }
     }
 
-    $content = Get-Content -Path $StatePath -Raw -Encoding UTF8
-    $json = $content | ConvertFrom-Json
-    return ConvertTo-Hashtable $json
+    return ConvertTo-Hashtable (Get-JsonFile -Path $StatePath)
 }
 
 function Save-MeteorState {
@@ -545,13 +698,10 @@ function Save-MeteorState {
         [hashtable]$State
     )
 
-    $stateDir = Split-Path -Parent $StatePath
-    if (-not (Test-Path $stateDir)) {
-        New-Item -Path $stateDir -ItemType Directory -Force | Out-Null
-    }
+    New-DirectoryIfNotExists -Path (Split-Path -Parent $StatePath)
 
     $State.version = $script:MeteorVersion
-    $State | ConvertTo-Json -Depth 10 | Set-Content -Path $StatePath -Encoding UTF8
+    Save-JsonFile -Path $StatePath -Object $State -Depth 10
 }
 
 function Test-FileChanged {
@@ -964,9 +1114,7 @@ function Export-PakResources {
     )
 
     # Create output directory
-    if (-not (Test-Path $OutputDir)) {
-        New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
-    }
+    New-DirectoryIfNotExists -Path $OutputDir
 
     $manifest = @{
         version     = $Pak.Version
@@ -1051,7 +1199,7 @@ function Export-PakResources {
 
     # Save manifest
     $manifestPath = Join-Path $OutputDir "manifest.json"
-    $manifest | ConvertTo-Json -Depth 10 | Set-Content -Path $manifestPath -Encoding UTF8
+    Save-JsonFile -Path $manifestPath -Object $manifest -Depth 10
 
     return @{
         TextResources   = $textCount
@@ -1083,7 +1231,7 @@ function Import-PakResources {
         throw "manifest.json not found in $InputDir"
     }
 
-    $manifest = Get-Content -Path $manifestPath -Raw | ConvertFrom-Json
+    $manifest = Get-JsonFile -Path $manifestPath
 
     # Create PAK structure
     $pak = @{
@@ -1217,7 +1365,7 @@ function Test-PakModifications {
     }
 
     try {
-        $config = Get-Content -Path $ConfigPath -Raw | ConvertFrom-Json
+        $config = Get-JsonFile -Path $ConfigPath
     }
     catch {
         Write-Error "Failed to parse configuration: $_"
@@ -1612,12 +1760,12 @@ function Export-CrxToDirectory {
             $manifestPath = Join-Path $OutputDir "manifest.json"
 
             if ((Test-Path $manifestPath) -and $publicKey) {
-                $manifest = Get-Content -Path $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+                $manifest = Get-JsonFile -Path $manifestPath
 
                 # Add key as first property for readability
                 $manifest | Add-Member -NotePropertyName "key" -NotePropertyValue $publicKey -Force
 
-                $manifest | ConvertTo-Json -Depth 20 | Set-Content -Path $manifestPath -Encoding UTF8
+                Save-JsonFile -Path $manifestPath -Object $manifest -Depth 20
             }
         }
     }
@@ -1956,26 +2104,10 @@ function Get-ChromeExtensionCrx {
         return $null
     }
 
-    # Compare versions if current version provided
+    # Compare versions if current version provided - use existing Compare-Versions helper
     if ($CurrentVersion) {
-        $lParts = $latest -split '\.' | ForEach-Object { [int]$_ }
-        $cParts = $CurrentVersion -split '\.' | ForEach-Object { [int]$_ }
-        $newer = $false
-
-        for ($i = 0; $i -lt [Math]::Max($lParts.Count, $cParts.Count); $i++) {
-            $l = if ($i -lt $lParts.Count) { $lParts[$i] } else { 0 }
-            $c = if ($i -lt $cParts.Count) { $cParts[$i] } else { 0 }
-
-            if ($l -gt $c) {
-                $newer = $true
-                break
-            }
-            if ($l -lt $c) {
-                break
-            }
-        }
-
-        if (-not $newer) {
+        $comparison = Compare-Versions -Version1 $latest -Version2 $CurrentVersion
+        if ($comparison -le 0) {
             Write-Status "Extension $ExtensionId is up to date (current: $CurrentVersion, latest: $latest)" -Type Success
             return $null
         }
@@ -2113,25 +2245,17 @@ function Get-CometVersion {
 }
 
 function Set-CometRegistryValues {
-    <#
-    .SYNOPSIS
-        Set registry values required for Comet update system.
-    .DESCRIPTION
-        Creates/updates registry keys at HKCU:\SOFTWARE\Perplexity\Update\Clients\{GUID}
-        with name, lang, and pv (product version) values.
-    #>
     param(
         [Parameter(Mandatory)]
         [string]$Version,
         [string]$Name = "Comet Dev",
         [string]$Lang = "en",
-        [string]$ClientGuid = "0c18db21-6aaf-49d0-a339-5d135ad4c8e2",
-        [switch]$DryRunMode
+        [string]$ClientGuid = "0c18db21-6aaf-49d0-a339-5d135ad4c8e2"
     )
 
     $regPath = "HKCU:\SOFTWARE\Perplexity\Update\Clients\$ClientGuid"
 
-    if ($DryRunMode) {
+    if ($WhatIfPreference) {
         Write-Status "Would set registry values at: $regPath" -Type Detail
         Write-VerboseTimestamped "[Registry] name=$Name, lang=$Lang, pv=$Version"
         return $true
@@ -2164,13 +2288,12 @@ function Install-Comet {
         Download and install Comet browser.
     #>
     param(
-        [string]$DownloadUrl,
-        [switch]$DryRunMode
+        [string]$DownloadUrl
     )
 
     Write-Status "Comet browser not found. Downloading..." -Type Info
 
-    if ($DryRunMode) {
+    if ($WhatIfPreference) {
         Write-Status "Would download from: $DownloadUrl" -Type Detail
         return $null
     }
@@ -2259,8 +2382,7 @@ function Install-CometPortable {
     #>
     param(
         [string]$DownloadUrl,
-        [string]$TargetDir,
-        [switch]$DryRunMode
+        [string]$TargetDir
     )
 
     Write-Status "Installing Comet in portable mode..." -Type Info
@@ -2272,7 +2394,7 @@ function Install-CometPortable {
         return $null
     }
 
-    if ($DryRunMode) {
+    if ($WhatIfPreference) {
         Write-Status "Would download from: $DownloadUrl" -Type Detail
         Write-Status "Would extract to: $TargetDir" -Type Detail
         return $null
@@ -2283,7 +2405,7 @@ function Install-CometPortable {
 
     try {
         # Create temp directory
-        New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+        New-DirectoryIfNotExists -Path $tempDir
 
         # Download installer
         Write-Status "Downloading from: $DownloadUrl" -Type Detail
@@ -2515,7 +2637,6 @@ function Install-ChromeWebStoreExtension {
         [Parameter(Mandatory)]
         [string]$OutputDir,
 
-        [switch]$DryRunMode,
         [switch]$ForceDownload
     )
 
@@ -2524,7 +2645,7 @@ function Install-ChromeWebStoreExtension {
 
     # Check if already installed
     if ((Test-Path $OutputDir) -and (Test-Path $manifestPath)) {
-        $manifest = Get-Content -Path $manifestPath -Raw | ConvertFrom-Json
+        $manifest = Get-JsonFile -Path $manifestPath
         $currentVersion = $manifest.version
         if ($ForceDownload) {
             Write-Status "$ExtensionName $currentVersion installed, forcing re-download..." -Type Info
@@ -2538,7 +2659,7 @@ function Install-ChromeWebStoreExtension {
     }
 
     # Handle dry run mode
-    if ($DryRunMode) {
+    if ($WhatIfPreference) {
         if ($currentVersion) {
             Write-Status "Would check for $ExtensionName updates" -Type Detail
         }
@@ -2550,7 +2671,7 @@ function Install-ChromeWebStoreExtension {
 
     # Download CRX (will skip if up to date, unless ForceDownload)
     $tempDir = Join-Path $env:TEMP "cws_ext_$(Get-Random)"
-    $null = New-Item -ItemType Directory -Path $tempDir -Force
+    New-DirectoryIfNotExists -Path $tempDir
 
     try {
         $versionToCheck = if ($ForceDownload) { $null } else { $currentVersion }
@@ -2577,7 +2698,7 @@ function Install-ChromeWebStoreExtension {
         $null = Export-CrxToDirectory -CrxPath $crxFile -OutputDir $OutputDir -InjectKey
 
         # Get new version from manifest
-        $newManifest = Get-Content -Path $manifestPath -Raw | ConvertFrom-Json
+        $newManifest = Get-JsonFile -Path $manifestPath
         Write-Status "$ExtensionName installed successfully (v$($newManifest.version))" -Type Success
 
         return @{ Updated = $true; Path = $OutputDir; CurrentVersion = $newManifest.version }
@@ -2605,13 +2726,12 @@ function Get-UBlockOrigin {
     param(
         [string]$OutputDir,
         [object]$UBlockConfig,
-        [switch]$DryRunMode,
         [switch]$ForceDownload
     )
 
     try {
         # Handle dry run mode - just show what would happen
-        if ($DryRunMode) {
+        if ($WhatIfPreference) {
             $manifestPath = Join-Path $OutputDir "manifest.json"
             if ((Test-Path $OutputDir) -and (Test-Path $manifestPath)) {
                 Write-Status "Would check for uBlock Origin updates" -Type Detail
@@ -2628,7 +2748,6 @@ function Get-UBlockOrigin {
             -ExtensionId $UBlockConfig.extension_id `
             -ExtensionName "uBlock Origin" `
             -OutputDir $OutputDir `
-            -DryRunMode:$DryRunMode `
             -ForceDownload:$ForceDownload
 
         if ($null -eq $result) {
@@ -2647,7 +2766,7 @@ function Get-UBlockOrigin {
             else {
                 # Save settings file that auto-import.js will load
                 $settingsPath = Join-Path $OutputDir "ublock-settings.json"
-                $UBlockConfig.defaults | ConvertTo-Json -Depth 20 | Set-Content -Path $settingsPath -Encoding UTF8
+                Save-JsonFile -Path $settingsPath -Object $UBlockConfig.defaults -Depth 20
 
                 # Get custom filter lists for the auto-import check
                 $customLists = $UBlockConfig.defaults.selectedFilterLists | Where-Object { $_ -match '^https?://' }
@@ -2780,7 +2899,6 @@ function Get-AdGuardExtra {
     param(
         [string]$OutputDir,
         [object]$AdGuardConfig,
-        [switch]$DryRunMode,
         [switch]$ForceDownload
     )
 
@@ -2790,7 +2908,6 @@ function Get-AdGuardExtra {
             -ExtensionId $AdGuardConfig.extension_id `
             -ExtensionName "AdGuard Extra" `
             -OutputDir $OutputDir `
-            -DryRunMode:$DryRunMode `
             -ForceDownload:$ForceDownload
 
         if ($null -eq $result) {
@@ -2828,8 +2945,7 @@ function Initialize-PatchedExtensions {
         [string]$PatchesDir,
         [object]$PatchConfig,
         [object]$ExtensionConfig,
-        [string]$BrowserVersion = "120.0.0.0",
-        [switch]$DryRunMode
+        [string]$BrowserVersion = "120.0.0.0"
     )
 
     # Determine if we should fetch from server
@@ -2839,9 +2955,7 @@ function Initialize-PatchedExtensions {
 
     Write-Status "Output: $OutputDir" -Type Detail
 
-    if (-not (Test-Path $OutputDir)) {
-        New-Item -Path $OutputDir -ItemType Directory -Force | Out-Null
-    }
+    New-DirectoryIfNotExists -Path $OutputDir
 
     # Build list of extensions to process
     $extensionsToProcess = @{}
@@ -2862,19 +2976,22 @@ function Initialize-PatchedExtensions {
             $existingManifest = Join-Path $extOutputDir "manifest.json"
             if (Test-Path $existingManifest) {
                 try {
-                    $manifest = Get-Content $existingManifest -Raw | ConvertFrom-Json
+                    $manifest = Get-JsonFile -Path $existingManifest
                     if ($manifest.version) {
                         $currentVersion = $manifest.version
                         Write-Verbose "  Existing version: $currentVersion"
                     }
-                } catch { }
+                } catch {
+                    # Ignore errors reading manifest - will use fallback version
+                    $null = $_
+                }
             }
             elseif ($extInfo.fallback_version) {
                 $currentVersion = $extInfo.fallback_version
                 Write-Verbose "  Using fallback version: $currentVersion"
             }
 
-            if ($DryRunMode) {
+            if ($WhatIfPreference) {
                 Write-Status "Would fetch from: $updateUrl (current: $currentVersion)" -Type Detail
                 $extensionsToProcess[$extName] = @{ OutputDir = $extOutputDir; FromServer = $true; NeedsFallback = $false }
                 continue
@@ -2915,32 +3032,16 @@ function Initialize-PatchedExtensions {
         Write-Status "Using local CRX files for fallback..." -Type Detail
 
         # Find default_apps directory
-        $defaultAppsDir = Join-Path $CometDir "default_apps"
-        if (-not (Test-Path $defaultAppsDir)) {
-            $versionDirs = Get-ChildItem -Path $CometDir -Directory -ErrorAction SilentlyContinue
-            foreach ($vDir in $versionDirs) {
-                $subDefaultApps = Join-Path $vDir.FullName "default_apps"
-                if (Test-Path $subDefaultApps) {
-                    $defaultAppsDir = $subDefaultApps
-                    break
-                }
-            }
-        }
+        $defaultAppsDir = Get-DefaultAppsDirectory -CometDir $CometDir
 
-        if (Test-Path $defaultAppsDir) {
+        if ($defaultAppsDir) {
             Write-Status "Local source: $defaultAppsDir" -Type Detail
 
-            # Find CRX files
+            # Find CRX files (backups first, then active - active takes precedence)
             $crxSources = @{}
-            $backupFiles = Get-ChildItem -Path $defaultAppsDir -Filter "*.crx.meteor-backup" -ErrorAction SilentlyContinue
-            foreach ($file in $backupFiles) {
-                $baseName = $file.Name -replace '\.crx\.meteor-backup$', ''
-                $crxSources[$baseName] = $file
-            }
-            $activeFiles = Get-ChildItem -Path $defaultAppsDir -Filter "*.crx" -ErrorAction SilentlyContinue
-            foreach ($file in $activeFiles) {
-                $baseName = $file.Name -replace '\.crx$', ''
-                $crxSources[$baseName] = $file
+            Get-ChildItem -Path $defaultAppsDir -Filter "*.crx*" -ErrorAction SilentlyContinue | Where-Object { $_.Extension -eq '.crx' -or $_.Name.EndsWith('.crx.meteor-backup') } | ForEach-Object {
+                $baseName = $_.Name -replace '\.crx(\.meteor-backup)?$', ''
+                $crxSources[$baseName] = $_
             }
 
             # Process fallback extensions
@@ -2952,7 +3053,7 @@ function Initialize-PatchedExtensions {
                     $crx = $crxSources[$extName]
                     Write-Status "Processing (local): $extName" -Type Info
 
-                    if (-not $DryRunMode) {
+                    if (-not $WhatIfPreference) {
                         Export-CrxToDirectory -CrxPath $crx.FullName -OutputDir $extData.OutputDir -InjectKey
                         Write-Status "Extracted to: $($extData.OutputDir)" -Type Detail
                         $extData.NeedsFallback = $false
@@ -2973,7 +3074,7 @@ function Initialize-PatchedExtensions {
         $extData = $extensionsToProcess[$extName]
         $extOutputDir = $extData.OutputDir
 
-        if ($DryRunMode) { continue }
+        if ($WhatIfPreference) { continue }
         if (-not (Test-Path $extOutputDir)) { continue }
 
         # Apply patches if configured (check property exists to avoid StrictMode error)
@@ -2987,10 +3088,7 @@ function Initialize-PatchedExtensions {
                     $srcPath = Resolve-MeteorPath -BasePath $PatchesDir -RelativePath $destFile.Value
 
                     # Ensure directory exists
-                    $destDir = Split-Path -Parent $destPath
-                    if (-not (Test-Path $destDir)) {
-                        New-Item -Path $destDir -ItemType Directory -Force | Out-Null
-                    }
+                    New-DirectoryIfNotExists -Path (Split-Path -Parent $destPath)
 
                     if (Test-Path $srcPath) {
                         Copy-Item -Path $srcPath -Destination $destPath -Force
@@ -3006,7 +3104,7 @@ function Initialize-PatchedExtensions {
             if ($config.PSObject.Properties['manifest_additions']) {
                 $manifestPath = Join-Path $extOutputDir "manifest.json"
                 if (Test-Path $manifestPath) {
-                    $manifest = Get-Content -Path $manifestPath -Raw | ConvertFrom-Json
+                    $manifest = Get-JsonFile -Path $manifestPath
 
                     # Add declarative_net_request
                     if ($config.manifest_additions.PSObject.Properties['declarative_net_request']) {
@@ -3037,7 +3135,7 @@ function Initialize-PatchedExtensions {
                         $manifest.content_scripts = $existingScripts + $newScripts
                     }
 
-                    $manifest | ConvertTo-Json -Depth 20 | Set-Content -Path $manifestPath -Encoding UTF8
+                    Save-JsonFile -Path $manifestPath -Object $manifest -Depth 20
                     Write-Status "Applied manifest patches" -Type Detail
                 }
             }
@@ -3075,8 +3173,7 @@ function Initialize-PakModifications {
     param(
         [string]$CometDir,
         [object]$PakConfig,
-        [string]$PatchedResourcesPath,
-        [switch]$DryRunMode
+        [string]$PatchedResourcesPath
     )
 
     if (-not $PakConfig.enabled) {
@@ -3121,7 +3218,7 @@ function Initialize-PakModifications {
     }
 
     # 2.5. Export resources to patched_resources directory (for manual editing)
-    if ($PatchedResourcesPath -and -not $DryRunMode) {
+    if ($PatchedResourcesPath -and -not $WhatIfPreference) {
         try {
             $exportResult = Export-PakResources -Pak $pak -OutputDir $PatchedResourcesPath
             Write-Status "Exported $($exportResult.TotalResources) resources to: $PatchedResourcesPath" -Type Detail
@@ -3256,7 +3353,7 @@ function Initialize-PakModifications {
                 Write-VerboseTimestamped "[PAK] Compressed to $($newBytes.GetLength(0)) bytes"
             }
 
-            if ($DryRunMode) {
+            if ($WhatIfPreference) {
                 Write-Status "Would modify resource $resourceId$(if ($wasGzipped) { ' (gzipped)' })" -Type DryRun
             }
             else {
@@ -3270,7 +3367,7 @@ function Initialize-PakModifications {
     }
 
     # 5. Write modified PAK in single pass (with backup)
-    if ($byteModifications.Count -gt 0 -and -not $DryRunMode) {
+    if ($byteModifications.Count -gt 0 -and -not $WhatIfPreference) {
         $backupPath = "$pakPath.meteor-backup"
 
         if (-not (Test-Path $backupPath)) {
@@ -3283,14 +3380,14 @@ function Initialize-PakModifications {
 
         try {
             # Calculate hash before write for verification
-            $beforeHash = (Get-FileHash -Path $pakPath -Algorithm SHA256).Hash
+            $beforeHash = Get-FileHash256 -Path $pakPath
             Write-VerboseTimestamped "[PAK] Hash before write: $beforeHash"
 
             # Use optimized batch writer (single pass, no O(n²) memory)
             Write-PakFileWithModifications -Pak $pak -Path $pakPath -Modifications $byteModifications
 
             # Verify write succeeded by comparing hashes
-            $afterHash = (Get-FileHash -Path $pakPath -Algorithm SHA256).Hash
+            $afterHash = Get-FileHash256 -Path $pakPath
             Write-VerboseTimestamped "[PAK] Hash after write: $afterHash"
 
             if ($beforeHash -eq $afterHash) {
@@ -3566,12 +3663,8 @@ function ConvertTo-SortedObject {
         $sorted = [ordered]@{}
         foreach ($key in ($Value.Keys | Sort-Object)) {
             $childValue = ConvertTo-SortedObject -Value $Value[$key]
-            # PRUNE: Skip null, empty arrays, empty hashtables, empty OrderedDictionaries, empty PSCustomObjects
-            if ($null -eq $childValue) { continue }
-            if ($childValue -is [array] -and $childValue.Count -eq 0) { continue }
-            if ($childValue -is [hashtable] -and $childValue.Count -eq 0) { continue }
-            if ($childValue -is [System.Collections.Specialized.OrderedDictionary] -and $childValue.Count -eq 0) { continue }
-            if ($childValue -is [PSCustomObject] -and $childValue.PSObject.Properties.Count -eq 0) { continue }
+            # PRUNE: Skip empty containers (null, empty arrays, empty hashtables, etc.)
+            if (Test-IsEmptyContainer -Value $childValue) { continue }
             $sorted[$key] = $childValue
         }
         return $sorted
@@ -3581,12 +3674,8 @@ function ConvertTo-SortedObject {
         $sorted = [ordered]@{}
         foreach ($prop in ($Value.PSObject.Properties | Sort-Object Name)) {
             $childValue = ConvertTo-SortedObject -Value $prop.Value
-            # PRUNE: Skip null, empty arrays, empty hashtables, empty OrderedDictionaries, empty PSCustomObjects
-            if ($null -eq $childValue) { continue }
-            if ($childValue -is [array] -and $childValue.Count -eq 0) { continue }
-            if ($childValue -is [hashtable] -and $childValue.Count -eq 0) { continue }
-            if ($childValue -is [System.Collections.Specialized.OrderedDictionary] -and $childValue.Count -eq 0) { continue }
-            if ($childValue -is [PSCustomObject] -and $childValue.PSObject.Properties.Count -eq 0) { continue }
+            # PRUNE: Skip empty containers (null, empty arrays, empty hashtables, etc.)
+            if (Test-IsEmptyContainer -Value $childValue) { continue }
             $sorted[$prop.Name] = $childValue
         }
         return $sorted
@@ -3712,6 +3801,24 @@ function ConvertTo-JsonForHmac {
     return ConvertTo-ChromiumJson -Json $json
 }
 
+function Get-HmacMessageBytes {
+    <#
+    .SYNOPSIS
+        Build HMAC message bytes for preference MAC calculation.
+    .DESCRIPTION
+        Chromium's HMAC message format: device_id + path + value_json (simple concatenation)
+    #>
+    param(
+        [string]$DeviceId,
+        [string]$Path,
+        [object]$Value
+    )
+
+    $valueJson = ConvertTo-JsonForHmac -Value $Value
+    $message = $DeviceId + $Path + $valueJson
+    return [System.Text.Encoding]::UTF8.GetBytes($message)
+}
+
 function Get-PreferenceHmac {
     <#
     .SYNOPSIS
@@ -3719,15 +3826,6 @@ function Get-PreferenceHmac {
     .DESCRIPTION
         HMAC-SHA256(key=seed, message=device_id + path + value_json)
         Returns uppercase hex string.
-
-        The message format is simple concatenation:
-          message = device_id + path + value_json
-
-        Where value_json is the JSON representation of the value:
-          - Booleans: "true" or "false" (lowercase, no quotes)
-          - Numbers: string representation
-          - Strings: JSON-quoted
-          - Objects/Arrays: compact JSON
 
         For Google Chrome: seed is 64-byte value from IDR_PREF_HASH_SEED_BIN
         For non-Chrome builds (Comet): seed is empty string, resulting in empty key
@@ -3743,7 +3841,6 @@ function Get-PreferenceHmac {
     if ([string]::IsNullOrEmpty($SeedHex)) {
         $seedBytes = [byte[]]@()
     } else {
-        # Parse hex string into bytes (assumes 64 hex chars = 32 bytes)
         $seedLength = $SeedHex.Length / 2
         $seedBytes = [byte[]]::new($seedLength)
         for ($i = 0; $i -lt $seedLength; $i++) {
@@ -3751,43 +3848,12 @@ function Get-PreferenceHmac {
         }
     }
 
-    # Build message: device_id + path + value_json (simple concatenation)
-    $valueJson = ConvertTo-JsonForHmac -Value $Value
-    $message = $DeviceId + $Path + $valueJson
-    $messageBytes = [System.Text.Encoding]::UTF8.GetBytes($message)
-
+    $messageBytes = Get-HmacMessageBytes -DeviceId $DeviceId -Path $Path -Value $Value
     return Get-HmacSha256 -Key $seedBytes -Message $messageBytes
 }
 
 function Get-PreferenceHmacSeedFromPak {
-    <#
-    .SYNOPSIS
-        Get the HMAC seed for file-based preference MAC calculation.
-    .DESCRIPTION
-        In Chromium, the preference HMAC seed is only loaded for Google Chrome branded builds:
-
-        ```cpp
-        std::string seed;
-        #if BUILDFLAG(GOOGLE_CHROME_BRANDING)
-          seed = std::string(ui::ResourceBundle::GetSharedInstance().GetRawDataResource(
-              IDR_PREF_HASH_SEED_BIN));
-        #endif
-        ```
-
-        For non-Chrome builds (like Comet), the seed is an EMPTY STRING.
-        This means the HMAC calculation uses an empty key.
-
-        Reference: chromium/src/chrome/browser/prefs/chrome_pref_service_factory.cc
-        Code review: https://codereview.chromium.org/444253002
-          "Prefs: Only use IDR_PREF_HASH_SEED_BIN in Chrome builds."
-    .PARAMETER CometDir
-        Path to the Comet installation directory (unused but kept for API compatibility).
-    .OUTPUTS
-        Hashtable with:
-        - seedHex: Empty string (for non-Chrome builds)
-        - seedBytes: Empty byte array
-        - resourceId: -1 (indicates no resource used)
-    #>
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'CometDir', Justification = 'Kept for API compatibility')]
     param(
         [string]$CometDir
     )
@@ -3810,17 +3876,7 @@ function Get-RegistryPreferenceHmac {
         Calculate HMAC for a single preference in Windows Registry.
     .DESCRIPTION
         HMAC-SHA256(key="ChromeRegistryHashStoreValidationSeed", message=device_id + path + value_json)
-        Returns uppercase hex string.
-
-        The key is the literal ASCII string "ChromeRegistryHashStoreValidationSeed"
-        which Chromium uses for all registry-based preference MACs.
-
-        The message format is simple concatenation:
-          message = device_id + path + value_json
-
-        Where value_json is the JSON representation of the value.
-
-        Reference: chrome/browser/prefs/tracked/pref_hash_calculator.cc
+        Returns uppercase hex string. Uses literal ASCII seed for registry-based MACs.
     #>
     param(
         [string]$DeviceId,
@@ -3828,46 +3884,15 @@ function Get-RegistryPreferenceHmac {
         [object]$Value
     )
 
-    # Key is the literal ASCII bytes of the seed string
     $seedBytes = [System.Text.Encoding]::ASCII.GetBytes($script:RegistryHashSeed)
-
-    # Build message: device_id + path + value_json (simple concatenation)
-    $valueJson = ConvertTo-JsonForHmac -Value $Value
-    $message = $DeviceId + $Path + $valueJson
-    $messageBytes = [System.Text.Encoding]::UTF8.GetBytes($message)
-
+    $messageBytes = Get-HmacMessageBytes -DeviceId $DeviceId -Path $Path -Value $Value
     return Get-HmacSha256 -Key $seedBytes -Message $messageBytes
 }
 
 function Set-RegistryPreferenceMacs {
-    <#
-    .SYNOPSIS
-        Write preference MACs to Windows Registry.
-    .DESCRIPTION
-        Comet stores authoritative MACs at:
-        HKCU:\SOFTWARE\Perplexity\Comet\PreferenceMACs\Default
-
-        Chromium uses two storage modes:
-        1. Atomic MACs: Direct values in Default key (e.g., "browser.show_home_button")
-        2. Split MACs: Values in subkeys (e.g., Default\extensions.settings\{extId})
-
-        Split paths like "extensions.settings.xxx" are stored as:
-        - Key: PreferenceMACs\Default\extensions.settings
-        - Value name: xxx
-        - Value data: MAC
-
-        This must be synchronized with Secure Preferences MACs or browser crashes.
-    .PARAMETER DeviceId
-        The device ID calculated from Windows SID.
-    .PARAMETER PreferencesToSet
-        Hashtable of preference paths to values (e.g., @{"extensions.ui.developer_mode" = $true})
-    .PARAMETER DryRunMode
-        If set, only show what would be done without making changes.
-    #>
     param(
         [string]$DeviceId,
-        [hashtable]$PreferencesToSet,
-        [switch]$DryRunMode
+        [hashtable]$PreferencesToSet
     )
 
     $regPath = "HKCU:\SOFTWARE\Perplexity\Comet\PreferenceMACs\Default"
@@ -3892,7 +3917,7 @@ function Set-RegistryPreferenceMacs {
         return @{ IsSplit = $false }
     }
 
-    if ($DryRunMode) {
+    if ($WhatIfPreference) {
         Write-Status "Would set registry MACs at: $regPath" -Type Detail
         foreach ($path in $PreferencesToSet.Keys) {
             # Use FULL path for HMAC calculation (including account_values prefix if present)
@@ -4014,22 +4039,9 @@ function Build-MacsTree {
     param([hashtable]$PathsAndMacs)
 
     $macsTree = @{}
-
     foreach ($path in $PathsAndMacs.Keys) {
-        $parts = $path -split '\.'
-        $current = $macsTree
-
-        for ($i = 0; $i -lt $parts.Count - 1; $i++) {
-            $part = $parts[$i]
-            if (-not $current.ContainsKey($part)) {
-                $current[$part] = @{}
-            }
-            $current = $current[$part]
-        }
-
-        $current[$parts[-1]] = $PathsAndMacs[$path]
+        Set-NestedValue -Hashtable $macsTree -Path $path -Value $PathsAndMacs[$path]
     }
-
     return $macsTree
 }
 
@@ -4046,11 +4058,9 @@ function Set-BrowserPreferences {
         On subsequent runs: Updates existing tracked preferences and recalculates MACs.
     #>
     param(
-        [string]$BrowserPath,
         [string]$UserDataPath,
         [string]$ProfileName = "Default",
-        [string]$CometDir,
-        [switch]$DryRunMode
+        [string]$CometDir
     )
 
     # Determine User Data path
@@ -4079,7 +4089,7 @@ function Set-BrowserPreferences {
     $localStatePath = Join-Path $effectiveUserDataPath "Local State"
     $firstRunPath = Join-Path $effectiveUserDataPath "First Run"
 
-    if ($DryRunMode) {
+    if ($WhatIfPreference) {
         Write-Status "Would write Secure Preferences at: $securePrefsPath" -Type DryRun
         return $true
     }
@@ -4097,12 +4107,8 @@ function Set-BrowserPreferences {
 
     # First run - create tracked preferences with valid MACs
     # Comet (non-Chrome branded) uses EMPTY seed for file MACs, so we can calculate them now
-    if (-not (Test-Path $effectiveUserDataPath)) {
-        $null = New-Item -ItemType Directory -Path $effectiveUserDataPath -Force
-    }
-    if (-not (Test-Path $profilePath)) {
-        $null = New-Item -ItemType Directory -Path $profilePath -Force
-    }
+    New-DirectoryIfNotExists -Path $effectiveUserDataPath
+    New-DirectoryIfNotExists -Path $profilePath
 
     Write-VerboseTimestamped "[Secure Prefs] First run - creating tracked preferences with valid MACs"
 
@@ -4185,37 +4191,13 @@ function Set-BrowserPreferences {
 
     # Add tracked preferences to the structure
     foreach ($path in $trackedPrefs.Keys) {
-        $value = $trackedPrefs[$path]
-        $parts = $path -split '\.'
-
-        # Navigate/create nested structure
-        $current = $securePrefs
-        for ($i = 0; $i -lt $parts.Count - 1; $i++) {
-            $part = $parts[$i]
-            if (-not $current.ContainsKey($part)) {
-                $current[$part] = @{}
-            }
-            $current = $current[$part]
-        }
-        $current[$parts[-1]] = $value
+        Set-NestedValue -Hashtable $securePrefs -Path $path -Value $trackedPrefs[$path]
     }
 
     # Add untracked Chrome preferences to the structure (no MAC needed)
     foreach ($path in $untrackedChromePrefs.Keys) {
-        $value = $untrackedChromePrefs[$path]
-        $parts = $path -split '\.'
-
-        # Navigate/create nested structure
-        $current = $securePrefs
-        for ($i = 0; $i -lt $parts.Count - 1; $i++) {
-            $part = $parts[$i]
-            if (-not $current.ContainsKey($part)) {
-                $current[$part] = @{}
-            }
-            $current = $current[$part]
-        }
-        $current[$parts[-1]] = $value
-        Write-VerboseTimestamped "[Secure Prefs] Added untracked Chrome pref: $path = $value"
+        Set-NestedValue -Hashtable $securePrefs -Path $path -Value $untrackedChromePrefs[$path]
+        Write-VerboseTimestamped "[Secure Prefs] Added untracked Chrome pref: $path = $($untrackedChromePrefs[$path])"
     }
 
     # Add extension settings to the structure
@@ -4235,18 +4217,7 @@ function Set-BrowserPreferences {
     foreach ($path in $trackedPrefs.Keys) {
         $value = $trackedPrefs[$path]
         $mac = Get-PreferenceHmac -SeedHex $seedHex -DeviceId $deviceId -Path $path -Value $value
-
-        # Build nested MAC structure (e.g., "extensions.ui.developer_mode" -> macs.extensions.ui.developer_mode)
-        $parts = $path -split '\.'
-        $current = $macs
-        for ($i = 0; $i -lt $parts.Count - 1; $i++) {
-            $part = $parts[$i]
-            if (-not $current.ContainsKey($part)) {
-                $current[$part] = @{}
-            }
-            $current = $current[$part]
-        }
-        $current[$parts[-1]] = $mac
+        Set-NestedValue -Hashtable $macs -Path $path -Value $mac
         Write-VerboseTimestamped "[Secure Prefs] Calculated MAC for $path = $($mac.Substring(0, 16))..."
     }
 
@@ -4285,10 +4256,8 @@ function Set-BrowserPreferences {
             $null = New-Item -ItemType File -Path $firstRunPath -Force
         }
 
-        # Write Secure Preferences
-        # CRITICAL: Use -InputObject instead of pipe to avoid PS 5.1 serialization bugs
-        $json = ConvertTo-Json -InputObject $securePrefs -Depth 30 -Compress
-        Set-Content -Path $securePrefsPath -Value $json -Encoding UTF8 -Force
+        # Write Secure Preferences (Save-JsonFile uses -InputObject to avoid PS 5.1 serialization bugs)
+        Save-JsonFile -Path $securePrefsPath -Object $securePrefs -Compress
         Write-VerboseTimestamped "[Secure Prefs] Wrote Secure Preferences to: $securePrefsPath"
 
         # Write Regular Preferences (for pinned extensions - not tracked by MAC)
@@ -4298,8 +4267,7 @@ function Set-BrowserPreferences {
                 pinned_extensions = $extensionsToPinToToolbar
             }
         }
-        $regularJson = ConvertTo-Json -InputObject $regularPrefs -Depth 30 -Compress
-        Set-Content -Path $regularPrefsPath -Value $regularJson -Encoding UTF8 -Force
+        Save-JsonFile -Path $regularPrefsPath -Object $regularPrefs -Compress
         Write-VerboseTimestamped "[Regular Prefs] Wrote Regular Preferences with pinned extensions to: $regularPrefsPath"
 
         # Set registry MACs (uses different seed: "ChromeRegistryHashStoreValidationSeed")
@@ -4461,43 +4429,13 @@ function Update-TrackedPreferences {
 
         # Set tracked preferences in the structure
         foreach ($path in $prefsToModify.Keys) {
-            $value = $prefsToModify[$path]
-            $parts = $path -split '\.'
-
-            # Navigate/create nested structure
-            $current = $securePrefsHash
-            for ($i = 0; $i -lt $parts.Count - 1; $i++) {
-                $part = $parts[$i]
-                if (-not $current.ContainsKey($part)) {
-                    $current[$part] = @{}
-                }
-                elseif ($current[$part] -isnot [hashtable]) {
-                    $current[$part] = @{}
-                }
-                $current = $current[$part]
-            }
-            $current[$parts[-1]] = $value
+            Set-NestedValue -Hashtable $securePrefsHash -Path $path -Value $prefsToModify[$path]
         }
 
         # Set untracked Chrome preferences in the structure (no MAC needed)
         foreach ($path in $untrackedChromePrefs.Keys) {
-            $value = $untrackedChromePrefs[$path]
-            $parts = $path -split '\.'
-
-            # Navigate/create nested structure
-            $current = $securePrefsHash
-            for ($i = 0; $i -lt $parts.Count - 1; $i++) {
-                $part = $parts[$i]
-                if (-not $current.ContainsKey($part)) {
-                    $current[$part] = @{}
-                }
-                elseif ($current[$part] -isnot [hashtable]) {
-                    $current[$part] = @{}
-                }
-                $current = $current[$part]
-            }
-            $current[$parts[-1]] = $value
-            Write-VerboseTimestamped "[Secure Prefs] Set untracked Chrome pref: $path = $value"
+            Set-NestedValue -Hashtable $securePrefsHash -Path $path -Value $untrackedChromePrefs[$path]
+            Write-VerboseTimestamped "[Secure Prefs] Set untracked Chrome pref: $path = $($untrackedChromePrefs[$path])"
         }
 
         # Enable incognito access for uBlock Origin and AdGuard Extra
@@ -4540,10 +4478,8 @@ function Update-TrackedPreferences {
             $regularPrefsHash['extensions']['pinned_extensions'] = $existingPinned
             Write-VerboseTimestamped "[Regular Prefs] Pinned extensions to toolbar: $($existingPinned -join ', ')"
 
-            # Write updated Regular Preferences
-            # CRITICAL: Use -InputObject instead of pipe to avoid PS 5.1 serialization bugs
-            $regularPrefsUpdatedJson = ConvertTo-Json -InputObject $regularPrefsHash -Depth 30 -Compress
-            Set-Content -Path $regularPrefsPath -Value $regularPrefsUpdatedJson -Encoding UTF8 -Force
+            # Write updated Regular Preferences (Save-JsonFile uses -InputObject to avoid PS 5.1 bugs)
+            Save-JsonFile -Path $regularPrefsPath -Object $regularPrefsHash -Compress
             Write-VerboseTimestamped "[Regular Prefs] Updated Regular Preferences file"
         }
 
@@ -4657,36 +4593,19 @@ function Update-TrackedPreferences {
         if ($updateResult.emptyArrayPaths -and $updateResult.emptyArrayPaths.Count -gt 0) {
             Write-VerboseTimestamped "[Secure Prefs] Restoring $($updateResult.emptyArrayPaths.Count) empty arrays that PS 5.1 converted to null"
             foreach ($path in $updateResult.emptyArrayPaths.Keys) {
-                # Navigate to the parent and set the value to empty array
-                $parts = $path -split '\.'
-                $current = $securePrefsHash
-                $found = $true
-                for ($i = 0; $i -lt $parts.Count - 1; $i++) {
-                    $part = $parts[$i]
-                    if ($current -is [hashtable] -and $current.ContainsKey($part)) {
-                        $current = $current[$part]
-                    } else {
-                        $found = $false
-                        break
-                    }
-                }
-                if ($found -and $current -is [hashtable]) {
-                    $lastKey = $parts[-1]
-                    if ($current.ContainsKey($lastKey) -and $null -eq $current[$lastKey]) {
-                        $current[$lastKey] = @()
-                        Write-VerboseTimestamped "[Secure Prefs]   Restored: $path = []"
-                    }
+                # If the path exists and value is null, restore to empty array
+                $existing = Get-NestedValue -Object $securePrefsHash -Path $path
+                if ($existing.Found -and $null -eq $existing.Value) {
+                    Set-NestedValue -Hashtable $securePrefsHash -Path $path -Value @()
+                    Write-VerboseTimestamped "[Secure Prefs]   Restored: $path = []"
                 }
             }
         }
 
         # Write modified Secure Preferences
-        # CRITICAL: Use -Compress to produce compact JSON without whitespace
-        # Chromium's JSONWriter produces compact JSON; prettified JSON may cause issues
-        # CRITICAL: Use -InputObject instead of pipe to avoid PS 5.1 serialization bugs
-        # Piping can cause arrays of strings to serialize as {"Length":N} objects
-        $json = ConvertTo-Json -InputObject $securePrefsHash -Depth 30 -Compress
-        Set-Content -Path $SecurePrefsPath -Value $json -Encoding UTF8 -Force
+        # Use -Compress for compact JSON (Chromium's format). Save-JsonFile uses -InputObject
+        # to avoid PS 5.1 serialization bugs (piping causes arrays to serialize as {"Length":N})
+        Save-JsonFile -Path $SecurePrefsPath -Object $securePrefsHash -Compress
 
         Write-VerboseTimestamped "[Secure Prefs] File updated successfully"
 
@@ -4988,26 +4907,10 @@ function Update-ModifiedMacs {
         # Calculate new MAC for this path
         $newMac = Get-PreferenceHmac -SeedHex $SeedHex -DeviceId $DeviceId -Path $path -Value $value
 
-        # Navigate to the right place in the nested MACs structure and set the new MAC
-        $parts = $path -split '\.'
-        $current = $Macs
-
-        # Navigate/create nested structure
-        for ($i = 0; $i -lt $parts.Count - 1; $i++) {
-            $part = $parts[$i]
-            if (-not $current.ContainsKey($part)) {
-                $current[$part] = @{}
-            }
-            $current = $current[$part]
-        }
-
-        $lastPart = $parts[-1]
-
-        # Get original MAC for logging
-        $originalMac = if ($current.ContainsKey($lastPart)) { $current[$lastPart] } else { "(none)" }
-
-        # Set the new MAC
-        $current[$lastPart] = $newMac
+        # Get original MAC for logging, then set the new one
+        $existing = Get-NestedValue -Object $Macs -Path $path
+        $originalMac = if ($existing.Found) { $existing.Value } else { "(none)" }
+        Set-NestedValue -Hashtable $Macs -Path $path -Value $newMac
         $updated++
         $updatedPaths += $path
 
@@ -5078,8 +4981,8 @@ function Update-AllMacs {
     $emptyArrayPaths = @{}
     if ($SecurePrefsRawJson) {
         # Match top-level keys with empty array values: "pinned_tabs":[]
-        $matches = [regex]::Matches($SecurePrefsRawJson, '"([^"]+)"\s*:\s*\[\s*\]')
-        foreach ($match in $matches) {
+        $regexMatches = [regex]::Matches($SecurePrefsRawJson, '"([^"]+)"\s*:\s*\[\s*\]')
+        foreach ($match in $regexMatches) {
             $key = $match.Groups[1].Value
             $emptyArrayPaths[$key] = $true
             Write-VerboseTimestamped "[Update MACs] Detected empty array in raw JSON: $key"
@@ -5140,16 +5043,7 @@ function Update-AllMacs {
             $newMac = Get-PreferenceHmac -SeedHex $SeedHex -DeviceId $DeviceId -Path $hmacPath -Value $value
 
             # Update MAC in nested structure
-            $parts = $path -split '\.'
-            $current = $Macs
-            for ($i = 0; $i -lt $parts.Count - 1; $i++) {
-                $part = $parts[$i]
-                if (-not $current.ContainsKey($part)) {
-                    $current[$part] = @{}
-                }
-                $current = $current[$part]
-            }
-            $current[$parts[-1]] = $newMac
+            Set-NestedValue -Hashtable $Macs -Path $path -Value $newMac
 
             $recalculated++
             $recalculatedPaths += $path
@@ -5183,16 +5077,7 @@ function Update-AllMacs {
         $newMac = Get-PreferenceHmac -SeedHex $SeedHex -DeviceId $DeviceId -Path $hmacPath -Value $value
 
         # Update MAC in nested structure
-        $parts = $path -split '\.'
-        $current = $Macs
-        for ($i = 0; $i -lt $parts.Count - 1; $i++) {
-            $part = $parts[$i]
-            if (-not $current.ContainsKey($part)) {
-                $current[$part] = @{}
-            }
-            $current = $current[$part]
-        }
-        $current[$parts[-1]] = $newMac
+        Set-NestedValue -Hashtable $Macs -Path $path -Value $newMac
 
         $recalculated++
         $recalculatedPaths += $path
@@ -5357,11 +5242,10 @@ function Start-Browser {
         Launch the browser with the built command.
     #>
     param(
-        [array]$Command,
-        [switch]$DryRunMode
+        [array]$Command
     )
 
-    if ($DryRunMode) {
+    if ($WhatIfPreference) {
         Write-Host ""
         Write-Status "Would launch with command:" -Type Info
         Write-Host $Command[0]
@@ -5399,8 +5283,7 @@ function Initialize-CometInstallation {
         [PSCustomObject]$Config,
         [string]$MeteorDataPath,
         [switch]$PortableMode,
-        [switch]$Force,
-        [switch]$DryRunMode
+        [switch]$Force
     )
 
     Write-Status "Step 0: Checking Comet Installation" -Type Step
@@ -5426,14 +5309,14 @@ function Initialize-CometInstallation {
 
     if (-not $comet) {
         if ($PortableMode) {
-            $comet = Install-CometPortable -DownloadUrl $Config.comet.download_url -TargetDir $MeteorDataPath -DryRunMode:$DryRunMode
+            $comet = Install-CometPortable -DownloadUrl $Config.comet.download_url -TargetDir $MeteorDataPath
         }
         else {
-            $comet = Install-Comet -DownloadUrl $Config.comet.download_url -DryRunMode:$DryRunMode
+            $comet = Install-Comet -DownloadUrl $Config.comet.download_url
         }
     }
 
-    if (-not $comet -and -not $DryRunMode) {
+    if (-not $comet -and -not $WhatIfPreference) {
         Write-Status "Could not find or install Comet browser" -Type Error
         return $null
     }
@@ -5449,7 +5332,7 @@ function Initialize-CometInstallation {
 
         # Set registry values for Comet update system
         if ($cometVersion) {
-            $null = Set-CometRegistryValues -Version $cometVersion -DryRunMode:$DryRunMode
+            $null = Set-CometRegistryValues -Version $cometVersion
         }
     }
 
@@ -5471,8 +5354,7 @@ function Update-CometBrowser {
         [hashtable]$Comet,
         [string]$CometVersion,
         [string]$MeteorDataPath,
-        [switch]$PortableMode,
-        [switch]$DryRunMode
+        [switch]$PortableMode
     )
 
     Write-Status "Step 1: Checking for Comet Updates" -Type Step
@@ -5486,13 +5368,13 @@ function Update-CometBrowser {
 
     if ($updateInfo) {
         Write-Status "Update available: $($updateInfo.Version) (current: $CometVersion)" -Type Warning
-        if (-not $DryRunMode) {
+        if (-not $WhatIfPreference) {
             Write-Status "Downloading Comet update..." -Type Info
             $newComet = if ($PortableMode) {
-                Install-CometPortable -DownloadUrl $Config.comet.download_url -TargetDir $MeteorDataPath -DryRunMode:$DryRunMode
+                Install-CometPortable -DownloadUrl $Config.comet.download_url -TargetDir $MeteorDataPath
             }
             else {
-                Install-Comet -DownloadUrl $Config.comet.download_url -DryRunMode:$DryRunMode
+                Install-Comet -DownloadUrl $Config.comet.download_url
             }
 
             if ($newComet) {
@@ -5500,7 +5382,7 @@ function Update-CometBrowser {
                 $CometVersion = Get-CometVersion -ExePath $Comet.Executable
                 Write-Status "Updated to version: $CometVersion" -Type Success
                 if ($CometVersion) {
-                    $null = Set-CometRegistryValues -Version $CometVersion -DryRunMode:$DryRunMode
+                    $null = Set-CometRegistryValues -Version $CometVersion
                 }
             }
         }
@@ -5524,8 +5406,7 @@ function Update-BundledExtensions {
     #>
     param(
         [PSCustomObject]$Config,
-        [hashtable]$Comet,
-        [switch]$DryRunMode
+        [hashtable]$Comet
     )
 
     Write-Status "Step 2: Checking for Extension Updates" -Type Step
@@ -5544,19 +5425,8 @@ function Update-BundledExtensions {
     $extensionsUpdated = $false
 
     # Find default_apps directory (may be in version subdirectory)
-    $defaultAppsDir = Join-Path $Comet.Directory "default_apps"
-    if (-not (Test-Path $defaultAppsDir)) {
-        $versionDirs = Get-ChildItem -Path $Comet.Directory -Directory -ErrorAction SilentlyContinue
-        foreach ($vDir in $versionDirs) {
-            $subDefaultApps = Join-Path $vDir.FullName "default_apps"
-            if (Test-Path $subDefaultApps) {
-                $defaultAppsDir = $subDefaultApps
-                break
-            }
-        }
-    }
-
-    if (-not (Test-Path $defaultAppsDir)) {
+    $defaultAppsDir = Get-DefaultAppsDirectory -CometDir $Comet.Directory
+    if (-not $defaultAppsDir) {
         return $false
     }
 
@@ -5585,7 +5455,7 @@ function Update-BundledExtensions {
             $comparison = Compare-Versions -Version1 $extUpdate.Version -Version2 $currentVersion
             if ($comparison -gt 0) {
                 Write-Status "  Update available: $currentVersion -> $($extUpdate.Version)" -Type Info
-                if (-not $DryRunMode) {
+                if (-not $WhatIfPreference) {
                     try {
                         $tempCrx = Join-Path $env:TEMP "meteor_ext_$(Get-Random).crx"
                         $null = Invoke-MeteorWebRequest -Uri $extUpdate.Codebase -Mode Download -OutFile $tempCrx -TimeoutSec 120
@@ -5634,19 +5504,11 @@ function Test-SetupRequired {
     $needsSetup = $Force -or $ExtensionsUpdated -or -not (Test-Path $PatchedExtPath)
 
     if (-not $needsSetup -and $Comet) {
-        $defaultAppsDir = Join-Path $Comet.Directory "default_apps"
-        if (Test-Path $defaultAppsDir) {
-            # Check active CRX files
-            $crxFiles = Get-ChildItem -Path $defaultAppsDir -Filter "*.crx" -ErrorAction SilentlyContinue
-            foreach ($crx in $crxFiles) {
-                if (Test-FileChanged -FilePath $crx.FullName -State $State) {
-                    Write-Status "Changed: $($crx.Name)" -Type Detail
-                    $needsSetup = $true
-                }
-            }
-            # Check backed-up CRX files
-            $backupFiles = Get-ChildItem -Path $defaultAppsDir -Filter "*.crx.meteor-backup" -ErrorAction SilentlyContinue
-            foreach ($crx in $backupFiles) {
+        $defaultAppsDir = Get-DefaultAppsDirectory -CometDir $Comet.Directory
+        if ($defaultAppsDir) {
+            # Check both active CRX files and backed-up CRX files
+            $allCrx = Get-ChildItem -Path $defaultAppsDir -Filter "*.crx*" -ErrorAction SilentlyContinue | Where-Object { $_.Extension -eq '.crx' -or $_.Name.EndsWith('.crx.meteor-backup') }
+            foreach ($crx in $allCrx) {
                 if (Test-FileChanged -FilePath $crx.FullName -State $State) {
                     Write-Status "Changed: $($crx.Name)" -Type Detail
                     $needsSetup = $true
@@ -5684,8 +5546,7 @@ function Initialize-Extensions {
         [string]$CometVersion,
         [switch]$PortableMode,
         [switch]$NeedsSetup,
-        [switch]$SkipPak,
-        [switch]$DryRunMode
+        [switch]$SkipPak
     )
 
     Write-Status "Step 4: Extracting and Patching" -Type Step
@@ -5694,26 +5555,15 @@ function Initialize-Extensions {
     # This handles cases where Comet updates restore external_extensions.json
     if ($Comet) {
         # Find default_apps directory (may be in version subdirectory)
-        $defaultAppsDir = Join-Path $Comet.Directory "default_apps"
-        if (-not (Test-Path $defaultAppsDir)) {
-            # Try version subdirectory (e.g., .meteor/comet/143.2.7499.37654/default_apps)
-            $versionDirs = Get-ChildItem -Path $Comet.Directory -Directory -ErrorAction SilentlyContinue
-            foreach ($vDir in $versionDirs) {
-                $subDefaultApps = Join-Path $vDir.FullName "default_apps"
-                if (Test-Path $subDefaultApps) {
-                    $defaultAppsDir = $subDefaultApps
-                    break
-                }
-            }
-        }
-        if (Test-Path $defaultAppsDir) {
+        $defaultAppsDir = Get-DefaultAppsDirectory -CometDir $Comet.Directory
+        if ($defaultAppsDir) {
             # Clear external_extensions.json to prevent CRX loading
             $extJsonPath = Join-Path $defaultAppsDir "external_extensions.json"
             $extJsonBackup = "$extJsonPath.meteor-backup"
             if (Test-Path $extJsonPath) {
                 $content = Get-Content -Path $extJsonPath -Raw -ErrorAction SilentlyContinue
                 if ($content -and $content.Trim() -ne "{}") {
-                    if ($DryRunMode) {
+                    if ($WhatIfPreference) {
                         Write-Status "Would clear external_extensions.json" -Type Detail
                     }
                     else {
@@ -5731,7 +5581,7 @@ function Initialize-Extensions {
             foreach ($crx in $crxFilesToBackup) {
                 $backupPath = "$($crx.FullName).meteor-backup"
                 if (-not (Test-Path $backupPath)) {
-                    if ($DryRunMode) {
+                    if ($WhatIfPreference) {
                         Write-Status "Would backup: $($crx.Name)" -Type Detail
                     }
                     else {
@@ -5758,8 +5608,7 @@ function Initialize-Extensions {
         -PatchesDir $PatchesPath `
         -PatchConfig $Config.extensions.patch_config `
         -ExtensionConfig $Config.extensions `
-        -BrowserVersion $browserVersionForUpdate `
-        -DryRunMode:$DryRunMode
+        -BrowserVersion $browserVersionForUpdate
 
     if (-not $setupResult) {
         Write-Status "Extension patching failed" -Type Error
@@ -5769,16 +5618,11 @@ function Initialize-Extensions {
     Write-Status "Extensions patched successfully" -Type Success
 
     # Update state with new hashes
-    if (-not $DryRunMode) {
-        $defaultAppsDir = Join-Path $Comet.Directory "default_apps"
-        if (Test-Path $defaultAppsDir) {
-            $crxFiles = Get-ChildItem -Path $defaultAppsDir -Filter "*.crx" -ErrorAction SilentlyContinue
-            foreach ($crx in $crxFiles) {
-                Update-FileHash -FilePath $crx.FullName -State $State
-            }
-            $backupFiles = Get-ChildItem -Path $defaultAppsDir -Filter "*.crx.meteor-backup" -ErrorAction SilentlyContinue
-            foreach ($crx in $backupFiles) {
-                Update-FileHash -FilePath $crx.FullName -State $State
+    if (-not $WhatIfPreference) {
+        $defaultAppsDir = Get-DefaultAppsDirectory -CometDir $Comet.Directory
+        if ($defaultAppsDir) {
+            Get-ChildItem -Path $defaultAppsDir -Filter "*.crx*" -ErrorAction SilentlyContinue | Where-Object { $_.Extension -eq '.crx' -or $_.Name.EndsWith('.crx.meteor-backup') } | ForEach-Object {
+                Update-FileHash -FilePath $_.FullName -State $State
             }
         }
     }
@@ -5796,7 +5640,7 @@ function Initialize-Extensions {
 
     foreach ($crxCachePath in $cachePaths) {
         if (Test-Path $crxCachePath) {
-            if ($DryRunMode) {
+            if ($WhatIfPreference) {
                 Write-Status "Would clear: $crxCachePath" -Type Detail
             }
             else {
@@ -5811,7 +5655,7 @@ function Initialize-Extensions {
         Write-Status "Skipping PAK modifications (-SkipPak specified)" -Type Detail
     }
     elseif ($Config.pak_modifications.enabled) {
-        Initialize-PakModifications -CometDir $Comet.Directory -PakConfig $Config.pak_modifications -PatchedResourcesPath $PatchedResourcesPath -DryRunMode:$DryRunMode
+        Initialize-PakModifications -CometDir $Comet.Directory -PakConfig $Config.pak_modifications -PatchedResourcesPath $PatchedResourcesPath
     }
 }
 
@@ -5826,8 +5670,7 @@ function Initialize-AdBlockExtensions {
         [PSCustomObject]$Config,
         [string]$UBlockPath,
         [string]$AdGuardExtraPath,
-        [switch]$Force,
-        [switch]$DryRunMode
+        [switch]$Force
     )
 
     # Step 5: uBlock Origin
@@ -5835,7 +5678,7 @@ function Initialize-AdBlockExtensions {
 
     $resultUBlockPath = $UBlockPath
     if ($Config.ublock.enabled) {
-        $null = Get-UBlockOrigin -OutputDir $UBlockPath -UBlockConfig $Config.ublock -DryRunMode:$DryRunMode -ForceDownload:$Force
+        $null = Get-UBlockOrigin -OutputDir $UBlockPath -UBlockConfig $Config.ublock -ForceDownload:$Force
     }
     else {
         Write-Status "uBlock Origin disabled in config" -Type Detail
@@ -5847,7 +5690,7 @@ function Initialize-AdBlockExtensions {
 
     $resultAdGuardPath = $AdGuardExtraPath
     if ($Config.adguard_extra.enabled) {
-        $null = Get-AdGuardExtra -OutputDir $AdGuardExtraPath -AdGuardConfig $Config.adguard_extra -DryRunMode:$DryRunMode -ForceDownload:$Force
+        $null = Get-AdGuardExtra -OutputDir $AdGuardExtraPath -AdGuardConfig $Config.adguard_extra -ForceDownload:$Force
     }
     else {
         Write-Status "AdGuard Extra disabled in config" -Type Detail
@@ -5892,9 +5735,7 @@ function Main {
     }
 
     # Ensure data directory exists
-    if (-not (Test-Path $meteorDataPath)) {
-        $null = New-Item -ItemType Directory -Path $meteorDataPath -Force
-    }
+    New-DirectoryIfNotExists -Path $meteorDataPath
 
     # User data path for browser profile (inside meteorDataPath)
     $userDataPath = Join-Path $meteorDataPath "User Data"
@@ -5937,7 +5778,7 @@ function Main {
     # Load state
     $state = Get-MeteorState -StatePath $statePath
 
-    if ($DryRun) {
+    if ($WhatIfPreference) {
         Write-Status "DRY RUN MODE - No changes will be made" -Type Warning
         Write-Host ""
     }
@@ -5946,7 +5787,7 @@ function Main {
     if ($Force) {
         $cometProcesses = Get-Process -Name "comet" -ErrorAction SilentlyContinue
         if ($cometProcesses) {
-            if ($DryRun) {
+            if ($WhatIfPreference) {
                 Write-Status "Would stop $($cometProcesses.Count) running Comet process(es)" -Type DryRun
             }
             else {
@@ -5960,7 +5801,7 @@ function Main {
         # Delete Comet registry key (contains MACs and other browser state)
         $registryPath = "HKCU:\SOFTWARE\Perplexity\Comet"
         if (Test-Path $registryPath) {
-            if ($DryRun) {
+            if ($WhatIfPreference) {
                 Write-Status "Would delete registry key: $registryPath" -Type DryRun
             }
             else {
@@ -5972,7 +5813,7 @@ function Main {
         # Delete Comet application files (but NOT User Data)
         $cometAppPath = Join-Path $meteorDataPath "comet"
         if (Test-Path $cometAppPath) {
-            if ($DryRun) {
+            if ($WhatIfPreference) {
                 Write-Status "Would delete Comet application: $cometAppPath" -Type DryRun
             }
             else {
@@ -5984,7 +5825,7 @@ function Main {
         # Delete patched extensions (will be re-extracted)
         $patchedExtForceDelete = Join-Path $meteorDataPath "patched_extensions"
         if (Test-Path $patchedExtForceDelete) {
-            if ($DryRun) {
+            if ($WhatIfPreference) {
                 Write-Status "Would delete patched extensions: $patchedExtForceDelete" -Type DryRun
             }
             else {
@@ -5996,7 +5837,7 @@ function Main {
         # Delete patched resources (will be re-extracted from PAK)
         $patchedResForceDelete = Join-Path $meteorDataPath "patched_resources"
         if (Test-Path $patchedResForceDelete) {
-            if ($DryRun) {
+            if ($WhatIfPreference) {
                 Write-Status "Would delete patched resources: $patchedResForceDelete" -Type DryRun
             }
             else {
@@ -6027,7 +5868,7 @@ function Main {
                 $securePrefsPath = Join-Path $profilePath "Secure Preferences"
 
                 if (Test-Path $prefsPath) {
-                    if ($DryRun) {
+                    if ($WhatIfPreference) {
                         Write-Status "Would delete: $prefsPath" -Type DryRun
                     }
                     else {
@@ -6037,7 +5878,7 @@ function Main {
                 }
 
                 if (Test-Path $securePrefsPath) {
-                    if ($DryRun) {
+                    if ($WhatIfPreference) {
                         Write-Status "Would delete: $securePrefsPath" -Type DryRun
                     }
                     else {
@@ -6052,8 +5893,8 @@ function Main {
     # ═══════════════════════════════════════════════════════════════
     # Step 0: Comet Installation
     # ═══════════════════════════════════════════════════════════════
-    $installResult = Initialize-CometInstallation -Config $config -MeteorDataPath $meteorDataPath -PortableMode:$portableMode -Force:$Force -DryRunMode:$DryRun
-    if ($null -eq $installResult -and -not $DryRun) {
+    $installResult = Initialize-CometInstallation -Config $config -MeteorDataPath $meteorDataPath -PortableMode:$portableMode -Force:$Force
+    if ($null -eq $installResult -and -not $WhatIfPreference) {
         exit 1
     }
     $comet = $installResult.Comet
@@ -6062,14 +5903,14 @@ function Main {
     # ═══════════════════════════════════════════════════════════════
     # Step 1: Comet Update Check
     # ═══════════════════════════════════════════════════════════════
-    $updateResult = Update-CometBrowser -Config $config -Comet $comet -CometVersion $cometVersion -MeteorDataPath $meteorDataPath -PortableMode:$portableMode -DryRunMode:$DryRun
+    $updateResult = Update-CometBrowser -Config $config -Comet $comet -CometVersion $cometVersion -MeteorDataPath $meteorDataPath -PortableMode:$portableMode
     $comet = $updateResult.Comet
     $cometVersion = $updateResult.CometVersion
 
     # ═══════════════════════════════════════════════════════════════
     # Step 2: Extension Update Check
     # ═══════════════════════════════════════════════════════════════
-    $extensionsUpdated = Update-BundledExtensions -Config $config -Comet $comet -DryRunMode:$DryRun
+    $extensionsUpdated = Update-BundledExtensions -Config $config -Comet $comet
 
     # ═══════════════════════════════════════════════════════════════
     # Step 3: Change Detection
@@ -6090,18 +5931,17 @@ function Main {
         -CometVersion $cometVersion `
         -PortableMode:$portableMode `
         -NeedsSetup:$needsSetup `
-        -SkipPak:$SkipPak `
-        -DryRunMode:$DryRun
+        -SkipPak:$SkipPak
 
     # ═══════════════════════════════════════════════════════════════
     # Step 5 & 5.5: Ad-blocking Extensions
     # ═══════════════════════════════════════════════════════════════
-    $adBlockResult = Initialize-AdBlockExtensions -Config $config -UBlockPath $ublockPath -AdGuardExtraPath $adguardExtraPath -Force:$Force -DryRunMode:$DryRun
+    $adBlockResult = Initialize-AdBlockExtensions -Config $config -UBlockPath $ublockPath -AdGuardExtraPath $adguardExtraPath -Force:$Force
     $ublockPath = $adBlockResult.UBlockPath
     $adguardExtraPath = $adBlockResult.AdGuardExtraPath
 
     # Save state
-    if (-not $DryRun) {
+    if (-not $WhatIfPreference) {
         $state.last_update_check = (Get-Date).ToString("o")
         if ($comet) {
             $state.comet_version = $cometVersion
@@ -6121,7 +5961,7 @@ function Main {
 
     Write-Status "Step 6: Launching Browser" -Type Step
 
-    if (-not $comet -and -not $DryRun) {
+    if (-not $comet -and -not $WhatIfPreference) {
         Write-Status "Cannot launch - Comet not installed" -Type Error
         exit 1
     }
@@ -6132,7 +5972,7 @@ function Main {
     # --no-first-run, --disable-features, etc. would all be ignored.
     $cometProcesses = Get-Process -Name "comet" -ErrorAction SilentlyContinue
     if ($cometProcesses) {
-        if ($DryRun) {
+        if ($WhatIfPreference) {
             Write-Status "Would stop $($cometProcesses.Count) running Comet process(es) to apply flags" -Type DryRun
         }
         else {
@@ -6144,7 +5984,7 @@ function Main {
         }
     }
 
-    if ($comet -or $DryRun) {
+    if ($comet -or $WhatIfPreference) {
         $browserExe = if ($comet) { $comet.Executable } else { "comet.exe" }
         $browserUserDataPath = if ($portableMode) { $userDataPath } else { $null }
         $profileName = if ($config.browser.profile) { $config.browser.profile } else { "Default" }
@@ -6152,7 +5992,7 @@ function Main {
         # Write Secure Preferences with valid HMACs
         # This ensures developer mode, toolbar pin, and home button are set without HMAC validation failures
         $cometDir = if ($comet) { $comet.Directory } else { $null }
-        $null = Set-BrowserPreferences -BrowserPath $browserExe -UserDataPath $browserUserDataPath -ProfileName $profileName -CometDir $cometDir -DryRunMode:$DryRun
+        $null = Set-BrowserPreferences -UserDataPath $browserUserDataPath -ProfileName $profileName -CometDir $cometDir
 
         $buildParams = @{
             Config = $config
@@ -6165,8 +6005,7 @@ function Main {
         if ($Proxy) { $buildParams.UseProxy = $true }
         $cmd = Build-BrowserCommand @buildParams
 
-        $proc = Start-Browser -Command $cmd -DryRunMode:$DryRun
-
+        $proc = Start-Browser -Command $cmd
         if ($proc) {
             Write-Host ""
             Write-Status "Browser launched (PID: $($proc.Id))" -Type Success
