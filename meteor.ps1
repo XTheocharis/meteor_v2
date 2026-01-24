@@ -7656,31 +7656,137 @@ function Main {
                 [bool]$ForceDownload
             )
 
+            # Helper: Read protobuf varint
+            function Read-InlineVarint {
+                param([byte[]]$Bytes, [int]$Pos)
+                $result = 0
+                $shift = 0
+                while ($Pos -lt $Bytes.Length) {
+                    $b = $Bytes[$Pos]
+                    $Pos++
+                    $result = $result -bor (($b -band 0x7F) -shl $shift)
+                    if (($b -band 0x80) -eq 0) { break }
+                    $shift += 7
+                }
+                return @{ Value = $result; Pos = $Pos }
+            }
+
+            # Helper: Extract public key from CRX (handles CRX2 and CRX3)
+            function Get-InlineCrxPublicKey {
+                param([byte[]]$Bytes)
+                $version = [BitConverter]::ToUInt32($Bytes, 4)
+
+                if ($version -eq 2) {
+                    # CRX2: public key at offset 16
+                    $pubkeyLen = [BitConverter]::ToUInt32($Bytes, 8)
+                    if ($pubkeyLen -eq 0) { return $null }
+                    $pubkey = New-Object byte[] $pubkeyLen
+                    [Array]::Copy($Bytes, 16, $pubkey, 0, $pubkeyLen)
+                    return [Convert]::ToBase64String($pubkey)
+                }
+                else {
+                    # CRX3: Parse protobuf header
+                    $headerLen = [BitConverter]::ToUInt32($Bytes, 8)
+                    $headerStart = 12
+                    $headerEnd = $headerStart + $headerLen
+                    $keys = [System.Collections.ArrayList]@()
+                    $crxId = $null
+                    $pos = $headerStart
+
+                    while ($pos -lt $headerEnd) {
+                        $r = Read-InlineVarint -Bytes $Bytes -Pos $pos
+                        $tag = $r.Value; $pos = $r.Pos
+                        $fieldNum = $tag -shr 3
+                        $wireType = $tag -band 0x07
+
+                        if ($wireType -eq 2) {
+                            $r = Read-InlineVarint -Bytes $Bytes -Pos $pos
+                            $len = $r.Value; $pos = $r.Pos
+                            $fieldEnd = $pos + $len
+
+                            if ($fieldNum -in @(2, 3)) {
+                                # sha256_with_rsa or sha256_with_ecdsa - extract public_key
+                                $nestedPos = $pos
+                                while ($nestedPos -lt $fieldEnd) {
+                                    $r = Read-InlineVarint -Bytes $Bytes -Pos $nestedPos
+                                    $nestedTag = $r.Value; $nestedPos = $r.Pos
+                                    if (($nestedTag -band 0x07) -eq 2) {
+                                        $r = Read-InlineVarint -Bytes $Bytes -Pos $nestedPos
+                                        $nestedLen = $r.Value; $nestedPos = $r.Pos
+                                        if (($nestedTag -shr 3) -eq 1) {
+                                            $pubkey = New-Object byte[] $nestedLen
+                                            [Array]::Copy($Bytes, $nestedPos, $pubkey, 0, $nestedLen)
+                                            [void]$keys.Add($pubkey)
+                                        }
+                                        $nestedPos += $nestedLen
+                                    } else { break }
+                                }
+                            }
+                            elseif ($fieldNum -eq 10000) {
+                                # signed_header_data - contains crx_id
+                                $nestedPos = $pos
+                                $r = Read-InlineVarint -Bytes $Bytes -Pos $nestedPos
+                                $nestedTag = $r.Value; $nestedPos = $r.Pos
+                                if (($nestedTag -band 0x07) -eq 2 -and ($nestedTag -shr 3) -eq 1) {
+                                    $r = Read-InlineVarint -Bytes $Bytes -Pos $nestedPos
+                                    $crxIdLen = $r.Value; $nestedPos = $r.Pos
+                                    $crxId = New-Object byte[] $crxIdLen
+                                    [Array]::Copy($Bytes, $nestedPos, $crxId, 0, $crxIdLen)
+                                }
+                            }
+                            $pos = $fieldEnd
+                        }
+                        elseif ($wireType -eq 0) { $r = Read-InlineVarint -Bytes $Bytes -Pos $pos; $pos = $r.Pos }
+                        elseif ($wireType -eq 1) { $pos += 8 }
+                        elseif ($wireType -eq 5) { $pos += 4 }
+                        else { break }
+                    }
+
+                    # Find key matching CRX ID
+                    if ($crxId -and $keys.Count -gt 0) {
+                        $crxIdHex = [BitConverter]::ToString($crxId).Replace("-", "").ToLower()
+                        foreach ($key in $keys) {
+                            $sha = [System.Security.Cryptography.SHA256]::Create()
+                            try {
+                                $hash = $sha.ComputeHash($key)
+                                $hashHex = [BitConverter]::ToString($hash[0..15]).Replace("-", "").ToLower()
+                                if ($hashHex -eq $crxIdHex) { return [Convert]::ToBase64String($key) }
+                            } finally { $sha.Dispose() }
+                        }
+                    }
+                    if ($keys.Count -gt 0) { return [Convert]::ToBase64String($keys[0]) }
+                    return $null
+                }
+            }
+
             # Helper: Get CRX ZIP offset (inline version)
             function Get-InlineCrxZipOffset {
                 param([byte[]]$Bytes)
-                # CRX magic: "Cr24"
-                if ($Bytes.Length -lt 16 -or $Bytes[0] -ne 0x43 -or $Bytes[1] -ne 0x72 -or $Bytes[2] -ne 0x32 -or $Bytes[3] -ne 0x34) {
-                    throw "Invalid CRX magic"
-                }
                 $version = [BitConverter]::ToUInt32($Bytes, 4)
                 if ($version -eq 2) {
-                    # CRX2: magic(4) + version(4) + pubkey_len(4) + sig_len(4) + pubkey + sig + zip
                     $pubkeyLen = [BitConverter]::ToUInt32($Bytes, 8)
                     $sigLen = [BitConverter]::ToUInt32($Bytes, 12)
                     return (16 + $pubkeyLen + $sigLen)
                 }
                 else {
-                    # CRX3: magic(4) + version(4) + header_len(4) + header + zip
                     $headerLen = [BitConverter]::ToUInt32($Bytes, 8)
                     return (12 + $headerLen)
                 }
             }
 
-            # Helper: Extract CRX to directory (inline version)
+            # Helper: Extract CRX to directory with key injection
             function Extract-InlineCrx {
                 param([string]$CrxPath, [string]$OutputDir)
                 $bytes = [System.IO.File]::ReadAllBytes($CrxPath)
+
+                # Validate CRX magic
+                if ($bytes.Length -lt 16 -or $bytes[0] -ne 0x43 -or $bytes[1] -ne 0x72 -or $bytes[2] -ne 0x32 -or $bytes[3] -ne 0x34) {
+                    throw "Invalid CRX magic"
+                }
+
+                # Extract public key before extracting ZIP
+                $publicKey = Get-InlineCrxPublicKey -Bytes $bytes
+
                 $zipOffset = Get-InlineCrxZipOffset -Bytes $bytes
                 $zipLength = $bytes.Length - $zipOffset
                 $zipBytes = New-Object byte[] $zipLength
@@ -7702,6 +7808,17 @@ function Main {
                 }
                 finally {
                     if (Test-Path $tempZip) { Remove-Item -Path $tempZip -Force }
+                }
+
+                # Inject public key into manifest.json
+                if ($publicKey) {
+                    $manifestPath = Join-Path $OutputDir "manifest.json"
+                    if (Test-Path $manifestPath) {
+                        $manifestContent = Get-Content -Path $manifestPath -Raw -Encoding UTF8
+                        $manifest = $manifestContent | ConvertFrom-Json
+                        $manifest | Add-Member -NotePropertyName "key" -NotePropertyValue $publicKey -Force
+                        $manifest | ConvertTo-Json -Depth 20 | Set-Content -Path $manifestPath -Encoding UTF8
+                    }
                 }
                 return $true
             }
