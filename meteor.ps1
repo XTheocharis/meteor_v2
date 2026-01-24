@@ -1020,9 +1020,10 @@ function Read-PakFile {
 
     # Build hash index for O(1) resource lookup (optimization)
     # This eliminates O(n) linear search in Get-PakResource
+    # Cast to [int] to ensure consistent key type (Id comes as UInt16, lookups use int)
     $resourceIndex = @{}
     for ($i = 0; $i -lt $pak.Resources.Count; $i++) {
-        $resourceIndex[$pak.Resources[$i].Id] = $i
+        $resourceIndex[[int]$pak.Resources[$i].Id] = $i
     }
     $pak.ResourceIndex = $resourceIndex
 
@@ -6565,7 +6566,7 @@ function Initialize-Extensions {
         Write-Status "Skipping PAK modifications (-SkipPak specified)" -Type Detail
     }
     elseif ($Config.pak_modifications.enabled) {
-        Initialize-PakModifications -CometDir $Comet.Directory -PakConfig $Config.pak_modifications -PatchedResourcesPath $PatchedResourcesPath
+        $null = Initialize-PakModifications -CometDir $Comet.Directory -PakConfig $Config.pak_modifications -PatchedResourcesPath $PatchedResourcesPath
     }
 }
 
