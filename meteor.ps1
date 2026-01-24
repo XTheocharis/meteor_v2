@@ -5719,8 +5719,6 @@ function Build-BrowserCommand {
         Path to the AdGuard Extra extension directory.
     .PARAMETER UserDataPath
         Path to store browser user data (bookmarks, cache, etc.).
-    .PARAMETER UseProxy
-        If specified, routes traffic through a local proxy (127.0.0.1:8888).
     .OUTPUTS
         [System.Collections.ArrayList] Command line components as an array.
     #>
@@ -5745,10 +5743,7 @@ function Build-BrowserCommand {
         [string]$AdGuardExtraPath,
 
         [Parameter(Mandatory = $false)]
-        [string]$UserDataPath,
-
-        [Parameter(Mandatory = $false)]
-        [switch]$UseProxy
+        [string]$UserDataPath
     )
 
     $cmd = [System.Collections.ArrayList]@()
@@ -5763,11 +5758,6 @@ function Build-BrowserCommand {
     # User data directory - enables portable mode by isolating all browser data
     if ($UserDataPath) {
         [void]$cmd.Add("--user-data-dir=`"$UserDataPath`"")
-    }
-
-    # Debug proxy - useful for inspecting traffic with tools like Fiddler/mitmproxy
-    if ($UseProxy) {
-        [void]$cmd.Add("--proxy-server=http://127.0.0.1:8888")
     }
 
     # Profile selection - defaults to "Default" profile
@@ -6790,7 +6780,6 @@ function Main {
             AdGuardExtraPath = $adguardExtraPath
             UserDataPath = $browserUserDataPath
         }
-        if ($Proxy) { $buildParams.UseProxy = $true }
         $cmd = Build-BrowserCommand @buildParams
 
         $proc = Start-Browser -Command $cmd
