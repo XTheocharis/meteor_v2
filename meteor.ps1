@@ -79,7 +79,6 @@
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Scope = 'Function', Target = 'Update-FileHash')]
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Scope = 'Function', Target = 'Set-PakResource')]
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Scope = 'Function', Target = 'Update-Extension')]
-[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Scope = 'Function', Target = 'Set-CometRegistryValues')]
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Scope = 'Function', Target = 'Set-RegistryPreferenceMacs')]
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Scope = 'Function', Target = 'Set-BrowserPreferences')]
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Scope = 'Function', Target = 'Update-TrackedPreferences')]
@@ -3019,44 +3018,6 @@ function Get-CometVersion {
     }
     catch {
         return $null
-    }
-}
-
-function Set-CometRegistryValues {
-    param(
-        [Parameter(Mandatory)]
-        [string]$Version,
-        [string]$Name = "Comet Dev",
-        [string]$Lang = "en",
-        [string]$ClientGuid = "0c18db21-6aaf-49d0-a339-5d135ad4c8e2"
-    )
-
-    $regPath = "HKCU:\SOFTWARE\Perplexity\Update\Clients\$ClientGuid"
-
-    if ($WhatIfPreference) {
-        Write-Status "Would set registry values at: $regPath" -Type Detail
-        Write-VerboseTimestamped "[Registry] name=$Name, lang=$Lang, pv=$Version"
-        return $true
-    }
-
-    try {
-        # Create the registry path if it doesn't exist
-        if (-not (Test-Path $regPath)) {
-            New-Item -Path $regPath -Force | Out-Null
-            Write-VerboseTimestamped "[Registry] Created path: $regPath"
-        }
-
-        # Set the values
-        Set-ItemProperty -Path $regPath -Name "name" -Value $Name -Type String
-        Set-ItemProperty -Path $regPath -Name "lang" -Value $Lang -Type String
-        Set-ItemProperty -Path $regPath -Name "pv" -Value $Version -Type String
-
-        Write-Status "Set registry values (pv=$Version)" -Type Detail
-        return $true
-    }
-    catch {
-        Write-Status "Failed to set registry values: $_" -Type Warning
-        return $false
     }
 }
 
@@ -6869,11 +6830,6 @@ function Initialize-CometInstallation {
         }
         $cometVersion = Get-CometVersion -ExePath $comet.Executable
         Write-Status "Version: $cometVersion" -Type Detail
-
-        # Set registry values for Comet update system
-        if ($cometVersion) {
-            $null = Set-CometRegistryValues -Version $cometVersion
-        }
     }
 
     return @{
@@ -6922,9 +6878,6 @@ function Update-CometBrowser {
                 $Comet = $newComet
                 $CometVersion = Get-CometVersion -ExePath $Comet.Executable
                 Write-Status "Updated to version: $CometVersion" -Type Success
-                if ($CometVersion) {
-                    $null = Set-CometRegistryValues -Version $CometVersion
-                }
             }
         }
         else {
