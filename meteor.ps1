@@ -3290,9 +3290,20 @@ function Install-CometPortable {
 
         Write-Status "Portable installation complete" -Type Success
 
+        # Copy custom chrome_elf.dll from repo root (required)
+        $cometVersionDir = Split-Path -Parent $cometExe
+        $customChromeElf = Join-Path $PSScriptRoot "chrome_elf.dll"
+        if (-not (Test-Path $customChromeElf)) {
+            throw "chrome_elf.dll not found in repo root: $customChromeElf"
+        }
+        $targetChromeElf = Join-Path $cometVersionDir "chrome_elf.dll"
+        Write-Status "Installing custom chrome_elf.dll..." -Type Detail
+        Copy-Item -Path $customChromeElf -Destination $targetChromeElf -Force
+        Write-Status "Custom chrome_elf.dll installed" -Type Success
+
         return @{
             Executable = $cometExe
-            Directory  = Split-Path -Parent $cometExe
+            Directory  = $cometVersionDir
             Portable   = $true
         }
     }
