@@ -3361,7 +3361,7 @@ function Install-CometPortable {
 
         return @{
             Executable = $cometExe
-            Directory  = $cometVersionDir
+            Directory  = $cometDir
             Portable   = $true
         }
     }
