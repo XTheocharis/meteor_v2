@@ -299,7 +299,7 @@ The complete Chromium source code is available at `~/chromium/src` for reference
 
 | Region | Lines | Key Functions |
 |--------|-------|---------------|
-| **Constants** | ~120 | `$script:MeteorVersion`, `$script:FeatureToFlagMapping` (75 mappings) |
+| **Constants** | ~200 | `$script:MeteorVersion`, `$script:FeatureToFlagMapping` (159 mappings) |
 | **Helper Functions** | ~100 | `Write-Status`, `Compare-Versions`, byte conversion utilities |
 | **Configuration** | ~150 | `Get-MeteorConfig`, `Resolve-MeteorPath`, path resolution |
 | **State Management** | ~80 | `Get-MeteorState`, `Save-MeteorState`, `Test-FileChanged`, SHA256 tracking |
