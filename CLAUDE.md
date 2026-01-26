@@ -408,6 +408,58 @@ The `extensions.settings` prefix triggers split mode.
 - Chromium source: `services/preferences/tracked/pref_hash_calculator.cc`
 - Device ID: `services/preferences/tracked/device_id_win.cc`
 
+## Preference Storage Locations
+
+Chromium stores preferences in three different locations based on their scope and tracking requirements. Meteor organizes preferences accordingly:
+
+### Storage Location Summary
+
+| Storage | File | Scope | MAC Required |
+|---------|------|-------|--------------|
+| Secure Preferences | `{Profile}/Secure Preferences` | Profile | Yes (tracked prefs) |
+| Regular Preferences | `{Profile}/Preferences` | Profile | No |
+| Local State | `{User Data}/Local State` | Machine-wide | No |
+
+### Tracked Preferences (Secure Preferences with MAC)
+
+These require valid HMACs. Verified against `services/preferences/tracked/` in Chromium source:
+- `extensions.ui.developer_mode`
+- `browser.show_home_button`
+- `bookmark_bar.show_apps_shortcut`
+- `safebrowsing.enabled` (pref ID 162 in tracked prefs list)
+
+### Profile Preferences (Regular Preferences file)
+
+Registered via `RegisterProfilePrefs()` - stored in profile's Preferences file:
+- `enable_a_ping`, `devtools.availability`, `devtools.gen_ai_settings`
+- `browser.gemini_settings`, `glic.actuation_on_web`
+- `lens.policy.lens_overlay_settings`, `omnibox.ai_mode_settings`
+- `net.quic_allowed`
+- `safebrowsing.enhanced`, `safebrowsing.password_protection_warning_trigger`, `safebrowsing.scout_reporting_enabled`
+- `omnibox.prevent_url_elisions`, `search.suggest_enabled`
+- `url_keyed_anonymized_data_collection.enabled`
+- `feedback_allowed`, `mv2_deprecation_warning_ack_globally`
+
+### Local State Preferences (Local State file)
+
+Registered via `RegisterLocalStatePrefs()` or policy prefs - machine-wide:
+- `policy.lens_desktop_ntp_search_enabled`, `policy.lens_region_search_enabled`
+- `browser.default_browser_setting_enabled`
+- `domain_reliability.allowed_by_policy`
+- `background_mode.enabled`
+- `tracking_protection.ip_protection_enabled`
+- `update.component_updates_enabled`
+- `variations.restrictions_by_policy`
+- `worker.service_worker_auto_preload_enabled`
+
+### How to Verify Preference Location
+
+When adding new preferences, check Chromium source:
+1. Search for the pref name in `chrome/browser/prefs/` and `components/*/prefs/`
+2. Look for `RegisterProfilePrefs()` → Profile Preferences file
+3. Look for `RegisterLocalStatePrefs()` → Local State file
+4. Check `services/preferences/tracked/` for tracked prefs requiring MAC
+
 ## PowerShell 5.1 Compatibility
 
 The script must run on PowerShell 5.1 (Windows default). Key quirks:
