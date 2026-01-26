@@ -5538,64 +5538,81 @@ function Set-BrowserPreferences {
     $uBlockId = "cjpalhdlnbpafiamejdnhcphjbkeiagm"
     $adGuardExtraId = "gkeojjjcdcopjkbelgbcpckplegclfeg"
 
-    # Tracked preferences to set (atomic MACs)
+    # ============================================================================
+    # TRACKED PREFERENCES (Secure Preferences with MAC)
     # These are protected by Chromium's MAC system and require valid HMACs
+    # Verified against services/preferences/tracked/ in Chromium source
+    # ============================================================================
     $trackedPrefs = @{
         "extensions.ui.developer_mode"    = $true
         "browser.show_home_button"        = $true
         "bookmark_bar.show_apps_shortcut" = $false
+        "safebrowsing.enabled"            = $false  # TRACKED - requires MAC
     }
 
-    # Untracked Chrome preferences (no MAC needed, not exposed via settingsPrivate)
-    # NOTE: extensions.* prefs are often tracked - don't add them here!
-    # These are set directly in the Preferences file at browser startup
-    $untrackedChromePrefs = @{
-        # DevTools (these are NOT tracked)
-        "devtools.availability" = 1  # 1 = always available
-        "devtools.gen_ai_settings" = 1  # 1 = disallow Gen AI features
+    # ============================================================================
+    # PROFILE PREFERENCES (Regular Preferences file, no MAC)
+    # Registered via RegisterProfilePrefs() - go in profile's Preferences file
+    # Verified against chrome/browser/prefs/ and component registrations
+    # ============================================================================
+    $profilePrefs = @{
+        # Hyperlink auditing (click tracking)
+        "enable_a_ping" = $false
+
+        # DevTools
+        "devtools.availability" = 1      # 1 = always available
+        "devtools.gen_ai_settings" = 1   # 1 = disallow Gen AI features
 
         # AI & Lens Features (disable Google AI integrations)
-        "browser.gemini_settings"            = 1      # 1 = disabled
-        "glic.actuation_on_web"              = 1      # 1 = disabled (Gemini web actions)
-        "lens.policy.lens_overlay_settings"  = 1      # 1 = disabled
-        "omnibox.ai_mode_settings"           = 1      # 1 = disabled
+        "browser.gemini_settings"           = 1      # 1 = disabled
+        "glic.actuation_on_web"             = 1      # 1 = disabled (Gemini web actions)
+        "lens.policy.lens_overlay_settings" = 1      # 1 = disabled
+        "omnibox.ai_mode_settings"          = 1      # 1 = disabled
+
+        # Network
+        "net.quic_allowed" = $false
+
+        # Safe Browsing (untracked prefs - safebrowsing.enabled is tracked above)
+        "safebrowsing.enhanced" = $false
+        "safebrowsing.password_protection_warning_trigger" = 0  # 0 = disabled
+        "safebrowsing.scout_reporting_enabled" = $false
+
+        # Privacy - URL & Search
+        "omnibox.prevent_url_elisions" = $true   # Full URLs in address bar
+        "search.suggest_enabled" = $false
+        "url_keyed_anonymized_data_collection.enabled" = $false  # Fixed path (was unified_consent.*)
+
+        # User Feedback
+        "feedback_allowed" = $false
+
+        # MV2 Extension Support (PrefScope::kProfile in extensions/browser/pref_types.cc)
+        "mv2_deprecation_warning_ack_globally" = $true
+    }
+
+    # ============================================================================
+    # LOCAL STATE PREFERENCES (Local State file, no MAC)
+    # Registered via RegisterLocalStatePrefs() or policy prefs - machine-wide
+    # Verified against chrome/browser/prefs/ and component registrations
+    # ============================================================================
+    $localStatePrefs = @{
+        # Policy-controlled prefs
         "policy.lens_desktop_ntp_search_enabled" = $false
         "policy.lens_region_search_enabled"      = $false
-
-        # Browser behavior (moved from command-line flags)
         "browser.default_browser_setting_enabled" = $false
-        "background_mode.enabled"                 = $false
+        "domain_reliability.allowed_by_policy"   = $false
 
-        # Network & Privacy (moved from command-line flags)
-        "domain_reliability.allowed_by_policy"      = $false
-        "net.quic_allowed"                          = $false
+        # Background mode (BackgroundModeManager::RegisterPrefs uses PrefRegistrySimple)
+        "background_mode.enabled" = $false
+
+        # Tracking protection
         "tracking_protection.ip_protection_enabled" = $false
 
-        # Updates & Variations (moved from command-line flags)
+        # Updates & Variations
         "update.component_updates_enabled" = $false
         "variations.restrictions_by_policy" = 2  # 2 = VariationsDisabled
 
-        # MV2 Extension Support
-        "mv2_deprecation_warning_ack_globally" = $true
-
-        # NOTE: enable_a_ping moved to Regular Preferences (not tracked, registered via RegisterProfilePrefs)
-
-        # Safe Browsing (fully disable)
-        "safebrowsing.enabled" = $false
-        "safebrowsing.enhanced" = $false
-        "safebrowsing.password_protection_warning_trigger" = 0  # 0 = disabled
-        "safebrowsing.scout_reporting_enabled" = $false  # Safe Browsing Extended Reporting
-
-        # Privacy - URL & Search
-        "omnibox.prevent_url_elisions" = $true  # Full URLs in address bar (ShowFullUrlsInAddressBar policy equivalent)
-        "search.suggest_enabled" = $false  # Search Suggestions (SearchSuggestEnabled policy equivalent)
-        "unified_consent.url_keyed_anonymized_data_collection" = $false  # URL-keyed data collection (UrlKeyedAnonymizedDataCollectionEnabled policy equivalent)
-
-        # Privacy - User Feedback & Telemetry
-        "feedback_allowed" = $false  # User Feedback (UserFeedbackAllowed policy equivalent)
-
-        # Performance - ServiceWorker
-        "worker.service_worker_auto_preload_enabled" = $false  # ServiceWorker AutoPreload (ServiceWorkerAutoPreloadEnabled policy equivalent)
+        # ServiceWorker
+        "worker.service_worker_auto_preload_enabled" = $false
     }
 
     # Extension settings with incognito enabled (split MACs)
@@ -5626,16 +5643,14 @@ function Set-BrowserPreferences {
     # Build the Secure Preferences structure
     $securePrefs = $untrackedPrefs.Clone()
 
-    # Add tracked preferences to the structure
+    # Add tracked preferences to the structure (these need MACs)
     foreach ($path in $trackedPrefs.Keys) {
         Set-NestedValue -Hashtable $securePrefs -Path $path -Value $trackedPrefs[$path]
+        Write-VerboseTimestamped "[Secure Prefs] Added tracked pref: $path = $($trackedPrefs[$path])"
     }
 
-    # Add untracked Chrome preferences to the structure (no MAC needed)
-    foreach ($path in $untrackedChromePrefs.Keys) {
-        Set-NestedValue -Hashtable $securePrefs -Path $path -Value $untrackedChromePrefs[$path]
-        Write-VerboseTimestamped "[Secure Prefs] Added untracked Chrome pref: $path = $($untrackedChromePrefs[$path])"
-    }
+    # NOTE: Profile prefs ($profilePrefs) go to Regular Preferences file, not here
+    # NOTE: Local State prefs ($localStatePrefs) go to Local State file, not here
 
     # Add extension settings to the structure
     if (-not $securePrefs.ContainsKey('extensions')) {
@@ -5697,25 +5712,22 @@ function Set-BrowserPreferences {
         Save-JsonFile -Path $securePrefsPath -Object $securePrefs -Compress
         Write-VerboseTimestamped "[Secure Prefs] Wrote Secure Preferences to: $securePrefsPath"
 
-        # Write Regular Preferences (for pinned extensions and untracked profile prefs - not tracked by MAC)
+        # Write Regular Preferences (profile prefs registered via RegisterProfilePrefs - not tracked by MAC)
         $regularPrefsPath = Join-Path $profilePath "Preferences"
-        $regularPrefs = @{
-            # Disable hyperlink auditing / click tracking (registered via RegisterProfilePrefs, not tracked)
-            enable_a_ping = $false
-            extensions = @{
-                pinned_extensions = $extensionsToPinToToolbar
-            }
+        $regularPrefsToWrite = $profilePrefs.Clone()
+        $regularPrefsToWrite['extensions'] = @{
+            pinned_extensions = $extensionsToPinToToolbar
         }
-        Save-JsonFile -Path $regularPrefsPath -Object $regularPrefs -Compress
-        Write-VerboseTimestamped "[Regular Prefs] Wrote Regular Preferences with pinned extensions to: $regularPrefsPath"
+        Save-JsonFile -Path $regularPrefsPath -Object $regularPrefsToWrite -Compress
+        Write-VerboseTimestamped "[Regular Prefs] Wrote $($profilePrefs.Count) profile prefs + pinned extensions to: $regularPrefsPath"
 
-        # Write Local State with enabled_labs_experiments for chrome://flags enforcement
+        # Write Local State with enabled_labs_experiments AND local state prefs
         $configPath = Join-Path $PSScriptRoot "config.json"
         $config = Get-MeteorConfig -ConfigPath $configPath
         $experiments = Build-EnabledLabsExperiments -Config $config
-        $localStateResult = Write-LocalState -LocalStatePath $localStatePath -Experiments $experiments
+        $localStateResult = Write-LocalState -LocalStatePath $localStatePath -Experiments $experiments -AdditionalPrefs $localStatePrefs
         if ($localStateResult) {
-            Write-VerboseTimestamped "[Local State] Local State written with $($experiments.Count) experiments"
+            Write-VerboseTimestamped "[Local State] Local State written with $($experiments.Count) experiments + $($localStatePrefs.Count) prefs"
         }
         else {
             Write-VerboseTimestamped "[Local State] WARNING: Failed to write Local State"
@@ -5846,61 +5858,58 @@ function Update-TrackedPreferences {
         $hashKeys = $securePrefsHash.Keys -join ", "
         Write-VerboseTimestamped "[Secure Prefs] After conversion - hashtable keys: $hashKeys"
 
-        # Tracked preferences to modify (need MAC recalculation)
-        $prefsToModify = @{
+        # ============================================================================
+        # TRACKED PREFERENCES (need MAC recalculation)
+        # Verified against services/preferences/tracked/ in Chromium source
+        # ============================================================================
+        $trackedPrefsToModify = @{
             "extensions.ui.developer_mode"    = $true
             "browser.show_home_button"        = $true
             "bookmark_bar.show_apps_shortcut" = $false
+            "safebrowsing.enabled"            = $false  # TRACKED - requires MAC
         }
 
-        # Untracked Chrome preferences (no MAC needed, not exposed via settingsPrivate)
-        # NOTE: extensions.* prefs are often tracked - don't add them here!
-        $untrackedChromePrefs = @{
-            # DevTools (these are NOT tracked)
-            "devtools.availability" = 1  # 1 = always available
-            "devtools.gen_ai_settings" = 1  # 1 = disallow Gen AI features
-
-            # AI & Lens Features (disable Google AI integrations)
-            "browser.gemini_settings"            = 1      # 1 = disabled
-            "glic.actuation_on_web"              = 1      # 1 = disabled (Gemini web actions)
-            "lens.policy.lens_overlay_settings"  = 1      # 1 = disabled
-            "omnibox.ai_mode_settings"           = 1      # 1 = disabled
-            "policy.lens_desktop_ntp_search_enabled" = $false
-            "policy.lens_region_search_enabled"      = $false
-
-            # Browser behavior (moved from command-line flags)
-            "browser.default_browser_setting_enabled" = $false
-            "background_mode.enabled"                 = $false
-
-            # Network & Privacy (moved from command-line flags)
-            "domain_reliability.allowed_by_policy"      = $false
-            "net.quic_allowed"                          = $false
-            "tracking_protection.ip_protection_enabled" = $false
-
-            # Updates & Variations (moved from command-line flags)
-            "update.component_updates_enabled" = $false
-            "variations.restrictions_by_policy" = 2  # 2 = VariationsDisabled
-
-            # MV2 Extension Support
-            "mv2_deprecation_warning_ack_globally" = $true
-
-            # NOTE: enable_a_ping is in Regular Preferences (not tracked, registered via RegisterProfilePrefs)
-
-            # Safe Browsing (fully disable)
-            "safebrowsing.enabled" = $false
+        # ============================================================================
+        # PROFILE PREFERENCES (go to Regular Preferences file, no MAC)
+        # ============================================================================
+        $profilePrefsToModify = @{
+            "enable_a_ping" = $false
+            "devtools.availability" = 1
+            "devtools.gen_ai_settings" = 1
+            "browser.gemini_settings" = 1
+            "glic.actuation_on_web" = 1
+            "lens.policy.lens_overlay_settings" = 1
+            "omnibox.ai_mode_settings" = 1
+            "net.quic_allowed" = $false
             "safebrowsing.enhanced" = $false
             "safebrowsing.password_protection_warning_trigger" = 0
+            "safebrowsing.scout_reporting_enabled" = $false
+            "omnibox.prevent_url_elisions" = $true
+            "search.suggest_enabled" = $false
+            "url_keyed_anonymized_data_collection.enabled" = $false
+            "feedback_allowed" = $false
+            "mv2_deprecation_warning_ack_globally" = $true
         }
 
-        # Set tracked preferences in the structure
-        foreach ($path in $prefsToModify.Keys) {
-            Set-NestedValue -Hashtable $securePrefsHash -Path $path -Value $prefsToModify[$path]
+        # ============================================================================
+        # LOCAL STATE PREFERENCES (go to Local State file, no MAC)
+        # ============================================================================
+        $localStatePrefsToModify = @{
+            "policy.lens_desktop_ntp_search_enabled" = $false
+            "policy.lens_region_search_enabled" = $false
+            "browser.default_browser_setting_enabled" = $false
+            "domain_reliability.allowed_by_policy" = $false
+            "background_mode.enabled" = $false
+            "tracking_protection.ip_protection_enabled" = $false
+            "update.component_updates_enabled" = $false
+            "variations.restrictions_by_policy" = 2
+            "worker.service_worker_auto_preload_enabled" = $false
         }
 
-        # Set untracked Chrome preferences in the structure (no MAC needed)
-        foreach ($path in $untrackedChromePrefs.Keys) {
-            Set-NestedValue -Hashtable $securePrefsHash -Path $path -Value $untrackedChromePrefs[$path]
-            Write-VerboseTimestamped "[Secure Prefs] Set untracked Chrome pref: $path = $($untrackedChromePrefs[$path])"
+        # Set tracked preferences in Secure Preferences (these need MACs)
+        foreach ($path in $trackedPrefsToModify.Keys) {
+            Set-NestedValue -Hashtable $securePrefsHash -Path $path -Value $trackedPrefsToModify[$path]
+            Write-VerboseTimestamped "[Secure Prefs] Set tracked pref: $path = $($trackedPrefsToModify[$path])"
         }
 
         # Enable incognito access for uBlock Origin and AdGuard Extra
@@ -5923,9 +5932,11 @@ function Update-TrackedPreferences {
         # Update Regular Preferences (untracked profile prefs and pinned extensions)
         # These settings are NOT tracked by MAC system
         if ($null -ne $regularPrefsHash) {
-            # Set enable_a_ping (registered via RegisterProfilePrefs, not tracked)
-            $regularPrefsHash['enable_a_ping'] = $false
-            Write-VerboseTimestamped "[Regular Prefs] Set enable_a_ping = False"
+            # Set all profile preferences (registered via RegisterProfilePrefs, not tracked)
+            foreach ($path in $profilePrefsToModify.Keys) {
+                Set-NestedValue -Hashtable $regularPrefsHash -Path $path -Value $profilePrefsToModify[$path]
+                Write-VerboseTimestamped "[Regular Prefs] Set profile pref: $path = $($profilePrefsToModify[$path])"
+            }
 
             # Pin uBlock Origin to toolbar
             $extensionsToPinToToolbar = @(
@@ -5951,6 +5962,22 @@ function Update-TrackedPreferences {
             # Write updated Regular Preferences (Save-JsonFile uses -InputObject to avoid PS 5.1 bugs)
             Save-JsonFile -Path $regularPrefsPath -Object $regularPrefsHash -Compress
             Write-VerboseTimestamped "[Regular Prefs] Updated Regular Preferences file"
+        }
+
+        # Update Local State (machine-wide/policy prefs)
+        # These are NOT profile-specific and go in the User Data root
+        if ($localStatePrefsToModify.Count -gt 0) {
+            Write-VerboseTimestamped "[Local State] Updating Local State with $($localStatePrefsToModify.Count) prefs"
+            $localStateHash = Convert-PSObjectToHashtable -InputObject $localState
+
+            foreach ($path in $localStatePrefsToModify.Keys) {
+                Set-NestedValue -Hashtable $localStateHash -Path $path -Value $localStatePrefsToModify[$path]
+                Write-VerboseTimestamped "[Local State] Set pref: $path = $($localStatePrefsToModify[$path])"
+            }
+
+            # Write updated Local State
+            Save-JsonFile -Path $LocalStatePath -Object $localStateHash -Compress
+            Write-VerboseTimestamped "[Local State] Updated Local State file"
         }
 
         # Get existing MACs structure - debug what we have BEFORE any modification
@@ -6764,10 +6791,10 @@ function Get-CommandLineOnlyFeatures {
 function Write-LocalState {
     <#
     .SYNOPSIS
-        Create or overwrite Local State file with enabled_labs_experiments.
+        Create or overwrite Local State file with enabled_labs_experiments and additional prefs.
     .DESCRIPTION
         Writes the Local State file at the User Data directory root (not in profile).
-        This file controls chrome://flags settings.
+        This file controls chrome://flags settings and machine-wide preferences.
 
         IMPORTANT: browser.first_run_finished MUST be true or browser will
         show onboarding flow and may reset settings.
@@ -6775,6 +6802,8 @@ function Write-LocalState {
         Full path to the Local State file.
     .PARAMETER Experiments
         Array of experiment entries in "flag-name@N" format.
+    .PARAMETER AdditionalPrefs
+        Hashtable of additional Local State prefs (policy prefs, machine-wide settings).
     .OUTPUTS
         [bool] $true if successful, $false on failure.
     #>
@@ -6785,7 +6814,10 @@ function Write-LocalState {
         [string]$LocalStatePath,
 
         [Parameter(Mandatory = $false)]
-        [string[]]$Experiments = @()
+        [string[]]$Experiments = @(),
+
+        [Parameter(Mandatory = $false)]
+        [hashtable]$AdditionalPrefs = @{}
     )
 
     try {
@@ -6800,6 +6832,12 @@ function Write-LocalState {
                 browser_guest_enforced = $false
                 add_person_enabled = $false
             }
+        }
+
+        # Add additional Local State prefs (policy prefs, machine-wide settings)
+        foreach ($path in $AdditionalPrefs.Keys) {
+            Set-NestedValue -Hashtable $localState -Path $path -Value $AdditionalPrefs[$path]
+            Write-VerboseTimestamped "[Local State] Added pref: $path = $($AdditionalPrefs[$path])"
         }
 
         # Write using Save-JsonFile for consistent formatting
