@@ -177,8 +177,7 @@ $script:FeatureToFlagMapping = @{
 
     # === DISABLE FEATURES (@2) ===
     # These get "@2" suffix in enabled_labs_experiments
-    "ExtensionManifestV2Disabled"                           = "extension-manifest-v2-deprecation-disabled"
-    "ExtensionManifestV2Unsupported"                        = "extension-manifest-v2-deprecation-unsupported"
+    # NOTE: ExtensionManifestV2* features have NO chrome://flags equivalent - must stay on command line
     "AutofillUpstream"                                      = "autofill-upstream"
     "DiscountAutofill"                                      = "discount-autofill"
     "AutofillEnableBuyNowPayLater"                          = "autofill-enable-buy-now-pay-later"
