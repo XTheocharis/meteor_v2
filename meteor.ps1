@@ -8016,15 +8016,15 @@ function Main {
             }
         }
 
-        # Delete Comet registry key (contains MACs and other browser state)
-        $registryPath = "HKCU:\SOFTWARE\Perplexity\Comet"
+        # Delete PreferenceMACs registry key (will be regenerated with correct values)
+        $registryPath = "HKCU:\SOFTWARE\Perplexity\Comet\PreferenceMACs"
         if (Test-Path $registryPath) {
             if ($WhatIfPreference) {
                 Write-Status "Would delete registry key: $registryPath" -Type DryRun
             }
             else {
                 Remove-Item -Path $registryPath -Recurse -Force -ErrorAction SilentlyContinue
-                Write-Status "Deleted Comet registry key" -Type Detail
+                Write-Status "Deleted PreferenceMACs registry key" -Type Detail
             }
         }
 
