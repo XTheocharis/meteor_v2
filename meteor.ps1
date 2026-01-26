@@ -5578,8 +5578,7 @@ function Set-BrowserPreferences {
         # MV2 Extension Support
         "mv2_deprecation_warning_ack_globally" = $true
 
-        # Privacy (disable hyperlink auditing / click tracking)
-        "enable_a_ping" = $false
+        # NOTE: enable_a_ping moved to Regular Preferences (not tracked, registered via RegisterProfilePrefs)
 
         # Safe Browsing (fully disable)
         "safebrowsing.enabled" = $false
@@ -5698,9 +5697,11 @@ function Set-BrowserPreferences {
         Save-JsonFile -Path $securePrefsPath -Object $securePrefs -Compress
         Write-VerboseTimestamped "[Secure Prefs] Wrote Secure Preferences to: $securePrefsPath"
 
-        # Write Regular Preferences (for pinned extensions - not tracked by MAC)
+        # Write Regular Preferences (for pinned extensions and untracked profile prefs - not tracked by MAC)
         $regularPrefsPath = Join-Path $profilePath "Preferences"
         $regularPrefs = @{
+            # Disable hyperlink auditing / click tracking (registered via RegisterProfilePrefs, not tracked)
+            enable_a_ping = $false
             extensions = @{
                 pinned_extensions = $extensionsToPinToToolbar
             }
@@ -5883,8 +5884,7 @@ function Update-TrackedPreferences {
             # MV2 Extension Support
             "mv2_deprecation_warning_ack_globally" = $true
 
-            # Privacy (disable hyperlink auditing / click tracking)
-            "enable_a_ping" = $false
+            # NOTE: enable_a_ping is in Regular Preferences (not tracked, registered via RegisterProfilePrefs)
 
             # Safe Browsing (fully disable)
             "safebrowsing.enabled" = $false
@@ -5920,9 +5920,14 @@ function Update-TrackedPreferences {
             }
         }
 
-        # Pin uBlock Origin to toolbar in Regular Preferences
-        # This setting (extensions.pinned_extensions) is NOT tracked by MAC system
+        # Update Regular Preferences (untracked profile prefs and pinned extensions)
+        # These settings are NOT tracked by MAC system
         if ($null -ne $regularPrefsHash) {
+            # Set enable_a_ping (registered via RegisterProfilePrefs, not tracked)
+            $regularPrefsHash['enable_a_ping'] = $false
+            Write-VerboseTimestamped "[Regular Prefs] Set enable_a_ping = False"
+
+            # Pin uBlock Origin to toolbar
             $extensionsToPinToToolbar = @(
                 "cjpalhdlnbpafiamejdnhcphjbkeiagm"   # uBlock Origin
             )
