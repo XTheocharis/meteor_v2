@@ -2653,9 +2653,9 @@ function Get-CrxManifest {
         }
 
         # manifest.json is typically at the start of the ZIP and small (<10KB)
-        # Read only first 256KB of ZIP portion to find it, avoiding full file load
+        # Read only first 1MB of ZIP portion to find it, avoiding full file load
         $remainingLength = $fileStream.Length - $zipOffset
-        $readSize = [Math]::Min(262144, $remainingLength)  # 256KB max
+        $readSize = [Math]::Min(1048576, $remainingLength)  # 1MB max
 
         # Seek to ZIP start and read limited portion
         $fileStream.Seek($zipOffset, [System.IO.SeekOrigin]::Begin) | Out-Null
@@ -2726,7 +2726,7 @@ function Get-CrxManifest {
             $pos = $dataStart + $compressedSize
         }
 
-        Write-VerboseTimestamped "manifest.json not found in first 256KB of CRX archive"
+        Write-VerboseTimestamped "manifest.json not found in first 1MB of CRX archive"
     }
     catch {
         Write-VerboseTimestamped "Failed to read CRX manifest: $_"
@@ -5575,7 +5575,8 @@ function Set-BrowserPreferences {
         Write-VerboseTimestamped "[Regular Prefs] Wrote Regular Preferences with pinned extensions to: $regularPrefsPath"
 
         # Write Local State with enabled_labs_experiments for chrome://flags enforcement
-        $config = Get-MeteorConfig
+        $configPath = Join-Path $PSScriptRoot "config.json"
+        $config = Get-MeteorConfig -ConfigPath $configPath
         $experiments = Build-EnabledLabsExperiments -Config $config
         $localStateResult = Write-LocalState -LocalStatePath $localStatePath -Experiments $experiments
         if ($localStateResult) {
@@ -5987,7 +5988,8 @@ function Update-TrackedPreferences {
         }
 
         # Update Local State with enabled_labs_experiments
-        $config = Get-MeteorConfig
+        $configPath = Join-Path $PSScriptRoot "config.json"
+        $config = Get-MeteorConfig -ConfigPath $configPath
         $experiments = Build-EnabledLabsExperiments -Config $config
         $localStateResult = Update-LocalStateExperiments -LocalStatePath $LocalStatePath -NewExperiments $experiments
         if ($localStateResult) {
