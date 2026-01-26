@@ -5418,7 +5418,7 @@ function Set-BrowserPreferences {
     $untrackedChromePrefs = @{
         # DevTools (these are NOT tracked)
         "devtools.availability" = 1  # 1 = always available
-        "devtools.gen_ai_settings" = 2  # 2 = disabled
+        "devtools.gen_ai_settings" = 1  # 1 = disallow Gen AI features
 
         # AI & Lens Features (disable Google AI integrations)
         "browser.gemini_settings"            = 1      # 1 = disabled
@@ -5444,14 +5444,6 @@ function Set-BrowserPreferences {
         # MV2 Extension Support
         "mv2_deprecation_warning_ack_globally" = $true
 
-        # Profile & Sign-in
-        "profile.picker_availability_on_startup" = 1  # 1 = disabled
-        "profile.browser_guest_enforced"         = $false
-        "profile.add_person_enabled"             = $false
-
-        # Cloud & Auth
-        "auth.cloud_ap_auth.enabled" = $false
-
         # Privacy (disable hyperlink auditing / click tracking)
         "enable_a_ping" = $false
 
@@ -5459,6 +5451,18 @@ function Set-BrowserPreferences {
         "safebrowsing.enabled" = $false
         "safebrowsing.enhanced" = $false
         "safebrowsing.password_protection_warning_trigger" = 0  # 0 = disabled
+        "safebrowsing.scout_reporting_enabled" = $false  # Safe Browsing Extended Reporting
+
+        # Privacy - URL & Search
+        "omnibox.prevent_url_elisions" = $true  # Full URLs in address bar (ShowFullUrlsInAddressBar policy equivalent)
+        "search.suggest_enabled" = $false  # Search Suggestions (SearchSuggestEnabled policy equivalent)
+        "unified_consent.url_keyed_anonymized_data_collection" = $false  # URL-keyed data collection (UrlKeyedAnonymizedDataCollectionEnabled policy equivalent)
+
+        # Privacy - User Feedback & Telemetry
+        "feedback_allowed" = $false  # User Feedback (UserFeedbackAllowed policy equivalent)
+
+        # Performance - ServiceWorker
+        "worker.service_worker_auto_preload_enabled" = $false  # ServiceWorker AutoPreload (ServiceWorkerAutoPreloadEnabled policy equivalent)
     }
 
     # Extension settings with incognito enabled (split MACs)
@@ -5718,7 +5722,7 @@ function Update-TrackedPreferences {
         $untrackedChromePrefs = @{
             # DevTools (these are NOT tracked)
             "devtools.availability" = 1  # 1 = always available
-            "devtools.gen_ai_settings" = 2  # 2 = disabled
+            "devtools.gen_ai_settings" = 1  # 1 = disallow Gen AI features
 
             # AI & Lens Features (disable Google AI integrations)
             "browser.gemini_settings"            = 1      # 1 = disabled
@@ -5743,14 +5747,6 @@ function Update-TrackedPreferences {
 
             # MV2 Extension Support
             "mv2_deprecation_warning_ack_globally" = $true
-
-            # Profile & Sign-in
-            "profile.picker_availability_on_startup" = 1  # 1 = disabled
-            "profile.browser_guest_enforced"         = $false
-            "profile.add_person_enabled"             = $false
-
-            # Cloud & Auth
-            "auth.cloud_ap_auth.enabled" = $false
 
             # Privacy (disable hyperlink auditing / click tracking)
             "enable_a_ping" = $false
@@ -6657,6 +6653,12 @@ function Write-LocalState {
                 first_run_finished = $true
                 enabled_labs_experiments = $Experiments
             }
+            # Profile settings (browser-wide, not profile-specific)
+            profile = @{
+                picker_availability_on_startup = 1  # 1 = disabled
+                browser_guest_enforced = $false
+                add_person_enabled = $false
+            }
         }
 
         # Write using Save-JsonFile for consistent formatting
@@ -6764,6 +6766,14 @@ function Update-LocalStateExperiments {
         # Update experiments and ensure first_run_finished is set
         $localStateHash['browser']['enabled_labs_experiments'] = $mergedExperiments.ToArray()
         $localStateHash['browser']['first_run_finished'] = $true
+
+        # Ensure profile settings are in Local State (browser-wide, not profile-specific)
+        if (-not $localStateHash.ContainsKey('profile')) {
+            $localStateHash['profile'] = @{}
+        }
+        $localStateHash['profile']['picker_availability_on_startup'] = 1  # 1 = disabled
+        $localStateHash['profile']['browser_guest_enforced'] = $false
+        $localStateHash['profile']['add_person_enabled'] = $false
 
         # Write updated Local State
         Save-JsonFile -Path $LocalStatePath -Object $localStateHash -Compress

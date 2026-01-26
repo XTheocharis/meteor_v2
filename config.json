@@ -25,6 +25,7 @@
       "--perplexity-enable-bundle-extension-unpacked-loading",
       "--disable-search-engine-choice-screen",
       "--propagate-iph-for-testing",
+      "--disable-domain-reliability",
       "--enable-local-mcp",
       "--enable-local-custom-mcp",
       "--enable-dxt"
