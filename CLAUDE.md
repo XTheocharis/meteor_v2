@@ -216,6 +216,75 @@ The `pak_modifications.modifications` array is currently **empty**. The infrastr
 - Restores from backup when `-Force` is used to ensure clean state
 - Patterns are applied to UTF-8 text resources only (binary resources are skipped)
 
+## Local State Management
+
+Meteor enforces chrome://flags settings via the Local State file rather than command-line switches for features that have chrome://flags equivalents.
+
+### Three-Tier Feature Classification
+
+| Category | Enforcement | Example Features |
+|----------|-------------|------------------|
+| **Local State Features** (~75) | `browser.enabled_labs_experiments` | `ExtensionsOnChromeURLs`, `AutofillUpstream`, `HistoryEmbeddings` |
+| **Command-Line Only** (~70+) | `--enable/disable-features` | AI*API, Glic*, Lens*, PerplexityAutoupdate |
+| **Comet-Specific** (~5) | `--enable/disable-features` | `PerplexityAutoupdate`, `AllowLegacyMV2Extensions` |
+
+### Why Local State?
+
+1. **User Visibility**: Settings appear correctly in `chrome://flags` UI
+2. **No Dual Enforcement**: Avoids conflicts between command-line and Local State
+3. **Persistence**: Browser respects Local State after restarts
+4. **Reduced Command Line**: Shorter launch command, easier debugging
+
+### Non-Algorithmic Feature-to-Flag Mapping
+
+The mapping from feature names to chrome://flags names is **NOT algorithmic**:
+
+| Feature Name | Flag Name |
+|--------------|-----------|
+| `ExtensionsOnChromeURLs` | `extensions-on-chrome-urls` (simple kebab) |
+| `IsolatedWebApps` | `enable-isolated-web-apps` (added prefix) |
+| `UiaProvider` | `enable-ui-automation` (completely different) |
+| `ReadAnythingWithReadability` | `enable-reading-mode-experimental-webpage-distilation` |
+
+The complete mapping is in `$script:FeatureToFlagMapping` in the Constants region of `meteor.ps1`.
+
+### Local State File Format
+
+**Path**: `{UserDataPath}/Local State` (User Data root, NOT profile directory)
+
+```json
+{
+  "browser": {
+    "first_run_finished": true,
+    "enabled_labs_experiments": [
+      "extensions-on-chrome-urls@1",
+      "autofill-upstream@2"
+    ]
+  }
+}
+```
+
+- `@1` suffix = Enabled
+- `@2` suffix = Disabled
+- `@0` suffix = Default (not used by Meteor)
+
+### Key Functions
+
+| Function | Purpose |
+|----------|---------|
+| `Build-EnabledLabsExperiments` | Converts config features to `flag@N` array |
+| `Get-CommandLineOnlyFeatures` | Filters features without Local State mappings |
+| `Write-LocalState` | Creates new Local State file |
+| `Update-LocalStateExperiments` | Merges Meteor experiments with user flags |
+
+### Verification
+
+After launching the browser:
+1. Open `chrome://flags`
+2. Search for a managed flag (e.g., `extensions-on-chrome-urls`)
+3. Should show "Enabled" (blue highlight)
+4. Search for `autofill-upstream` - should show "Disabled"
+
 ## Chromium Source Reference
 
 The complete Chromium source code is available at `~/chromium/src` for reference during development. Use the Explore subagent to search this codebase when you need to understand Chromium internals such as:
@@ -226,11 +295,11 @@ The complete Chromium source code is available at `~/chromium/src` for reference
 
 ## Script Organization
 
-`meteor.ps1` (~5300 lines) is organized into regions (collapsible in PowerShell ISE/VS Code):
+`meteor.ps1` (~5800 lines) is organized into regions (collapsible in PowerShell ISE/VS Code):
 
 | Region | Lines | Key Functions |
 |--------|-------|---------------|
-| **Constants** | ~10 | `$script:MeteorVersion`, `$script:UserAgent` |
+| **Constants** | ~120 | `$script:MeteorVersion`, `$script:FeatureToFlagMapping` (75 mappings) |
 | **Helper Functions** | ~100 | `Write-Status`, `Compare-Versions`, byte conversion utilities |
 | **Configuration** | ~150 | `Get-MeteorConfig`, `Resolve-MeteorPath`, path resolution |
 | **State Management** | ~80 | `Get-MeteorState`, `Save-MeteorState`, `Test-FileChanged`, SHA256 tracking |
@@ -239,8 +308,9 @@ The complete Chromium source code is available at `~/chromium/src` for reference
 | **Browser Installation** | ~350 | `Get-CometInstallation`, `Install-CometPortable`, `Test-CometUpdate`, `Get-7ZipPath` |
 | **uBlock Origin** | ~200 | `Get-UBlockOrigin`, auto-import.js generation, start.js patching |
 | **Extension Patching** | ~200 | `Initialize-PatchedExtensions`, manifest additions, service worker injection |
-| **Preferences Pre-seeding** | ~800 | HMAC calculation, MAC synchronization (see below) |
-| **Browser Launch** | ~100 | `Build-BrowserCommand`, `Start-Browser`, flag-switches block |
+| **Preferences Pre-seeding** | ~900 | HMAC calculation, MAC synchronization, Local State management |
+| **Local State Management** | ~250 | `Build-EnabledLabsExperiments`, `Write-LocalState`, `Update-LocalStateExperiments` |
+| **Browser Launch** | ~120 | `Build-BrowserCommand`, `Start-Browser`, feature filtering |
 | **Main** | ~400 | 6-step orchestration workflow |
 
 ### Debug/Test Scripts

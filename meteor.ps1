@@ -141,6 +141,114 @@ $script:CRX_HEADER_SIZE_BASE = 8   # magic(4) + version(4)
 $script:CRX2_HEADER_SIZE_MIN = 16  # magic(4) + version(4) + pubkey_len(4) + sig_len(4)
 $script:CRX3_HEADER_SIZE_MIN = 12  # magic(4) + version(4) + header_len(4)
 
+# Feature-to-Flag Mapping Table
+# Maps feature names (used in --enable-features/--disable-features) to chrome://flags names
+# The mapping is NON-ALGORITHMIC - feature names cannot be mechanically converted to flag names
+# Format: "FeatureName" = "flag-name" (without @N suffix - that's added based on enable/disable)
+#
+# Features in this table will be enforced via Local State's browser.enabled_labs_experiments
+# Features NOT in this table will remain on the command line (no chrome://flags equivalent)
+#
+# Source: SETTINGS/Local State reference file with verified flag names
+$script:FeatureToFlagMapping = @{
+    # === ENABLE FEATURES (@1) ===
+    # These get "@1" suffix in enabled_labs_experiments
+    "ExtensionsOnChromeURLs"                    = "extensions-on-chrome-urls"
+    "ExtensionsOnExtensionURLs"                 = "extensions-on-extension-urls"
+    "DirectSocketsInServiceWorkers"             = "direct-sockets-in-service-workers"
+    "DirectSocketsInSharedWorkers"              = "direct-sockets-in-shared-workers"
+    "IsolatedWebApps"                           = "enable-isolated-web-apps"
+    "IsolatedWebAppDevMode"                     = "enable-isolated-web-app-dev-mode"
+    "MulticastInDirectSockets"                  = "multicast-in-direct-sockets"
+    "ReadAnythingWithReadability"               = "enable-reading-mode-experimental-webpage-distilation"
+    "DevToolsIndividualRequestThrottling"       = "enable-devtools-individual-request-throttling"
+    "DevToolsLiveEdit"                          = "enable-devtools-live-edit"
+    "DevToolsPrivacyUI"                         = "enable-devtools-privacy-ui"
+    "EnableDevtoolsDeepLinkViaExtensibilityApi" = "enable-devtools-deep-link-via-extensibility-api"
+    "EnableGamepadMultitouch"                   = "enable-gamepad-multitouch"
+    "EnableWindowsGamingInputDataFetcher"       = "enable-windows-gaming-input"
+    "ExtensionPermissionOmniboxDirectInput"     = "enable-extension-permission-omnibox-directinput"
+    "LocationProviderManager"                   = "enable-location-provider-manager"
+    "ParallelDownloading"                       = "enable-parallel-downloading"
+    "PrerenderUntilScript"                      = "prerender-until-script"
+    "UiaProvider"                               = "enable-ui-automation"
+
+    # === DISABLE FEATURES (@2) ===
+    # These get "@2" suffix in enabled_labs_experiments
+    "ExtensionManifestV2Disabled"                           = "extension-manifest-v2-deprecation-disabled"
+    "ExtensionManifestV2Unsupported"                        = "extension-manifest-v2-deprecation-unsupported"
+    "AutofillUpstream"                                      = "autofill-upstream"
+    "DiscountAutofill"                                      = "discount-autofill"
+    "AutofillEnableBuyNowPayLater"                          = "autofill-enable-buy-now-pay-later"
+    "AutofillEnableAmountExtraction"                        = "autofill-amount-extraction"
+    "ApplyClientsideModelPredictionsForOtps"                = "autofill-clientside-model-predictions-otps"
+    "ApplyClientsideModelPredictionsForPasswordTypes"       = "autofill-clientside-model-predictions-password"
+    "AutofillEnableAiBasedAmountExtraction"                 = "autofill-ai-based-amount-extraction"
+    "NtpCalendarModule"                                     = "ntp-calendar-module"
+    "NtpComposebox"                                         = "ntp-composebox"
+    "NtpRealboxNext"                                        = "ntp-realbox-next"
+    "EnableNtpBrowserPromos"                                = "enable-ntp-browser-promos"
+    "NTPEnterpriseShortcuts"                                = "ntp-enterprise-shortcuts"
+    "NtpCustomizeChromeAutoOpen"                            = "ntp-customize-chrome-auto-open"
+    "NtpMicrosoftAuthenticationModule"                      = "ntp-microsoft-authentication-module"
+    "NtpNextFeatures"                                       = "ntp-next-features"
+    "NtpOutlookCalendarModule"                              = "ntp-outlook-calendar-module"
+    "NtpSharepointModule"                                   = "ntp-sharepoint-module"
+    "HistoryEmbeddings"                                     = "history-embeddings"
+    "HistoryEmbeddingsAnswers"                              = "history-embeddings-answers"
+    "MlUrlScoring"                                          = "ml-url-scoring"
+    "BrowsingHistoryActorIntegrationM1"                     = "browsing-history-actor-integration-m1"
+    "LogUrlScoringSignals"                                  = "log-url-scoring-signals"
+    "MlUrlScoreCaching"                                     = "ml-url-score-caching"
+    "UrlScoringModel"                                       = "url-scoring-model"
+    "DataSharing"                                           = "data-sharing"
+    "DataSharingJoinOnly"                                   = "data-sharing-join-only"
+    "EnableCrossDevicePrefTracker"                          = "enable-cross-device-pref-tracker"
+    "MerchantTrust"                                         = "merchant-trust"
+    "ShoppingAlternateServer"                               = "shopping-alternate-server"
+    "GroupSuggestionService"                                = "group-suggestion-service"
+    "ExtensionDisableUnsupportedDeveloper"                  = "extension-disable-unsupported-developer-mode-extensions"
+    "ExtensionsCollapseMainMenu"                            = "extensions-collapse-main-menu"
+    "ExtensionsMenuAccessControl"                           = "extensions-menu-access-control"
+    "SearchPrefetchServicePrefetching"                      = "search-prefetch-service-prefetching"
+    "BookmarkTriggerForPrefetch"                            = "bookmark-trigger-for-prefetch"
+    "DsePreload2"                                           = "dse-preload2"
+    "DsePreload2OnPress"                                    = "dse-preload2-on-press"
+    "OmniboxMiaZPS"                                         = "omnibox-mia-zps"
+    "OmniboxOnDeviceHeadProviderIncognito"                  = "omnibox-on-device-head-provider-incognito"
+    "OmniboxOnDeviceHeadProviderNonIncognito"               = "omnibox-on-device-head-provider-non-incognito"
+    "OmniboxOnDeviceTailModel"                              = "omnibox-on-device-tail-model"
+    "SearchNavigationPrefetch"                              = "search-navigation-prefetch"
+    "PermissionsAIP92"                                      = "permissions-ai-p92"
+    "PermissionsAIv3"                                       = "permissions-ai-v3"
+    "PermissionsAIv4"                                       = "permissions-ai-v4"
+    "AutoPictureInPictureForVideoPlayback"                  = "auto-picture-in-picture-for-video-playback"
+    "BrowserInitiatedAutomaticPictureInPicture"             = "browser-initiated-automatic-picture-in-picture"
+    "VideoPictureInPictureControlsUpdate2024"               = "video-picture-in-picture-controls-update-2024"
+    "SafetyHubDisruptiveNotificationRevocation"             = "safety-hub-disruptive-notification-revocation"
+    "ImprovedPasswordChangeService"                         = "improved-password-change-service"
+    "MarkAllCredentialsAsLeaked"                            = "mark-all-credentials-as-leaked"
+    "SafetyHubUnusedPermissionRevocationForAllSurfaces"     = "safety-hub-unused-permission-revocation-for-all-surfaces"
+    "TextSafetyClassifier"                                  = "text-safety-classifier"
+    "WebAuthenticationPasskeyUpgrade"                       = "web-authentication-passkey-upgrade"
+    "LinkPreview"                                           = "link-preview"
+    "MobilePromoOnDesktop"                                  = "mobile-promo-on-desktop"
+    "AvatarButtonSyncPromo"                                 = "avatar-button-sync-promo"
+    "EnforceManagementDisclaimer"                           = "enforce-management-disclaimer"
+    "IPH_DemoMode"                                          = "iph-demo-mode"
+    "ProfileCreationDeclineSigninCTAExperiment"             = "profile-creation-decline-signin-cta-experiment"
+    "ReplaceSyncPromosWithSignInPromos"                     = "replace-sync-promos-with-sign-in-promos"
+    "ShowProfilePickerToAllUsersExperiment"                 = "show-profile-picker-to-all-users-experiment"
+    "WebUIOmniboxAimPopup"                                  = "webui-omnibox-aim-popup"
+    "PdfSaveToDrive"                                        = "pdf-save-to-drive"
+    "PrivacyPolicyInsights"                                 = "privacy-policy-insights"
+    "ReadAnythingDocsIntegration"                           = "read-anything-docs-integration"
+    "ReadAnythingDocsLoadMoreButton"                        = "read-anything-docs-load-more-button"
+    "ReadPrinterCapabilitiesWithXps"                        = "read-printer-capabilities-with-xps"
+    "AimServerEligibilityEnabled"                           = "aim-server-eligibility-enabled"
+    "AllowAiModeMatches"                                    = "omnibox-allow-ai-mode-matches"
+}
+
 #endregion
 
 #region Helper Functions
@@ -3251,17 +3359,6 @@ function Install-CometPortable {
 
         Write-Status "Portable installation complete" -Type Success
 
-        # Copy custom chrome_elf.dll from repo root (required)
-        $cometVersionDir = Split-Path -Parent $cometExe
-        $customChromeElf = Join-Path $PSScriptRoot "chrome_elf.dll"
-        if (-not (Test-Path $customChromeElf)) {
-            throw "chrome_elf.dll not found in repo root: $customChromeElf"
-        }
-        $targetChromeElf = Join-Path $cometVersionDir "chrome_elf.dll"
-        Write-Status "Installing custom chrome_elf.dll..." -Type Detail
-        Copy-Item -Path $customChromeElf -Destination $targetChromeElf -Force
-        Write-Status "Custom chrome_elf.dll installed" -Type Success
-
         return @{
             Executable = $cometExe
             Directory  = $cometVersionDir
@@ -5325,9 +5422,27 @@ function Set-BrowserPreferences {
 
         # AI & Lens Features (disable Google AI integrations)
         "browser.gemini_settings"            = 1      # 1 = disabled
+        "glic.actuation_on_web"              = 1      # 1 = disabled (Gemini web actions)
         "lens.policy.lens_overlay_settings"  = 1      # 1 = disabled
+        "omnibox.ai_mode_settings"           = 1      # 1 = disabled
         "policy.lens_desktop_ntp_search_enabled" = $false
         "policy.lens_region_search_enabled"      = $false
+
+        # Browser behavior (moved from command-line flags)
+        "browser.default_browser_setting_enabled" = $false
+        "background_mode.enabled"                 = $false
+
+        # Network & Privacy (moved from command-line flags)
+        "domain_reliability.allowed_by_policy"      = $false
+        "net.quic_allowed"                          = $false
+        "tracking_protection.ip_protection_enabled" = $false
+
+        # Updates & Variations (moved from command-line flags)
+        "update.component_updates_enabled" = $false
+        "variations.restrictions_by_policy" = 2  # 2 = VariationsDisabled
+
+        # MV2 Extension Support
+        "mv2_deprecation_warning_ack_globally" = $true
 
         # Profile & Sign-in
         "profile.picker_availability_on_startup" = 1  # 1 = disabled
@@ -5337,7 +5452,12 @@ function Set-BrowserPreferences {
         # Cloud & Auth
         "auth.cloud_ap_auth.enabled" = $false
 
-        # Safe Browsing (disable telemetry, keep protection)
+        # Privacy (disable hyperlink auditing / click tracking)
+        "enable_a_ping" = $false
+
+        # Safe Browsing (fully disable)
+        "safebrowsing.enabled" = $false
+        "safebrowsing.enhanced" = $false
         "safebrowsing.password_protection_warning_trigger" = 0  # 0 = disabled
     }
 
@@ -5449,6 +5569,17 @@ function Set-BrowserPreferences {
         }
         Save-JsonFile -Path $regularPrefsPath -Object $regularPrefs -Compress
         Write-VerboseTimestamped "[Regular Prefs] Wrote Regular Preferences with pinned extensions to: $regularPrefsPath"
+
+        # Write Local State with enabled_labs_experiments for chrome://flags enforcement
+        $config = Get-MeteorConfig
+        $experiments = Build-EnabledLabsExperiments -Config $config
+        $localStateResult = Write-LocalState -LocalStatePath $localStatePath -Experiments $experiments
+        if ($localStateResult) {
+            Write-VerboseTimestamped "[Local State] Local State written with $($experiments.Count) experiments"
+        }
+        else {
+            Write-VerboseTimestamped "[Local State] WARNING: Failed to write Local State"
+        }
 
         # Set registry MACs (uses different seed: "ChromeRegistryHashStoreValidationSeed")
         $registryResult = Set-RegistryPreferenceMacs -DeviceId $deviceId -PreferencesToSet $trackedPrefs
@@ -5591,9 +5722,27 @@ function Update-TrackedPreferences {
 
             # AI & Lens Features (disable Google AI integrations)
             "browser.gemini_settings"            = 1      # 1 = disabled
+            "glic.actuation_on_web"              = 1      # 1 = disabled (Gemini web actions)
             "lens.policy.lens_overlay_settings"  = 1      # 1 = disabled
+            "omnibox.ai_mode_settings"           = 1      # 1 = disabled
             "policy.lens_desktop_ntp_search_enabled" = $false
             "policy.lens_region_search_enabled"      = $false
+
+            # Browser behavior (moved from command-line flags)
+            "browser.default_browser_setting_enabled" = $false
+            "background_mode.enabled"                 = $false
+
+            # Network & Privacy (moved from command-line flags)
+            "domain_reliability.allowed_by_policy"      = $false
+            "net.quic_allowed"                          = $false
+            "tracking_protection.ip_protection_enabled" = $false
+
+            # Updates & Variations (moved from command-line flags)
+            "update.component_updates_enabled" = $false
+            "variations.restrictions_by_policy" = 2  # 2 = VariationsDisabled
+
+            # MV2 Extension Support
+            "mv2_deprecation_warning_ack_globally" = $true
 
             # Profile & Sign-in
             "profile.picker_availability_on_startup" = 1  # 1 = disabled
@@ -5603,7 +5752,12 @@ function Update-TrackedPreferences {
             # Cloud & Auth
             "auth.cloud_ap_auth.enabled" = $false
 
-            # Safe Browsing (disable telemetry, keep protection)
+            # Privacy (disable hyperlink auditing / click tracking)
+            "enable_a_ping" = $false
+
+            # Safe Browsing (fully disable)
+            "safebrowsing.enabled" = $false
+            "safebrowsing.enhanced" = $false
             "safebrowsing.password_protection_warning_trigger" = 0
         }
 
@@ -5834,6 +5988,17 @@ function Update-TrackedPreferences {
         }
         else {
             Write-VerboseTimestamped "[Registry MAC] WARNING: Failed to update registry MACs - browser may crash"
+        }
+
+        # Update Local State with enabled_labs_experiments
+        $config = Get-MeteorConfig
+        $experiments = Build-EnabledLabsExperiments -Config $config
+        $localStateResult = Update-LocalStateExperiments -LocalStatePath $LocalStatePath -NewExperiments $experiments
+        if ($localStateResult) {
+            Write-VerboseTimestamped "[Local State] Local State updated with $($experiments.Count) Meteor experiments"
+        }
+        else {
+            Write-VerboseTimestamped "[Local State] WARNING: Failed to update Local State"
         }
 
         $removedInfo = if ($updateResult.removed -gt 0) { ", cleaned $($updateResult.removed) orphaned" } else { "" }
@@ -6362,6 +6527,258 @@ function Update-AllMacs {
     }
 }
 
+#region Local State Management
+
+function Build-EnabledLabsExperiments {
+    <#
+    .SYNOPSIS
+        Build the enabled_labs_experiments array from config features.
+    .DESCRIPTION
+        Converts feature names from config.json enable_features and disable_features
+        to chrome://flags format entries for Local State.
+
+        Enable features get "@1" suffix (enabled)
+        Disable features get "@2" suffix (disabled)
+
+        Only features that have a mapping in $script:FeatureToFlagMapping are included.
+        Features without mappings remain on the command line.
+    .PARAMETER Config
+        The Meteor configuration object containing browser.enable_features and
+        browser.disable_features arrays.
+    .OUTPUTS
+        [string[]] Array of flag entries in "flag-name@N" format.
+    #>
+    [OutputType([string[]])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNull()]
+        [object]$Config
+    )
+
+    $experiments = [System.Collections.ArrayList]::new()
+
+    # Process enable features (@1 = enabled)
+    $enableFeatures = $Config.browser.enable_features
+    if ($enableFeatures) {
+        foreach ($feature in $enableFeatures) {
+            if ($script:FeatureToFlagMapping.ContainsKey($feature)) {
+                $flagName = $script:FeatureToFlagMapping[$feature]
+                $null = $experiments.Add("$flagName@1")
+            }
+        }
+    }
+
+    # Process disable features (@2 = disabled)
+    $disableFeatures = $Config.browser.disable_features
+    if ($disableFeatures) {
+        foreach ($feature in $disableFeatures) {
+            if ($script:FeatureToFlagMapping.ContainsKey($feature)) {
+                $flagName = $script:FeatureToFlagMapping[$feature]
+                $null = $experiments.Add("$flagName@2")
+            }
+        }
+    }
+
+    Write-VerboseTimestamped "[Local State] Built $($experiments.Count) enabled_labs_experiments entries"
+
+    # CRITICAL: Use comma operator to preserve array in PS 5.1
+    return ,$experiments.ToArray()
+}
+
+function Get-CommandLineOnlyFeatures {
+    <#
+    .SYNOPSIS
+        Filter features to only those without Local State mappings.
+    .DESCRIPTION
+        Returns features that do NOT have chrome://flags equivalents and must
+        remain on the command line (--enable-features/--disable-features).
+
+        This includes:
+        - Chromium features without chrome://flags UI
+        - Comet-specific features (e.g., PerplexityAutoupdate)
+        - Very new features not yet in chrome://flags
+    .PARAMETER Features
+        Array of feature names from config.json.
+    .OUTPUTS
+        [string[]] Array of feature names that should stay on command line.
+    #>
+    [OutputType([string[]])]
+    param(
+        [Parameter(Mandatory = $false)]
+        [object]$Features
+    )
+
+    if (-not $Features -or $Features.Count -eq 0) {
+        return ,@()
+    }
+
+    $commandLineOnly = [System.Collections.ArrayList]::new()
+
+    foreach ($feature in $Features) {
+        if (-not $script:FeatureToFlagMapping.ContainsKey($feature)) {
+            $null = $commandLineOnly.Add($feature)
+        }
+    }
+
+    # CRITICAL: Use comma operator to preserve array in PS 5.1
+    return ,$commandLineOnly.ToArray()
+}
+
+function Write-LocalState {
+    <#
+    .SYNOPSIS
+        Create or overwrite Local State file with enabled_labs_experiments.
+    .DESCRIPTION
+        Writes the Local State file at the User Data directory root (not in profile).
+        This file controls chrome://flags settings.
+
+        IMPORTANT: browser.first_run_finished MUST be true or browser will
+        show onboarding flow and may reset settings.
+    .PARAMETER LocalStatePath
+        Full path to the Local State file.
+    .PARAMETER Experiments
+        Array of experiment entries in "flag-name@N" format.
+    .OUTPUTS
+        [bool] $true if successful, $false on failure.
+    #>
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$LocalStatePath,
+
+        [Parameter(Mandatory = $false)]
+        [string[]]$Experiments = @()
+    )
+
+    try {
+        $localState = @{
+            browser = @{
+                first_run_finished = $true
+                enabled_labs_experiments = $Experiments
+            }
+        }
+
+        # Write using Save-JsonFile for consistent formatting
+        Save-JsonFile -Path $LocalStatePath -Object $localState -Compress
+
+        Write-VerboseTimestamped "[Local State] Wrote Local State with $($Experiments.Count) experiments to: $LocalStatePath"
+        return $true
+    }
+    catch {
+        Write-VerboseTimestamped "[Local State] Error writing Local State: $_"
+        return $false
+    }
+}
+
+function Update-LocalStateExperiments {
+    <#
+    .SYNOPSIS
+        Update Local State experiments while preserving user-added flags.
+    .DESCRIPTION
+        Merges Meteor-managed experiments with any user-added chrome://flags entries.
+        User flags that don't conflict with Meteor's managed flags are preserved.
+
+        Meteor-managed flags are identified by being in the FeatureToFlagMapping table.
+    .PARAMETER LocalStatePath
+        Full path to the Local State file.
+    .PARAMETER NewExperiments
+        Array of Meteor-managed experiment entries to set.
+    .OUTPUTS
+        [bool] $true if successful, $false on failure.
+    #>
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$LocalStatePath,
+
+        [Parameter(Mandatory = $false)]
+        [string[]]$NewExperiments = @()
+    )
+
+    try {
+        # Build set of Meteor-managed flag names (without @N suffix)
+        $managedFlags = @{}
+        foreach ($flagName in $script:FeatureToFlagMapping.Values) {
+            $managedFlags[$flagName] = $true
+        }
+
+        $existingExperiments = @()
+
+        # Read existing Local State if it exists
+        if (Test-Path $LocalStatePath) {
+            $localStateJson = Get-Content -Path $LocalStatePath -Raw -ErrorAction Stop
+
+            # PS 5.1 workaround: Check for empty arrays in raw JSON before parsing
+            $hasEmptyExperiments = $localStateJson -match '"enabled_labs_experiments"\s*:\s*\[\s*\]'
+
+            $localState = $localStateJson | ConvertFrom-Json -ErrorAction Stop
+            $localStateHash = Convert-PSObjectToHashtable -InputObject $localState
+
+            # Get existing experiments, handling PS 5.1 null conversion
+            if ($localStateHash.ContainsKey('browser') -and
+                $localStateHash['browser'].ContainsKey('enabled_labs_experiments')) {
+                $existing = $localStateHash['browser']['enabled_labs_experiments']
+                if ($null -ne $existing) {
+                    $existingExperiments = @($existing)
+                }
+                elseif (-not $hasEmptyExperiments) {
+                    # Not empty array in JSON, truly null - keep as empty
+                    $existingExperiments = @()
+                }
+            }
+        }
+        else {
+            $localStateHash = @{
+                browser = @{
+                    first_run_finished = $true
+                }
+            }
+        }
+
+        # Filter out Meteor-managed flags from existing experiments (preserve user flags)
+        $userExperiments = [System.Collections.ArrayList]::new()
+        foreach ($exp in $existingExperiments) {
+            # Extract flag name (remove @N suffix)
+            $flagName = $exp -replace '@\d+$', ''
+            if (-not $managedFlags.ContainsKey($flagName)) {
+                $null = $userExperiments.Add($exp)
+            }
+        }
+
+        # Merge: Meteor experiments + user experiments
+        $mergedExperiments = [System.Collections.ArrayList]::new()
+        foreach ($exp in $NewExperiments) {
+            $null = $mergedExperiments.Add($exp)
+        }
+        foreach ($exp in $userExperiments) {
+            $null = $mergedExperiments.Add($exp)
+        }
+
+        # Ensure browser section exists
+        if (-not $localStateHash.ContainsKey('browser')) {
+            $localStateHash['browser'] = @{}
+        }
+
+        # Update experiments and ensure first_run_finished is set
+        $localStateHash['browser']['enabled_labs_experiments'] = $mergedExperiments.ToArray()
+        $localStateHash['browser']['first_run_finished'] = $true
+
+        # Write updated Local State
+        Save-JsonFile -Path $LocalStatePath -Object $localStateHash -Compress
+
+        Write-VerboseTimestamped "[Local State] Updated with $($NewExperiments.Count) Meteor + $($userExperiments.Count) user experiments"
+        return $true
+    }
+    catch {
+        Write-VerboseTimestamped "[Local State] Error updating Local State: $_"
+        return $false
+    }
+}
+
+#endregion
+
 #endregion
 
 #region Browser Launch
@@ -6552,22 +6969,32 @@ function Build-BrowserCommand {
 
     $null = Test-FeatureConflicts -EnableFeatures $enableFeatures -DisableFeatures $disableFeatures
 
-    # Enable features - includes:
-    # - MV2 extension support (AllowLegacyMV2Extensions)
-    # - Developer features (DirectSockets, IsolatedWebApps)
-    # - Privacy features (WebRtcHideLocalIpsWithMdns)
-    if ($enableFeatures -and $enableFeatures.Count -gt 0) {
-        $enableFeaturesString = $enableFeatures -join ","
+    # Filter features: Only include those WITHOUT Local State mappings on command line
+    # Features WITH mappings are enforced via browser.enabled_labs_experiments in Local State
+    # This avoids dual enforcement and potential conflicts
+    $cmdEnableFeatures = Get-CommandLineOnlyFeatures -Features $enableFeatures
+    $cmdDisableFeatures = Get-CommandLineOnlyFeatures -Features $disableFeatures
+
+    Write-VerboseTimestamped "[Browser Command] Command-line features: enable=$($cmdEnableFeatures.Count) (of $($enableFeatures.Count)), disable=$($cmdDisableFeatures.Count) (of $($disableFeatures.Count))"
+
+    # Enable features - includes command-line-only features:
+    # - AllowLegacyMV2Extensions (no chrome://flags equivalent)
+    # - ExperimentalOmniboxLabs (no chrome://flags equivalent)
+    # - WebRtcHideLocalIpsWithMdns (no chrome://flags equivalent)
+    # - Comet-specific features
+    if ($cmdEnableFeatures -and $cmdEnableFeatures.Count -gt 0) {
+        $enableFeaturesString = $cmdEnableFeatures -join ","
         [void]$cmd.Add("--enable-features=$enableFeaturesString")
     }
 
-    # Disable features - includes:
-    # - MV2 deprecation warnings (ExtensionManifestV2*)
-    # - Telemetry/analytics (Glic*, HistoryEmbeddings, MlUrlScoring)
-    # - AI features (AI*API, Lens*, NtpComposebox)
-    # - Autofill tracking (Autofill*BuyNowPayLater, Autofill*CardBenefits)
-    if ($disableFeatures -and $disableFeatures.Count -gt 0) {
-        $disableFeaturesString = $disableFeatures -join ","
+    # Disable features - includes command-line-only features:
+    # - MV2 deprecation warning (ExtensionManifestV2DeprecationWarning - no flag)
+    # - AI*API features (no chrome://flags)
+    # - Glic* features (no chrome://flags)
+    # - Lens* features (no chrome://flags)
+    # - PerplexityAutoupdate (Comet-specific)
+    if ($cmdDisableFeatures -and $cmdDisableFeatures.Count -gt 0) {
+        $disableFeaturesString = $cmdDisableFeatures -join ","
         [void]$cmd.Add("--disable-features=$disableFeaturesString")
     }
 

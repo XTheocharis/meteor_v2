@@ -14,13 +14,8 @@
     "flags": [
       "--skip-onboarding-for-testing",
       "--no-first-run",
-      "--no-default-browser-check",
-      "--disable-background-mode",
       "--disable-client-side-phishing-detection",
-      "--disable-component-update",
-      "--disable-domain-reliability",
       "--disable-field-trial-config",
-      "--ip-protection-proxy-opt-out",
       "--no-pings",
       "--test-type",
       "--disable-infobars",
@@ -35,7 +30,6 @@
       "--enable-dxt"
     ],
     "flag_switches": [
-      "--disable-quic",
       "--extensions-on-chrome-urls",
       "--extensions-on-extension-urls",
       "--webtransport-developer-mode"
@@ -43,6 +37,7 @@
     "enable_features": [
       "ExtensionsOnChromeURLs",
       "ExtensionsOnExtensionURLs",
+      "ExtensionPermissionOmniboxDirectInput",
       "AllowLegacyMV2Extensions",
       "DirectSocketsInServiceWorkers",
       "DirectSocketsInSharedWorkers",

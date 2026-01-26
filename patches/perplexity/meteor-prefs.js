@@ -56,7 +56,7 @@
     "search.suggest_enabled": false,
     "omnibox.prevent_url_elisions": true,
 
-    // Safe Browsing - disable telemetry but keep protection
+    // Safe Browsing - disable extended reporting
     "safebrowsing.scout_reporting_enabled": false,
 
     // Disable URL-keyed data collection
