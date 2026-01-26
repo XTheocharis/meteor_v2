@@ -2674,6 +2674,7 @@ function Get-CrxManifest {
                 break  # Not a local file header
             }
 
+            $flags = [BitConverter]::ToUInt16($zipBytes, $pos + 6)
             $compression = [BitConverter]::ToUInt16($zipBytes, $pos + 8)
             $compressedSize = [BitConverter]::ToUInt32($zipBytes, $pos + 18)
             $nameLen = [BitConverter]::ToUInt16($zipBytes, $pos + 26)
@@ -2681,12 +2682,40 @@ function Get-CrxManifest {
             $nameStart = $pos + 30
             $dataStart = $nameStart + $nameLen + $extraLen
 
+            # Check for data descriptor flag (bit 3) - if set, sizes in header are 0
+            $hasDataDescriptor = ($flags -band 0x08) -ne 0
+
             if ($nameStart + $nameLen -gt $actualRead) { break }
 
             $fileName = [System.Text.Encoding]::UTF8.GetString($zipBytes, $nameStart, $nameLen)
 
             if ($fileName -eq "manifest.json") {
                 # Found it! Extract and decompress
+                # If data descriptor flag is set, we need to find the size differently
+                if ($hasDataDescriptor -and $compressedSize -eq 0) {
+                    # Scan for the next local file header or central directory to find data end
+                    # Data descriptor is: optional sig (0x08074b50) + crc(4) + compressed(4) + uncompressed(4)
+                    $scanPos = $dataStart
+                    while ($scanPos + 4 -lt $actualRead) {
+                        # Look for next local file header (PK\x03\x04) or central dir (PK\x01\x02)
+                        if ($zipBytes[$scanPos] -eq 0x50 -and $zipBytes[$scanPos+1] -eq 0x4b) {
+                            if (($zipBytes[$scanPos+2] -eq 0x03 -and $zipBytes[$scanPos+3] -eq 0x04) -or
+                                ($zipBytes[$scanPos+2] -eq 0x01 -and $zipBytes[$scanPos+3] -eq 0x02)) {
+                                # Found next entry - data descriptor is 12-16 bytes before this
+                                # (optional 4-byte sig + 4 crc + 4 compressed + 4 uncompressed)
+                                $compressedSize = $scanPos - $dataStart - 16
+                                if ($compressedSize -lt 0) { $compressedSize = $scanPos - $dataStart - 12 }
+                                break
+                            }
+                        }
+                        $scanPos++
+                    }
+                    if ($compressedSize -le 0) {
+                        Write-VerboseTimestamped "manifest.json: could not determine size from data descriptor"
+                        break
+                    }
+                }
+
                 $dataEnd = $dataStart + $compressedSize
                 if ($dataEnd -gt $actualRead) {
                     Write-VerboseTimestamped "manifest.json data extends beyond read buffer"
@@ -2722,8 +2751,23 @@ function Get-CrxManifest {
                 return $content | ConvertFrom-Json
             }
 
-            # Move to next entry
-            $pos = $dataStart + $compressedSize
+            # Move to next entry - if data descriptor is used, scan for next header
+            if ($hasDataDescriptor -and $compressedSize -eq 0) {
+                # Scan forward for the next local file header
+                $scanPos = $dataStart
+                while ($scanPos + 4 -lt $actualRead) {
+                    if ($zipBytes[$scanPos] -eq 0x50 -and $zipBytes[$scanPos+1] -eq 0x4b -and
+                        $zipBytes[$scanPos+2] -eq 0x03 -and $zipBytes[$scanPos+3] -eq 0x04) {
+                        $pos = $scanPos
+                        break
+                    }
+                    $scanPos++
+                }
+                if ($scanPos + 4 -ge $actualRead) { break }  # No more headers found
+            }
+            else {
+                $pos = $dataStart + $compressedSize
+            }
         }
 
         Write-VerboseTimestamped "manifest.json not found in first 1MB of CRX archive"
