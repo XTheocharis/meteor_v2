@@ -5911,6 +5911,14 @@ function Update-TrackedPreferences {
             "url_keyed_anonymized_data_collection.enabled" = $false
             "feedback_allowed" = $false
             "mv2_deprecation_warning_ack_globally" = $true
+            # Moved from Local State - these belong in Profile Preferences
+            "browser.default_browser_setting_enabled" = $false
+            "domain_reliability.allowed_by_policy" = $false
+            "background_mode.enabled" = $false
+            "tracking_protection.ip_protection_enabled" = $false
+            "update.component_updates_enabled" = $false
+            "variations.restrictions_by_policy" = 2
+            "worker.service_worker_auto_preload_enabled" = $false
         }
 
         # ============================================================================
@@ -5919,13 +5927,6 @@ function Update-TrackedPreferences {
         $localStatePrefsToModify = @{
             "policy.lens_desktop_ntp_search_enabled" = $false
             "policy.lens_region_search_enabled" = $false
-            "browser.default_browser_setting_enabled" = $false
-            "domain_reliability.allowed_by_policy" = $false
-            "background_mode.enabled" = $false
-            "tracking_protection.ip_protection_enabled" = $false
-            "update.component_updates_enabled" = $false
-            "variations.restrictions_by_policy" = 2
-            "worker.service_worker_auto_preload_enabled" = $false
         }
 
         # Set tracked preferences in Secure Preferences (these need MACs)
