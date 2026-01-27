@@ -190,8 +190,6 @@ $script:FeatureToFlagMapping = @{
     "DiscountAutofill"                                      = "discount-autofill"
     "AutofillEnableBuyNowPayLater"                          = "autofill-enable-buy-now-pay-later"
     "AutofillEnableAmountExtraction"                        = "autofill-enable-amount-extraction"
-    "ApplyClientsideModelPredictionsForOtps"                = "apply-clientside-model-predictions-for-otps"
-    "ApplyClientsideModelPredictionsForPasswordTypes"       = "apply-clientside-model-predictions-for-password-types"
     "AutofillEnableAiBasedAmountExtraction"                 = "autofill-enable-ai-based-amount-extraction"
     "AutofillEnableCardInfoRuntimeRetrieval"                = "autofill-enable-card-info-runtime-retrieval"
     "AutofillEnableLoyaltyCardsFilling"                     = "autofill-enable-loyalty-cards-filling"
@@ -227,8 +225,6 @@ $script:FeatureToFlagMapping = @{
     "ShoppingAlternateServer"                               = "shopping-alternate-server"
     "GroupSuggestionService"                                = "group-suggestion-service"
     "ExtensionDisableUnsupportedDeveloper"                  = "extension-disable-unsupported-developer-mode-extensions"
-    "ExtensionsCollapseMainMenu"                            = "extensions-collapse-main-menu"
-    "ExtensionsMenuAccessControl"                           = "extensions-menu-access-control"
     "SearchPrefetchServicePrefetching"                      = "omnibox-search-prefetch"
     "BookmarkTriggerForPrefetch"                            = "prefetch-bookmarkbar-trigger"
     "DsePreload2"                                           = "dse-preload2"
@@ -281,13 +277,11 @@ $script:FeatureToFlagMapping = @{
     "AllowAiModeMatches"                                    = "omnibox-allow-ai-mode-matches"
 
     # === NEW DISABLE FEATURES (from chrome://flags) ===
-    # Service Worker and Network
-    "ServiceWorkerAutoPreload"                              = "service-worker-auto-preload"
+    # Network
     "FeedbackIncludeVariations"                             = "feedback-include-variations"
     "ProfileSignalsReportingEnabled"                        = "profile-signals-reporting-enabled"
 
-    # AI API Features (keeping only multimodal)
-    "AIPromptAPIMultimodalInput"                            = "prompt-api-for-gemini-nano-multimodal-input"
+    # AI API Features
     "AiModeOmniboxEntryPoint"                               = "ai-mode-omnibox-entry-point"
 
     # Glic Features
