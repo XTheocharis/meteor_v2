@@ -5642,9 +5642,13 @@ function Set-BrowserPreferences {
     $extensionSettings = @{
         $uBlockId = @{
             incognito = $true
+            # Acknowledge MV2 deprecation warning (reason 4 = user acknowledged)
+            # This prevents the Safety Hub from flagging uBlock as requiring action
+            ack_safety_check_warning_reason = 4
         }
         $adGuardExtraId = @{
             incognito = $true
+            ack_safety_check_warning_reason = 4
         }
     }
 
@@ -5740,8 +5744,62 @@ function Set-BrowserPreferences {
         $regularPrefsToWrite['extensions'] = @{
             pinned_extensions = $extensionsToPinToToolbar
         }
+
+        # Add Safety Hub notifications (prevents prompts about extensions/passwords/safe-browsing)
+        # Generate current timestamp in Windows FileTime format (100-nanosecond intervals since 1601-01-01)
+        $currentFileTime = [DateTime]::UtcNow.ToFileTimeUtc().ToString()
+        $regularPrefsToWrite['profile'] = @{
+            safety_hub_menu_notifications = @{
+                extensions = @{
+                    isCurrentlyActive = $false
+                    result = @{
+                        timestamp = $currentFileTime
+                        triggeringExtensions = @()
+                    }
+                }
+                passwords = @{
+                    isCurrentlyActive = $false
+                    result = @{
+                        passwordCheckOrigins = @()
+                        timestamp = $currentFileTime
+                    }
+                }
+                "safe-browsing" = @{
+                    isCurrentlyActive = $false
+                    onlyShowAfterTime = $currentFileTime
+                    result = @{
+                        safeBrowsingStatus = 1
+                        timestamp = $currentFileTime
+                    }
+                }
+                "unused-site-permissions" = @{
+                    isCurrentlyActive = $false
+                    result = @{
+                        permissions = @()
+                        timestamp = $currentFileTime
+                    }
+                }
+            }
+            content_settings = @{
+                exceptions = @{
+                    # chrome://extensions/ site engagement - allows extension management page access
+                    site_engagement = @{
+                        "chrome://extensions/,*" = @{
+                            last_modified = $currentFileTime
+                            setting = @{
+                                lastEngagementTime = [double]$currentFileTime
+                                lastShortcutLaunchTime = 0.0
+                                pointsAddedToday = 3.0
+                                rawScore = 3.0
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         Save-JsonFile -Path $regularPrefsPath -Object $regularPrefsToWrite -Compress
-        Write-VerboseTimestamped "[Regular Prefs] Wrote $($profilePrefs.Count) profile prefs + pinned extensions to: $regularPrefsPath"
+        Write-VerboseTimestamped "[Regular Prefs] Wrote $($profilePrefs.Count) profile prefs + pinned extensions + safety_hub to: $regularPrefsPath"
 
         # Write Local State with enabled_labs_experiments AND local state prefs
         $configPath = Join-Path $PSScriptRoot "config.json"
@@ -5943,19 +6001,22 @@ function Update-TrackedPreferences {
             Write-VerboseTimestamped "[Secure Prefs] Set tracked pref: $path = $($trackedPrefsToModify[$path])"
         }
 
-        # Enable incognito access for uBlock Origin and AdGuard Extra
-        # This setting is in extensions.settings.{id}.incognito and IS tracked with SPLIT MAC
+        # Enable incognito access and acknowledge MV2 warning for uBlock Origin and AdGuard Extra
+        # These settings are in extensions.settings.{id} and ARE tracked with SPLIT MAC
         # The MAC will be recalculated automatically since we recalculate all extension MACs
-        $extensionsToEnableIncognito = @(
+        $extensionsToModify = @(
             "cjpalhdlnbpafiamejdnhcphjbkeiagm",  # uBlock Origin
             "gkeojjjcdcopjkbelgbcpckplegclfeg"   # AdGuard Extra
         )
         if ($securePrefsHash.ContainsKey('extensions') -and $securePrefsHash['extensions'].ContainsKey('settings')) {
             $extSettings = $securePrefsHash['extensions']['settings']
-            foreach ($extId in $extensionsToEnableIncognito) {
+            foreach ($extId in $extensionsToModify) {
                 if ($extSettings.ContainsKey($extId)) {
                     $extSettings[$extId]['incognito'] = $true
-                    Write-VerboseTimestamped "[Secure Prefs] Enabled incognito for extension $extId"
+                    # Acknowledge MV2 deprecation warning (reason 4 = user acknowledged)
+                    # This prevents the Safety Hub from flagging extension as requiring action
+                    $extSettings[$extId]['ack_safety_check_warning_reason'] = 4
+                    Write-VerboseTimestamped "[Secure Prefs] Set incognito + ack_safety_check for extension $extId"
                 }
             }
         }
@@ -5989,6 +6050,70 @@ function Update-TrackedPreferences {
             }
             $regularPrefsHash['extensions']['pinned_extensions'] = $existingPinned
             Write-VerboseTimestamped "[Regular Prefs] Pinned extensions to toolbar: $($existingPinned -join ', ')"
+
+            # Add Safety Hub notifications (prevents prompts about extensions/passwords/safe-browsing)
+            # Generate current timestamp in Windows FileTime format (100-nanosecond intervals since 1601-01-01)
+            $currentFileTime = [DateTime]::UtcNow.ToFileTimeUtc().ToString()
+
+            # Ensure profile key exists
+            if (-not $regularPrefsHash.ContainsKey('profile')) {
+                $regularPrefsHash['profile'] = @{}
+            }
+
+            # Add safety_hub_menu_notifications
+            $regularPrefsHash['profile']['safety_hub_menu_notifications'] = @{
+                extensions = @{
+                    isCurrentlyActive = $false
+                    result = @{
+                        timestamp = $currentFileTime
+                        triggeringExtensions = @()
+                    }
+                }
+                passwords = @{
+                    isCurrentlyActive = $false
+                    result = @{
+                        passwordCheckOrigins = @()
+                        timestamp = $currentFileTime
+                    }
+                }
+                "safe-browsing" = @{
+                    isCurrentlyActive = $false
+                    onlyShowAfterTime = $currentFileTime
+                    result = @{
+                        safeBrowsingStatus = 1
+                        timestamp = $currentFileTime
+                    }
+                }
+                "unused-site-permissions" = @{
+                    isCurrentlyActive = $false
+                    result = @{
+                        permissions = @()
+                        timestamp = $currentFileTime
+                    }
+                }
+            }
+            Write-VerboseTimestamped "[Regular Prefs] Set safety_hub_menu_notifications"
+
+            # Add chrome://extensions/ site engagement
+            if (-not $regularPrefsHash['profile'].ContainsKey('content_settings')) {
+                $regularPrefsHash['profile']['content_settings'] = @{}
+            }
+            if (-not $regularPrefsHash['profile']['content_settings'].ContainsKey('exceptions')) {
+                $regularPrefsHash['profile']['content_settings']['exceptions'] = @{}
+            }
+            if (-not $regularPrefsHash['profile']['content_settings']['exceptions'].ContainsKey('site_engagement')) {
+                $regularPrefsHash['profile']['content_settings']['exceptions']['site_engagement'] = @{}
+            }
+            $regularPrefsHash['profile']['content_settings']['exceptions']['site_engagement']['chrome://extensions/,*'] = @{
+                last_modified = $currentFileTime
+                setting = @{
+                    lastEngagementTime = [double]$currentFileTime
+                    lastShortcutLaunchTime = 0.0
+                    pointsAddedToday = 3.0
+                    rawScore = 3.0
+                }
+            }
+            Write-VerboseTimestamped "[Regular Prefs] Set chrome://extensions/ site engagement"
 
             # Write updated Regular Preferences (Save-JsonFile uses -InputObject to avoid PS 5.1 bugs)
             Save-JsonFile -Path $regularPrefsPath -Object $regularPrefsHash -Compress
