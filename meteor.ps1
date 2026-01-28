@@ -6194,8 +6194,8 @@ function Update-TrackedPreferences {
         Write-VerboseTimestamped "[Secure Prefs] Recalculated $($updateResult.recalculated) MACs, removed $($updateResult.removed) orphaned MACs"
 
         # Log our specific target preferences
-        foreach ($path in $prefsToModify.Keys) {
-            $value = $prefsToModify[$path]
+        foreach ($path in $trackedPrefsToModify.Keys) {
+            $value = $trackedPrefsToModify[$path]
             Write-VerboseTimestamped "[Secure Prefs] Target pref: $path = $(ConvertTo-JsonForHmac $value)"
         }
 
@@ -6947,10 +6947,14 @@ function Get-CommandLineOnlyFeatures {
 function Write-LocalState {
     <#
     .SYNOPSIS
-        Create or overwrite Local State file with enabled_labs_experiments and additional prefs.
+        Create or update Local State file with enabled_labs_experiments and additional prefs.
     .DESCRIPTION
         Writes the Local State file at the User Data directory root (not in profile).
         This file controls chrome://flags settings and machine-wide preferences.
+
+        CRITICAL: If Local State already exists, this function reads it first and
+        preserves existing keys (especially os_crypt.encrypted_key which is used
+        to encrypt cookies and passwords). Only Meteor-managed settings are updated.
 
         IMPORTANT: browser.first_run_finished MUST be true or browser will
         show onboarding flow and may reset settings.
@@ -6977,18 +6981,42 @@ function Write-LocalState {
     )
 
     try {
-        $localState = @{
-            browser = @{
-                first_run_finished = $true
-                enabled_labs_experiments = $Experiments
+        # CRITICAL: Read existing Local State to preserve os_crypt.encrypted_key
+        # This key encrypts cookies and passwords - if lost, all encrypted data becomes unreadable
+        $localState = $null
+        if (Test-Path $LocalStatePath) {
+            try {
+                $existingJson = Get-Content -Path $LocalStatePath -Raw -ErrorAction Stop
+                $existingState = $existingJson | ConvertFrom-Json -ErrorAction Stop
+                $localState = Convert-PSObjectToHashtable -InputObject $existingState
+                Write-VerboseTimestamped "[Local State] Read existing Local State, preserving os_crypt and other keys"
             }
-            # Profile settings (browser-wide, not profile-specific)
-            profile = @{
-                picker_availability_on_startup = 1  # 1 = disabled
-                browser_guest_enforced = $false
-                add_person_enabled = $false
+            catch {
+                Write-VerboseTimestamped "[Local State] Warning: Could not read existing Local State: $_"
+                $localState = $null
             }
         }
+
+        # Create new state if none exists
+        if ($null -eq $localState) {
+            $localState = @{}
+            Write-VerboseTimestamped "[Local State] Creating new Local State"
+        }
+
+        # Ensure browser section exists and set required values
+        if (-not $localState.ContainsKey('browser')) {
+            $localState['browser'] = @{}
+        }
+        $localState['browser']['first_run_finished'] = $true
+        $localState['browser']['enabled_labs_experiments'] = $Experiments
+
+        # Ensure profile section exists and set values
+        if (-not $localState.ContainsKey('profile')) {
+            $localState['profile'] = @{}
+        }
+        $localState['profile']['picker_availability_on_startup'] = 1  # 1 = disabled
+        $localState['profile']['browser_guest_enforced'] = $false
+        $localState['profile']['add_person_enabled'] = $false
 
         # Add additional Local State prefs (policy prefs, machine-wide settings)
         foreach ($path in $AdditionalPrefs.Keys) {
@@ -8399,48 +8427,10 @@ function Main {
             }
         }
 
-        # Delete Preferences files to force fresh settings on next launch
-        # This ensures extension incognito settings are written correctly
-        $prefsPathsToCheck = @()
-
-        if ($portableMode) {
-            # Portable mode: only use portable path
-            $prefsPathsToCheck += $userDataPath
-        }
-        else {
-            # System mode: use system paths
-            $prefsPathsToCheck += (Join-Path $env:LOCALAPPDATA "Perplexity\Comet\User Data")
-            $prefsPathsToCheck += (Join-Path $env:LOCALAPPDATA "Comet\User Data")
-        }
-
-        foreach ($udPath in $prefsPathsToCheck) {
-            if (Test-Path $udPath) {
-                $profileName = if ($config.browser.profile) { $config.browser.profile } else { "Default" }
-                $profilePath = Join-Path $udPath $profileName
-                $prefsPath = Join-Path $profilePath "Preferences"
-                $securePrefsPath = Join-Path $profilePath "Secure Preferences"
-
-                if (Test-Path $prefsPath) {
-                    if ($WhatIfPreference) {
-                        Write-Status "Would delete: $prefsPath" -Type DryRun
-                    }
-                    else {
-                        Remove-Item -Path $prefsPath -Force -ErrorAction SilentlyContinue
-                        Write-Status "Deleted Preferences file" -Type Detail
-                    }
-                }
-
-                if (Test-Path $securePrefsPath) {
-                    if ($WhatIfPreference) {
-                        Write-Status "Would delete: $securePrefsPath" -Type DryRun
-                    }
-                    else {
-                        Remove-Item -Path $securePrefsPath -Force -ErrorAction SilentlyContinue
-                        Write-Status "Deleted Secure Preferences file" -Type Detail
-                    }
-                }
-            }
-        }
+        # NOTE: Preferences files are NOT deleted by -Force
+        # The script properly updates preferences with MAC calculation, preserving user settings.
+        # Deleting Preferences would trigger the first-run path which could lose os_crypt.encrypted_key
+        # (the encryption key for cookies and passwords) if Local State was rewritten from scratch.
     }
 
     # ═══════════════════════════════════════════════════════════════
