@@ -5592,7 +5592,7 @@ function Set-BrowserPreferences {
         "omnibox.ai_mode_settings"          = 1      # 1 = disabled
 
         # Network
-        "net.quic_allowed" = $false
+        "net.quic_allowed" = $true
 
         # Safe Browsing (untracked prefs - safebrowsing.enabled is tracked above)
         "safebrowsing.enhanced" = $false
@@ -5960,7 +5960,7 @@ function Update-TrackedPreferences {
             "glic.actuation_on_web" = 1
             "lens.policy.lens_overlay_settings" = 1
             "omnibox.ai_mode_settings" = 1
-            "net.quic_allowed" = $false
+            "net.quic_allowed" = $true
             "safebrowsing.enhanced" = $false
             "safebrowsing.password_protection_warning_trigger" = 0
             "safebrowsing.scout_reporting_enabled" = $false

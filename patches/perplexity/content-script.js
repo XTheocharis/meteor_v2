@@ -326,8 +326,8 @@
     // YOUTUBE/ADBLOCK (DISABLE auto-whitelist)
     "adblock-youtube-autowhitelist-enabled": false,
 
-    // DISCOVERY/SUGGESTIONS (DISABLE tracking)
-    "discover-early-fetch": false,
+    // DISCOVERY/SUGGESTIONS (DISABLE tracking, but allow early fetch for NTP performance)
+    "discover-early-fetch": true,
     "sidecar-personalized-query-suggestions": false,
 
     // ENTERPRISE TELEMETRY (DISABLE)
@@ -730,20 +730,28 @@
       document.querySelectorAll(selector).forEach(wrapButton);
     }
 
-    // Watch for dynamically added buttons
+    // Debounced DOM check - batches rapid mutations to reduce overhead
+    let debounceTimer = null;
+    function debouncedCheck() {
+      if (debounceTimer) return;
+      debounceTimer = setTimeout(() => {
+        debounceTimer = null;
+        wrapExistingButtons();
+      }, 100);
+    }
+
+    // Watch for dynamically added buttons (debounced for performance)
     const observer = new MutationObserver((mutations) => {
-      for (const mutation of mutations) {
-        for (const node of mutation.addedNodes) {
-          if (node.nodeType !== Node.ELEMENT_NODE) continue;
-
-          // Check if the added node is the button
-          if (node.matches?.(selector)) {
-            wrapButton(node);
-          }
-
-          // Check descendants
-          node.querySelectorAll?.(selector).forEach(wrapButton);
-        }
+      // Quick check: only process if mutations might contain our button
+      const hasRelevantMutation = mutations.some((m) =>
+        Array.from(m.addedNodes).some(
+          (n) =>
+            n.nodeType === Node.ELEMENT_NODE &&
+            (n.matches?.(selector) || n.querySelector?.(selector)),
+        ),
+      );
+      if (hasRelevantMutation) {
+        debouncedCheck();
       }
     });
 
