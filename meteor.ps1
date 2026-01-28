@@ -5634,7 +5634,7 @@ function Set-BrowserPreferences {
         "variations.restrictions_by_policy" = 2  # 2 = VariationsDisabled
 
         # ServiceWorker
-        "worker.service_worker_auto_preload_enabled" = $false
+        "worker.service_worker_auto_preload_enabled" = $true
     }
 
     # Extension settings with incognito enabled (split MACs)
@@ -5992,7 +5992,7 @@ function Update-TrackedPreferences {
             "tracking_protection.ip_protection_enabled" = $false
             "update.component_updates_enabled" = $false
             "variations.restrictions_by_policy" = 2
-            "worker.service_worker_auto_preload_enabled" = $false
+            "worker.service_worker_auto_preload_enabled" = $true
         }
 
         # Set tracked preferences in Secure Preferences (these need MACs)
