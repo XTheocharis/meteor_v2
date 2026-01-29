@@ -7278,8 +7278,8 @@ function Build-BrowserCommand {
         [void]$cmd.Add("--user-data-dir=`"$UserDataPath`"")
     }
 
-    # Profile selection - defaults to "Default" profile
-    if ($browserConfig.profile) {
+    # Profile selection - only add if explicitly configured (Chromium defaults to "Default")
+    if ($browserConfig.PSObject.Properties['profile'] -and $browserConfig.profile) {
         [void]$cmd.Add("--profile-directory=$($browserConfig.profile)")
     }
 
@@ -9502,7 +9502,7 @@ setTimeout(checkAndImport, 3000);
     if ($comet -or $WhatIfPreference) {
         $browserExe = if ($comet) { $comet.Executable } else { "comet.exe" }
         $browserUserDataPath = if ($portableMode) { $userDataPath } else { $null }
-        $profileName = if ($config.browser.profile) { $config.browser.profile } else { "Default" }
+        $profileName = if ($config.browser.PSObject.Properties['profile'] -and $config.browser.profile) { $config.browser.profile } else { "Default" }
 
         # Write Secure Preferences with valid HMACs
         # This ensures developer mode, toolbar pin, and home button are set without HMAC validation failures
