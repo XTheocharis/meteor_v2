@@ -97,7 +97,7 @@ When you run `.\meteor.ps1`, it performs these steps automatically:
 | `.meteor/User Data/` | Browser profile data (bookmarks, cache, extensions) |
 | `.meteor/patched_extensions/` | Extracted and patched browser extensions |
 | `.meteor/patched_resources/` | Extracted PAK resources (editable text/binary files + manifest.json) |
-| `patches/perplexity/telemetry.json` | 26 DNR redirect rules for silent telemetry blocking |
+| `patches/perplexity/telemetry.json` | 28 DNR redirect rules for silent telemetry blocking |
 | `patches/perplexity/meteor-prefs.js` | Service worker preference enforcement |
 | `patches/perplexity/content-script.js` | SDK stubs + feature flag interception |
 
@@ -147,11 +147,11 @@ By default, Meteor runs in **portable mode** (`config.json: comet.portable = tru
 - Force-enables MCP UI flags (`comet-mcp-enabled`, `custom-remote-mcps`, `comet-dxt-enabled`)
 - Provides backup blocking for internal API endpoints with fake success responses
 
-**patches/perplexity/telemetry.json**: 26 DNR rules (primary telemetry blocking mechanism):
+**patches/perplexity/telemetry.json**: 28 DNR rules (primary telemetry blocking mechanism):
 - Scripts use `block` action for immediate rejection (avoids 600ms+ ERR_UNSAFE_REDIRECT delays from Chrome rejecting HTTPS→data: URL redirects)
 - XHR/fetch/other use `redirect` to `data:application/json,{}` to suppress console errors
 - Content-script stubs prevent runtime errors from blocked SDK scripts
-- Covers: DataDog RUM, Singular, Eppo, Mixpanel, Sentry, Intercom, Cloudflare (insights and RUM)
+- Covers: DataDog RUM, Singular, Eppo, Mixpanel, Sentry, Intercom, Cloudflare (insights, RUM, challenge-platform)
 - Perplexity internal telemetry (irontail, analytics endpoints)
 
 ## Configuration
@@ -474,7 +474,7 @@ The script must run on PowerShell 5.1 (Windows default). Key quirks:
 
 ## Critical Rules for Changes
 
-1. **DNR Rules**: Must maintain sequential rule IDs starting from 1 (currently 26 rules, IDs 1-26)
+1. **DNR Rules**: Must maintain sequential rule IDs starting from 1 (currently 28 rules, IDs 1-28)
 2. **MCP Flags**: These flags MUST be `true` for MCP UI to work:
    - `comet-mcp-enabled`
    - `custom-remote-mcps`

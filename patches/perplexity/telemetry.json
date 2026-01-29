@@ -301,5 +301,28 @@
       "urlFilter": "/cdn-cgi/rum",
       "resourceTypes": ["xmlhttprequest", "ping", "other"]
     }
+  },
+  {
+    "id": 27,
+    "priority": 1,
+    "action": {
+      "type": "block"
+    },
+    "condition": {
+      "urlFilter": "/cdn-cgi/challenge-platform/",
+      "resourceTypes": ["script"]
+    }
+  },
+  {
+    "id": 28,
+    "priority": 1,
+    "action": {
+      "type": "redirect",
+      "redirect": { "url": "data:application/json,{}" }
+    },
+    "condition": {
+      "urlFilter": "/cdn-cgi/challenge-platform/",
+      "resourceTypes": ["xmlhttprequest", "ping", "other"]
+    }
   }
 ]

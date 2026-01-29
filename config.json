@@ -19,7 +19,8 @@
       "--perplexity-enable-bundle-extension-unpacked-loading",
       "--enable-local-mcp",
       "--enable-local-custom-mcp",
-      "--enable-dxt"
+      "--enable-dxt",
+      "--extensions-on-chrome-urls"
     ],
     "enable_features": [
       "WebTransportDeveloperMode",
