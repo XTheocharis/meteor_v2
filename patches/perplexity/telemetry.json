@@ -235,7 +235,7 @@
       "redirect": { "url": "data:application/json,{}" }
     },
     "condition": {
-      "urlFilter": "/rest/homepage-widgets/upsell/interacted",
+      "urlFilter": "/rest/homepage-widgets/upsell",
       "resourceTypes": ["xmlhttprequest", "ping", "other"]
     }
   },

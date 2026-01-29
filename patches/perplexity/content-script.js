@@ -374,7 +374,8 @@
     "/cdn-cgi/trace",
     "/cdn-cgi/rum",
     "/api/intercom",
-    "/rest/homepage-widgets/upsell/interacted",
+    "/rest/attribution/", // Session attribution telemetry
+    "/rest/homepage-widgets/upsell", // Upsell widget (base + /interacted)
     "/rest/ntp/upsell/interacted",
     "/rest/autosuggest/track-query-clicked",
     "/rest/live-events/subscription",
