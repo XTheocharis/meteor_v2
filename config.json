@@ -18,8 +18,6 @@
       "--enable-experimental-extension-apis",
       "--show-component-extension-options",
       "--perplexity-enable-bundle-extension-unpacked-loading",
-      "--disable-search-engine-choice-screen",
-      "--propagate-iph-for-testing",
       "--enable-local-mcp",
       "--enable-local-custom-mcp",
       "--enable-dxt"
