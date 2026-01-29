@@ -5610,6 +5610,10 @@ function Set-BrowserPreferences {
 
         # MV2 Extension Support (PrefScope::kProfile in extensions/browser/pref_types.cc)
         "mv2_deprecation_warning_ack_globally" = $true
+
+        # NTP Modules - disable all modules via policy-controlled pref
+        # This replaces --disable-features=NtpDriveModuleHistorySyncRequirement
+        "NewTabPage.ModulesVisible" = $false
     }
 
     # ============================================================================
@@ -5978,6 +5982,9 @@ function Update-TrackedPreferences {
             "perplexity.notifications.proactive_assistance.enabled" = $false
             "perplexity.proactive_scraping.enabled" = $false
             "perplexity.analytics_observer_initialised" = $false
+            # NTP Modules - disable all modules via policy-controlled pref
+            # This replaces --disable-features=NtpDriveModuleHistorySyncRequirement
+            "NewTabPage.ModulesVisible" = $false
         }
 
         # ============================================================================
