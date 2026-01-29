@@ -226,6 +226,7 @@ $script:FeatureToFlagMapping = @{
     "GroupSuggestionService"                                = "group-suggestion-service"
     "ExtensionDisableUnsupportedDeveloper"                  = "extension-disable-unsupported-developer-mode-extensions"
     "SearchPrefetchServicePrefetching"                      = "omnibox-search-prefetch"
+    "SearchNavigationPrefetch"                              = "search-navigation-prefetch"
     "BookmarkTriggerForPrefetch"                            = "prefetch-bookmarkbar-trigger"
     "DsePreload2"                                           = "dse-preload2"
     "DsePreload2OnPress"                                    = "dse-preload2-on-press"
