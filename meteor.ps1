@@ -153,6 +153,7 @@ $script:CRX3_HEADER_SIZE_MIN = 12  # magic(4) + version(4) + header_len(4)
 $script:FeatureToFlagMapping = @{
     # === ENABLE FEATURES (@1) ===
     # These get "@1" suffix in enabled_labs_experiments
+    "WebTransportDeveloperMode"                 = "webtransport-developer-mode"
     "ExtensionsOnChromeURLs"                    = "extensions-on-chrome-urls"
     "ExtensionsOnExtensionURLs"                 = "extensions-on-extension-urls"
     "DirectSocketsInServiceWorkers"             = "direct-sockets-in-service-workers"
@@ -7335,14 +7336,6 @@ function Build-BrowserCommand {
     # chrome://flags UI-enabled flags. Features in this block take precedence.
 
     [void]$cmd.Add("--flag-switches-begin")
-
-    # Additional flags that work better inside the flag-switches block
-    # (e.g., --disable-quic, --extensions-on-chrome-urls)
-    if ($browserConfig.flag_switches) {
-        foreach ($flag in $browserConfig.flag_switches) {
-            [void]$cmd.Add($flag)
-        }
-    }
 
     # Validate feature flags before building command line
     $enableFeatures = $browserConfig.enable_features

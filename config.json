@@ -20,7 +20,6 @@
       "--test-type",
       "--disable-infobars",
       "--enable-experimental-extension-apis",
-      "--webtransport-developer-mode",
       "--show-component-extension-options",
       "--perplexity-enable-bundle-extension-unpacked-loading",
       "--disable-search-engine-choice-screen",
@@ -30,12 +29,8 @@
       "--enable-local-custom-mcp",
       "--enable-dxt"
     ],
-    "flag_switches": [
-      "--extensions-on-chrome-urls",
-      "--extensions-on-extension-urls",
-      "--webtransport-developer-mode"
-    ],
     "enable_features": [
+      "WebTransportDeveloperMode",
       "ExtensionsOnChromeURLs",
       "ExtensionsOnExtensionURLs",
       "ExtensionPermissionOmniboxDirectInput",
