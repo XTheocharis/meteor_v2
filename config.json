@@ -14,7 +14,6 @@
       "--skip-onboarding-for-testing",
       "--disable-field-trial-config",
       "--test-type",
-      "--disable-infobars",
       "--enable-experimental-extension-apis",
       "--show-component-extension-options",
       "--perplexity-enable-bundle-extension-unpacked-loading",
