@@ -10,7 +10,6 @@
     "_comment_fallback": "fallback_version used for extension update checks before browser is installed"
   },
   "browser": {
-    "profile": "Default",
     "flags": [
       "--skip-onboarding-for-testing",
       "--disable-field-trial-config",
