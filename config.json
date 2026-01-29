@@ -13,10 +13,7 @@
     "profile": "Default",
     "flags": [
       "--skip-onboarding-for-testing",
-      "--no-first-run",
-      "--disable-client-side-phishing-detection",
       "--disable-field-trial-config",
-      "--no-pings",
       "--test-type",
       "--disable-infobars",
       "--enable-experimental-extension-apis",
@@ -24,7 +21,6 @@
       "--perplexity-enable-bundle-extension-unpacked-loading",
       "--disable-search-engine-choice-screen",
       "--propagate-iph-for-testing",
-      "--disable-domain-reliability",
       "--enable-local-mcp",
       "--enable-local-custom-mcp",
       "--enable-dxt"
