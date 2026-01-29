@@ -3,8 +3,7 @@
     "id": 1,
     "priority": 1,
     "action": {
-      "type": "redirect",
-      "redirect": { "url": "data:text/javascript," }
+      "type": "block"
     },
     "condition": {
       "urlFilter": "||browser-intake-datadoghq.com",
@@ -27,8 +26,7 @@
     "id": 3,
     "priority": 1,
     "action": {
-      "type": "redirect",
-      "redirect": { "url": "data:text/javascript," }
+      "type": "block"
     },
     "condition": {
       "urlFilter": "||sdk-api-v1.singular.net",
@@ -51,8 +49,7 @@
     "id": 5,
     "priority": 1,
     "action": {
-      "type": "redirect",
-      "redirect": { "url": "data:text/javascript," }
+      "type": "block"
     },
     "condition": {
       "urlFilter": "||fscdn.eppo.cloud",
@@ -75,8 +72,7 @@
     "id": 7,
     "priority": 1,
     "action": {
-      "type": "redirect",
-      "redirect": { "url": "data:text/javascript," }
+      "type": "block"
     },
     "condition": {
       "urlFilter": "||fs-edge-assignment.eppo.cloud",
@@ -99,8 +95,7 @@
     "id": 9,
     "priority": 1,
     "action": {
-      "type": "redirect",
-      "redirect": { "url": "data:text/javascript," }
+      "type": "block"
     },
     "condition": {
       "urlFilter": "||irontail.perplexity.ai",
@@ -135,8 +130,7 @@
     "id": 12,
     "priority": 1,
     "action": {
-      "type": "redirect",
-      "redirect": { "url": "data:text/javascript," }
+      "type": "block"
     },
     "condition": {
       "urlFilter": "/cdn-cgi/trace",
@@ -171,8 +165,7 @@
     "id": 15,
     "priority": 1,
     "action": {
-      "type": "redirect",
-      "redirect": { "url": "data:text/javascript," }
+      "type": "block"
     },
     "condition": {
       "urlFilter": "||api.mixpanel.com",
@@ -195,8 +188,7 @@
     "id": 17,
     "priority": 1,
     "action": {
-      "type": "redirect",
-      "redirect": { "url": "data:text/javascript," }
+      "type": "block"
     },
     "condition": {
       "urlFilter": ".ingest.sentry.io",
@@ -279,8 +271,7 @@
     "id": 24,
     "priority": 1,
     "action": {
-      "type": "redirect",
-      "redirect": { "url": "data:text/javascript," }
+      "type": "block"
     },
     "condition": {
       "urlFilter": "||cloudflareinsights.com",

@@ -148,9 +148,9 @@ By default, Meteor runs in **portable mode** (`config.json: comet.portable = tru
 - Provides backup blocking for internal API endpoints with fake success responses
 
 **patches/perplexity/telemetry.json**: 26 DNR rules (primary telemetry blocking mechanism):
-- Uses `redirect` to data URLs instead of `block` to suppress console errors
-- Scripts redirect to `data:text/javascript,` (empty JS)
-- XHR/fetch redirect to `data:application/json,{}` (empty JSON)
+- Scripts use `block` action for immediate rejection (avoids 600ms+ ERR_UNSAFE_REDIRECT delays from Chrome rejecting HTTPS→data: URL redirects)
+- XHR/fetch/other use `redirect` to `data:application/json,{}` to suppress console errors
+- Content-script stubs prevent runtime errors from blocked SDK scripts
 - Covers: DataDog RUM, Singular, Eppo, Mixpanel, Sentry, Intercom, Cloudflare (insights and RUM)
 - Perplexity internal telemetry (irontail, analytics endpoints)
 
