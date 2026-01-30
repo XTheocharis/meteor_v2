@@ -11,6 +11,88 @@
   "use strict";
 
   // ============================================================================
+  // FEATURE FLAG OVERRIDES (chrome.perplexity.features interception)
+  // ============================================================================
+  // Intercept chrome.perplexity.features.getFlagValue to return our values.
+  // This runs in the service worker context BEFORE the extension's background
+  // script can use the API, ensuring our overrides take effect.
+
+  const FEATURE_FLAG_OVERRIDES = {
+    // CRITICAL: Force extension to use JS SDK instead of browser's native API
+    // When true, extension delegates to chrome.perplexity.features (C++)
+    // When false, extension uses bundled Eppo JS SDK (reads eppo_overrides)
+    "test-migration-feature": false,
+
+    // Disable navigation/telemetry logging
+    "nav-logging": false,
+    "native-analytics": false,
+    "use-mixpanel-analytics": false,
+    "report-omnibox-text": false,
+
+    // MCP/DXT features (enable)
+    "enable-dxt": true,
+    "enable-local-mcp": true,
+    "enable-local-custom-mcp": true,
+
+    // Voice assistant (enable)
+    "voice-assistant": true,
+
+    // Auto-update (disable - we control updates)
+    "native-autoupdate": false,
+    "omaha-autoupdater": false,
+  };
+
+  /**
+   * Patch chrome.perplexity.features.getFlagValue to return our overrides.
+   */
+  function patchFeatureFlagsAPI() {
+    if (!chrome?.perplexity?.features?.getFlagValue) {
+      console.warn("[Meteor] chrome.perplexity.features.getFlagValue not available");
+      return;
+    }
+
+    const originalGetFlagValue = chrome.perplexity.features.getFlagValue.bind(
+      chrome.perplexity.features,
+    );
+
+    chrome.perplexity.features.getFlagValue = function (flagName, callback) {
+      // Check if we have an override for this flag
+      if (flagName in FEATURE_FLAG_OVERRIDES) {
+        const value = FEATURE_FLAG_OVERRIDES[flagName];
+        const flagType =
+          typeof value === "boolean"
+            ? "BOOLEAN"
+            : typeof value === "number"
+              ? "NUMBER"
+              : typeof value === "string"
+                ? "STRING"
+                : "DICTIONARY";
+
+        const result = {
+          name: flagName,
+          type: flagType,
+          value: value,
+        };
+
+        // Handle both callback and promise styles
+        if (typeof callback === "function") {
+          callback(result);
+          return;
+        }
+        return Promise.resolve(result);
+      }
+
+      // Fall back to original for non-overridden flags
+      return originalGetFlagValue(flagName, callback);
+    };
+
+    console.log("[Meteor] Feature flags API patched");
+  }
+
+  // Patch immediately
+  patchFeatureFlagsAPI();
+
+  // ============================================================================
   // CONFIGURATION
   // ============================================================================
 
@@ -187,5 +269,5 @@
   setInterval(applyPreferences, 60000);
 
   console.log("[Meteor] Preference enforcement initialized");
-  console.log("[Meteor] Remote URL redirection active");
+  console.log("[Meteor] Feature flags patched:", Object.keys(FEATURE_FLAG_OVERRIDES).join(", "));
 })();
