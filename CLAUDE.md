@@ -163,7 +163,9 @@ All settings are in `config.json`. Key sections:
 - `browser.flags/enable_features/disable_features`: Chromium launch configuration (21 flags, 10 enabled features, 155 disabled features)
 - `extensions.sources`: Extensions to patch (`perplexity`, `comet_web_resources`, `agents`)
 - `extensions.patch_config.perplexity`: Patching rules for the perplexity extension
-- `pak_modifications`: Regex replacements for resources.pak (currently empty, infrastructure ready)
+- `feature_flag_overrides`: Eppo/feature flag overrides (single source of truth, injected into JS files)
+- `feature_flag_complex_overrides`: Complex object flags that require special handling
+- `pak_modifications`: Regex replacements for resources.pak
 - `ublock.extension_id` & `ublock.defaults`: Chrome Web Store ID (cjpalhdlnbpafiamejdnhcphjbkeiagm) and filter lists (41 lists + custom telemetry rules)
 - `adguard_extra.extension_id`: Chrome Web Store ID (gkeojjjcdcopjkbelgbcpckplegclfeg) for anti-adblock circumvention
 
@@ -487,10 +489,12 @@ The script must run on PowerShell 5.1 (Windows default). Key quirks:
    - `ExtensionManifestV2Unsupported`
 5. **UTF-8 BOM Required**: `meteor.ps1` must have a UTF-8 BOM (byte order mark). PowerShell 5.1 reads files without BOM as ANSI, which corrupts the µ character in embedded uBlock JavaScript and causes parse errors. PSScriptAnalyzer warns via `PSUseBOMForUnicodeEncodedFile` if missing.
 6. **7-Zip Required**: Portable mode requires 7-Zip to be installed for extracting nested archives. The script checks standard installation paths and PATH.
-7. **Feature Flag System (Two-Tier Architecture)**:
-   - **Browser-level (C++)**: `chrome.perplexity.features.getFlagValue()` is a native browser API that fetches from Eppo servers. This is controlled by `--perplexity-eppo-sdk=false` command-line switch. Flags like `nav-logging` and `test-migration-feature` are managed here.
-   - **JavaScript-level**: The Eppo JavaScript SDK in resources.pak reads from localStorage/cookies. Content-script sets `eppo_overrides` cookie/localStorage with flag values from `LOCAL_FEATURE_FLAGS`.
-   - **Critical**: The `test-migration-feature` flag controls whether the extension uses browser's native API (true) or its own JS SDK (false). Set `--perplexity-eppo-sdk=false` to disable browser's Eppo SDK.
-   - **Source of truth**: `LOCAL_FEATURE_FLAGS` in content-script.js for JS-layer flags; `--perplexity-eppo-sdk=false` flag for browser-layer control.
+7. **Feature Flag System (Centralized Configuration)**:
+   - **Single source of truth**: All feature flag overrides are defined in `config.json` under `feature_flag_overrides` and `feature_flag_complex_overrides`.
+   - **Injection**: During patching, `meteor.ps1` injects these flags into both `meteor-prefs.js` and `content-script.js` via the `__METEOR_FEATURE_FLAGS__` placeholder.
+   - **Browser-level (C++)**: `chrome.perplexity.features.getFlagValue()` and `getRegisteredBrowserFlags()` are intercepted in the service worker context (meteor-prefs.js).
+   - **JavaScript-level**: The Eppo JavaScript SDK reads from localStorage/cookies. Content-script sets `eppo_overrides` cookie/localStorage with the injected flag values.
+   - **Critical**: The `test-migration-feature` flag controls whether the extension uses browser's native API (true) or its own JS SDK (false). Set to `false` in config.json.
+   - **Browser Eppo SDK**: Disabled via `--perplexity-eppo-sdk=false` command-line switch to prevent fetching from Eppo servers.
 8. **MAC Synchronization**: When modifying tracked preferences, both file MACs AND registry MACs must be updated. Mismatches cause browser crashes or preference resets.
 9. **JSON Serialization**: Chromium uses specific JSON formatting (sorted keys, uppercase unicode escapes like `\u003C`, no escaping of `>` or `'`). Use `ConvertTo-ChromiumJson` for MAC calculation.

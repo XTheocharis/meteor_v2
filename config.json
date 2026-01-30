@@ -278,6 +278,116 @@
       }
     ]
   },
+  "feature_flag_overrides": {
+    "_comment": "Single source of truth for all Eppo/feature flag overrides. Injected into both meteor-prefs.js and content-script.js during patching.",
+
+    "test-migration-feature": false,
+
+    "comet-mcp-enabled": true,
+    "custom-remote-mcps": true,
+    "comet-dxt-enabled": true,
+    "enable-dxt": true,
+    "enable-local-mcp": true,
+    "enable-local-custom-mcp": true,
+
+    "voice-assistant": true,
+
+    "bundled-comet-web-resources-3": true,
+
+    "native-analytics": false,
+    "enable-enterprise-telemetry": false,
+    "use-mixpanel-analytics": false,
+    "report-omnibox-text": false,
+    "http-error-monitor": false,
+    "upload-client-context-async": false,
+    "cf-ping": false,
+
+    "nav-logging": false,
+    "send-visited-urls-event-interval-minutes": 999999,
+    "browser-analytics-event-blacklist": [
+      "page navigation",
+      "omnibox navigation completed",
+      "urls visited",
+      "app entered background",
+      "app entered foreground",
+      "session start",
+      "session end",
+      "bookmark actions",
+      "comet plus pageview",
+      "memory usage",
+      "cpu usage",
+      "tab count",
+      "system log"
+    ],
+    "show-perplexity-nav-suggestions": false,
+    "nav-intent-classifier": false,
+
+    "zero-suggests-enabled": false,
+    "discover-early-fetch": false,
+    "sidecar-personalized-query-suggestions": false,
+    "omnibox-resedign-disable-promo-suggestions": true,
+
+    "enable-sync": false,
+    "nudge-sync-tab-groups": false,
+
+    "native-autoupdate": false,
+    "omaha-autoupdater": false,
+
+    "help-me-with-text": false,
+    "auto-assist-notification-settings": true,
+    "auto-assist-scraping-settings": true,
+    "always-allow-browser-agent-settings": true,
+
+    "enable-external-search": true,
+    "enable-external-search-sapi-navigation": false,
+
+    "shopping-enabled": false,
+    "shopping-comparison": false,
+    "shopping-try-on-enabled": false,
+    "enable-sidecar-nudge-for-shopping-assistant": false,
+    "can-book-hotels": false,
+    "get-opentable-enabled": false,
+
+    "onboarding-comet-upsell": false,
+    "onboarding-pro-upsell": false,
+    "full-screen-comet-upsell": false,
+    "max-upsell": false,
+    "pro-free-trial-side-upsell": false,
+    "power-user-recruitment-banner": false,
+    "whats-new-show-in-menu": false,
+
+    "adblock-youtube-autowhitelist-enabled": false,
+
+    "enterprise-insights": false,
+    "enterprise-insights-special-access": false,
+
+    "nordvpn-partner-extension-enabled": false,
+
+    "disable-local-discovery": true,
+    "inactive-tab-notifications": false,
+
+    "prerender2-comet": true,
+    "enable-preloaded-ntp": true,
+    "use-preloaded-ntp-from-omnibox": true
+  },
+  "feature_flag_complex_overrides": {
+    "_comment": "Complex object flags that require special handling (not simple boolean/number/string). Only used by content-script.js for localStorage eppo_overrides.",
+    "bundled-comet-web-resources-mapping": {
+      "https://pplx-next-static-public.perplexity.ai/_*": "/*",
+      "https://www.perplexity.ai/": "/spa/index.html",
+      "https://www.perplexity.ai/b/home": "/spa/ntp.html",
+      "https://www.perplexity.ai/search/*": "/spa/index.html",
+      "https://www.perplexity.ai/sidecar*": "/sidecar/index.html"
+    },
+    "bundled-comet-web-resources-root-csp": {
+      "/sidecar/index.html": "object-src 'none'; base-uri 'self'; form-action 'self' https://onedrive.live.com https://*.sharepoint.com https://*.paypal.com https://*.venmo.com; frame-ancestors 'self' https://onedrive.live.com https://*.sharepoint.com https://app.athina.ai; upgrade-insecure-requests",
+      "/spa/index.html": "object-src 'none'; base-uri 'self'; form-action 'self' https://onedrive.live.com https://*.sharepoint.com https://*.paypal.com https://*.venmo.com; frame-ancestors 'self' https://onedrive.live.com https://*.sharepoint.com https://app.athina.ai; upgrade-insecure-requests",
+      "/spa/ntp.html": "object-src 'none'; base-uri 'self'; form-action 'self' https://onedrive.live.com https://*.sharepoint.com https://*.paypal.com https://*.venmo.com; frame-ancestors 'self' https://onedrive.live.com https://*.sharepoint.com https://app.athina.ai; upgrade-insecure-requests"
+    },
+    "external-search-anonymity": {
+      "cookies": ["NID", "AEC", "__Secure-ENID"]
+    }
+  },
   "ublock": {
     "enabled": true,
     "extension_id": "cjpalhdlnbpafiamejdnhcphjbkeiagm",

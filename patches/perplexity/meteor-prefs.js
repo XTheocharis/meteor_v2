@@ -13,42 +13,31 @@
   // ============================================================================
   // FEATURE FLAG OVERRIDES (chrome.perplexity.features interception)
   // ============================================================================
-  // Intercept chrome.perplexity.features.getFlagValue to return our values.
+  // Single source of truth: Injected from config.json by meteor.ps1 during patching.
   // This runs in the service worker context BEFORE the extension's background
   // script can use the API, ensuring our overrides take effect.
 
-  const FEATURE_FLAG_OVERRIDES = {
-    // CRITICAL: Force extension to use JS SDK instead of browser's native API
-    // When true, extension delegates to chrome.perplexity.features (C++)
-    // When false, extension uses bundled Eppo JS SDK (reads eppo_overrides)
-    "test-migration-feature": false,
+  // Placeholder replaced by meteor.ps1 with flags from config.json
+  const FEATURE_FLAG_OVERRIDES = __METEOR_FEATURE_FLAGS__;
 
-    // Disable navigation/telemetry logging
-    "nav-logging": false,
-    "native-analytics": false,
-    "use-mixpanel-analytics": false,
-    "report-omnibox-text": false,
-
-    // MCP/DXT features (enable)
-    "enable-dxt": true,
-    "enable-local-mcp": true,
-    "enable-local-custom-mcp": true,
-
-    // Voice assistant (enable)
-    "voice-assistant": true,
-
-    // Auto-update (disable - we control updates)
-    "native-autoupdate": false,
-    "omaha-autoupdater": false,
-  };
+  /**
+   * Get the flag type string for a given value.
+   */
+  function getFlagType(value) {
+    if (typeof value === "boolean") return "BOOLEAN";
+    if (typeof value === "number") return "NUMBER";
+    if (typeof value === "string") return "STRING";
+    if (Array.isArray(value)) return "LIST";
+    return "DICTIONARY";
+  }
 
   /**
    * Patch chrome.perplexity.features.getFlagValue to return our overrides.
    */
-  function patchFeatureFlagsAPI() {
+  function patchGetFlagValue() {
     if (!chrome?.perplexity?.features?.getFlagValue) {
       console.warn("[Meteor] chrome.perplexity.features.getFlagValue not available");
-      return;
+      return false;
     }
 
     const originalGetFlagValue = chrome.perplexity.features.getFlagValue.bind(
@@ -59,18 +48,9 @@
       // Check if we have an override for this flag
       if (flagName in FEATURE_FLAG_OVERRIDES) {
         const value = FEATURE_FLAG_OVERRIDES[flagName];
-        const flagType =
-          typeof value === "boolean"
-            ? "BOOLEAN"
-            : typeof value === "number"
-              ? "NUMBER"
-              : typeof value === "string"
-                ? "STRING"
-                : "DICTIONARY";
-
         const result = {
           name: flagName,
-          type: flagType,
+          type: getFlagType(value),
           value: value,
         };
 
@@ -86,7 +66,60 @@
       return originalGetFlagValue(flagName, callback);
     };
 
-    console.log("[Meteor] Feature flags API patched");
+    return true;
+  }
+
+  /**
+   * Patch chrome.perplexity.features.getRegisteredBrowserFlags to include our overrides.
+   * This ensures analytics payloads and any code iterating over flags sees our values.
+   */
+  function patchGetRegisteredBrowserFlags() {
+    if (!chrome?.perplexity?.features?.getRegisteredBrowserFlags) {
+      console.warn("[Meteor] chrome.perplexity.features.getRegisteredBrowserFlags not available");
+      return false;
+    }
+
+    const originalGetRegisteredBrowserFlags =
+      chrome.perplexity.features.getRegisteredBrowserFlags.bind(chrome.perplexity.features);
+
+    chrome.perplexity.features.getRegisteredBrowserFlags = function (callback) {
+      // Wrap the original call to modify the result
+      const wrappedCallback = (flags) => {
+        // flags is an array of {name, type, value} objects
+        const modifiedFlags = flags.map((flag) => {
+          if (flag.name in FEATURE_FLAG_OVERRIDES) {
+            const value = FEATURE_FLAG_OVERRIDES[flag.name];
+            return {
+              name: flag.name,
+              type: getFlagType(value),
+              value: value,
+            };
+          }
+          return flag;
+        });
+
+        if (typeof callback === "function") {
+          callback(modifiedFlags);
+        }
+      };
+
+      // Call original with our wrapped callback
+      originalGetRegisteredBrowserFlags(wrappedCallback);
+    };
+
+    return true;
+  }
+
+  /**
+   * Patch all feature flag APIs.
+   */
+  function patchFeatureFlagsAPI() {
+    const getFlagValuePatched = patchGetFlagValue();
+    const getRegisteredPatched = patchGetRegisteredBrowserFlags();
+
+    if (getFlagValuePatched || getRegisteredPatched) {
+      console.log("[Meteor] Feature flags API patched");
+    }
   }
 
   // Patch immediately
@@ -269,5 +302,9 @@
   setInterval(applyPreferences, 60000);
 
   console.log("[Meteor] Preference enforcement initialized");
-  console.log("[Meteor] Feature flags patched:", Object.keys(FEATURE_FLAG_OVERRIDES).join(", "));
+  console.log(
+    "[Meteor] Feature flags overridden:",
+    Object.keys(FEATURE_FLAG_OVERRIDES).length,
+    "flags"
+  );
 })();

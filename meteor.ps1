@@ -4388,6 +4388,35 @@ function Initialize-PatchedExtensions {
 
                     if (Test-Path $srcPath) {
                         Copy-Item -Path $srcPath -Destination $destPath -Force
+
+                        # Inject feature flags if this is a JS file with the placeholder
+                        if ($destPath -match '\.js$') {
+                            $content = Get-Content -Path $destPath -Raw -Encoding UTF8
+                            if ($content -match '__METEOR_FEATURE_FLAGS__') {
+                                # Build combined flags from config (simple + complex)
+                                $combinedFlags = @{}
+                                if ($MeteorConfig.PSObject.Properties['feature_flag_overrides']) {
+                                    foreach ($prop in $MeteorConfig.feature_flag_overrides.PSObject.Properties) {
+                                        if ($prop.Name -notlike '_comment*') {
+                                            $combinedFlags[$prop.Name] = $prop.Value
+                                        }
+                                    }
+                                }
+                                if ($MeteorConfig.PSObject.Properties['feature_flag_complex_overrides']) {
+                                    foreach ($prop in $MeteorConfig.feature_flag_complex_overrides.PSObject.Properties) {
+                                        if ($prop.Name -notlike '_comment*') {
+                                            $combinedFlags[$prop.Name] = $prop.Value
+                                        }
+                                    }
+                                }
+                                # Convert to JSON (use ConvertTo-Json with depth for nested objects)
+                                $flagsJson = $combinedFlags | ConvertTo-Json -Depth 10 -Compress
+                                $content = $content -replace '__METEOR_FEATURE_FLAGS__', $flagsJson
+                                [System.IO.File]::WriteAllText($destPath, $content, [System.Text.UTF8Encoding]::new($false))
+                                Write-Status "Injected feature flags into: $($destFile.Name)" -Type Detail
+                            }
+                        }
+
                         Write-Status "Copied: $($destFile.Name)" -Type Detail
                     }
                     else {
