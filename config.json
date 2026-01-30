@@ -19,8 +19,10 @@
       "--perplexity-enable-bundle-extension-unpacked-loading",
       "--enable-local-mcp",
       "--enable-local-custom-mcp",
-      "--enable-dxt"
+      "--enable-dxt",
+      "--perplexity-eppo-sdk=false"
     ],
+    "_comment_eppo_sdk": "CRITICAL: --perplexity-eppo-sdk=false disables browser's native Eppo SDK. Without this, chrome.perplexity.features.getFlagValue() fetches from Eppo servers.",
     "flag_switches": [
       "--extensions-on-chrome-urls",
       "--extensions-on-extension-urls"

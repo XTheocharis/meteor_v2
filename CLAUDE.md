@@ -487,6 +487,10 @@ The script must run on PowerShell 5.1 (Windows default). Key quirks:
    - `ExtensionManifestV2Unsupported`
 5. **UTF-8 BOM Required**: `meteor.ps1` must have a UTF-8 BOM (byte order mark). PowerShell 5.1 reads files without BOM as ANSI, which corrupts the µ character in embedded uBlock JavaScript and causes parse errors. PSScriptAnalyzer warns via `PSUseBOMForUnicodeEncodedFile` if missing.
 6. **7-Zip Required**: Portable mode requires 7-Zip to be installed for extracting nested archives. The script checks standard installation paths and PATH.
-7. **Feature Flag Injection**: The browser loads Eppo config from `perplexity.features` blob on startup BEFORE content scripts run. Meteor injects a custom gzipped blob via `New-EppoConfigBlob` containing the `$perplexityFeatureFlags` hashtable in meteor.ps1. This is the source of truth for feature flags like `nav-logging`. Content-script interception is a backup for web page context.
+7. **Feature Flag System (Two-Tier Architecture)**:
+   - **Browser-level (C++)**: `chrome.perplexity.features.getFlagValue()` is a native browser API that fetches from Eppo servers. This is controlled by `--perplexity-eppo-sdk=false` command-line switch. Flags like `nav-logging` and `test-migration-feature` are managed here.
+   - **JavaScript-level**: The Eppo JavaScript SDK in resources.pak reads from localStorage/cookies. Content-script sets `eppo_overrides` cookie/localStorage with flag values from `LOCAL_FEATURE_FLAGS`.
+   - **Critical**: The `test-migration-feature` flag controls whether the extension uses browser's native API (true) or its own JS SDK (false). Set `--perplexity-eppo-sdk=false` to disable browser's Eppo SDK.
+   - **Source of truth**: `LOCAL_FEATURE_FLAGS` in content-script.js for JS-layer flags; `--perplexity-eppo-sdk=false` flag for browser-layer control.
 8. **MAC Synchronization**: When modifying tracked preferences, both file MACs AND registry MACs must be updated. Mismatches cause browser crashes or preference resets.
 9. **JSON Serialization**: Chromium uses specific JSON formatting (sorted keys, uppercase unicode escapes like `\u003C`, no escaping of `>` or `'`). Use `ConvertTo-ChromiumJson` for MAC calculation.
