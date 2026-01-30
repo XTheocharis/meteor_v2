@@ -143,7 +143,7 @@ By default, Meteor runs in **portable mode** (`config.json: comet.portable = tru
 **patches/perplexity/content-script.js**: Content script that:
 - Pre-defines telemetry SDK globals as no-ops for error prevention (DataDog, Sentry, Mixpanel, Singular) - prevents runtime errors when application code calls SDK methods
 - Intercepts Singular SDK script requests and returns stub module - unique defense not covered by DNR since it requires serving replacement JavaScript
-- Intercepts Eppo SDK fetch requests and responds with mock config containing local feature flag overrides
+- Intercepts Eppo SDK fetch requests (backup for web context - primary mechanism is blob injection in Local State)
 - Force-enables MCP UI flags (`comet-mcp-enabled`, `custom-remote-mcps`, `comet-dxt-enabled`)
 - Provides backup blocking for internal API endpoints with fake success responses
 
@@ -152,7 +152,7 @@ By default, Meteor runs in **portable mode** (`config.json: comet.portable = tru
 - XHR/fetch/other use `redirect` to `data:application/json,{}` to suppress console errors
 - Content-script stubs prevent runtime errors from blocked SDK scripts
 - Covers: DataDog RUM, Singular, Mixpanel, Sentry, Intercom, Cloudflare (insights, RUM, challenge-platform)
-- Note: Eppo endpoints are NOT blocked by DNR - handled exclusively by content-script fetch interception to return mock config with flag overrides
+- Note: Eppo endpoints are NOT blocked by DNR - primary mechanism is blob injection in Local State; content-script interception is backup for web context
 - Perplexity internal telemetry (irontail, analytics endpoints)
 
 ## Configuration
@@ -487,6 +487,6 @@ The script must run on PowerShell 5.1 (Windows default). Key quirks:
    - `ExtensionManifestV2Unsupported`
 5. **UTF-8 BOM Required**: `meteor.ps1` must have a UTF-8 BOM (byte order mark). PowerShell 5.1 reads files without BOM as ANSI, which corrupts the µ character in embedded uBlock JavaScript and causes parse errors. PSScriptAnalyzer warns via `PSUseBOMForUnicodeEncodedFile` if missing.
 6. **7-Zip Required**: Portable mode requires 7-Zip to be installed for extracting nested archives. The script checks standard installation paths and PATH.
-7. **Feature Flag Interception**: `content-script.js` intercepts Eppo SDK requests and returns mock config with local overrides. The `LOCAL_FEATURE_FLAGS` object in this file is the source of truth for forced feature flags.
+7. **Feature Flag Injection**: The browser loads Eppo config from `perplexity.features` blob on startup BEFORE content scripts run. Meteor injects a custom gzipped blob via `New-EppoConfigBlob` containing the `$perplexityFeatureFlags` hashtable in meteor.ps1. This is the source of truth for feature flags like `nav-logging`. Content-script interception is a backup for web page context.
 8. **MAC Synchronization**: When modifying tracked preferences, both file MACs AND registry MACs must be updated. Mismatches cause browser crashes or preference resets.
 9. **JSON Serialization**: Chromium uses specific JSON formatting (sorted keys, uppercase unicode escapes like `\u003C`, no escaping of `>` or `'`). Use `ConvertTo-ChromiumJson` for MAC calculation.

@@ -950,6 +950,66 @@ function Invoke-MeteorDownload {
     }
 }
 
+function New-EppoConfigBlob {
+    <#
+    .SYNOPSIS
+        Creates a gzipped base64-encoded Eppo feature flag config blob.
+
+    .DESCRIPTION
+        The Comet browser stores feature flags in a gzipped JSON blob at perplexity.features.value.
+        This function creates a custom blob with our desired flag values, which takes precedence
+        over individual perplexity.feature.* settings for flags that exist in the blob.
+
+        Flags NOT in the blob fall back to browser defaults, so we must explicitly include
+        all flags we want to control (like nav-logging which defaults to true if not in blob).
+
+    .PARAMETER FeatureFlags
+        Hashtable of feature flag names to values (bool, string, or complex objects).
+
+    .OUTPUTS
+        Base64-encoded gzipped JSON string suitable for perplexity.features.value.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [hashtable]$FeatureFlags
+    )
+
+    # Convert hashtable to sorted JSON (Eppo uses alphabetically sorted keys)
+    $sortedFlags = [ordered]@{}
+    foreach ($key in ($FeatureFlags.Keys | Sort-Object)) {
+        $sortedFlags[$key] = $FeatureFlags[$key]
+    }
+
+    # Use compact JSON without extra whitespace
+    $json = $sortedFlags | ConvertTo-Json -Depth 10 -Compress
+
+    # Convert to UTF-8 bytes
+    $jsonBytes = [System.Text.Encoding]::UTF8.GetBytes($json)
+
+    # Gzip compress
+    $memoryStream = New-Object System.IO.MemoryStream
+    try {
+        $gzipStream = New-Object System.IO.Compression.GZipStream(
+            $memoryStream,
+            [System.IO.Compression.CompressionMode]::Compress,
+            $true  # leaveOpen
+        )
+        try {
+            $gzipStream.Write($jsonBytes, 0, $jsonBytes.Length)
+        }
+        finally {
+            $gzipStream.Close()
+        }
+
+        # Get compressed bytes and base64 encode
+        $compressedBytes = $memoryStream.ToArray()
+        return [Convert]::ToBase64String($compressedBytes)
+    }
+    finally {
+        $memoryStream.Dispose()
+    }
+}
+
 #endregion
 
 #region Configuration
@@ -6025,11 +6085,15 @@ function Update-TrackedPreferences {
             }
         }
 
-        # Clear the perplexity.features blob (cached Eppo config) so individual flags are used
-        # The blob is a gzipped base64-encoded Eppo config that overrides individual settings
+        # Inject our own Eppo config blob with desired feature flags
+        # The browser loads this blob on startup BEFORE content scripts run, so we must
+        # inject our values directly rather than relying on fetch interception.
+        # Flags not in the blob fall back to browser defaults (e.g., nav-logging defaults to true).
+        $eppoConfigBlob = New-EppoConfigBlob -FeatureFlags $perplexityFeatureFlags
+        Write-VerboseTimestamped "[Local State] Generated Eppo config blob ($($eppoConfigBlob.Length) chars)"
         $localStatePrefsToModify["perplexity.features"] = @{
             metadata = @("user_controlled", "user_modifiable", "extension_modifiable")
-            value = ""  # Clear the cached config
+            value = $eppoConfigBlob
         }
 
         # Set tracked preferences in Secure Preferences (these need MACs)
