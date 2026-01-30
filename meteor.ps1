@@ -4265,6 +4265,7 @@ function Initialize-PatchedExtensions {
         [string]$PatchesDir,
         [object]$PatchConfig,
         [object]$ExtensionConfig,
+        [object]$MeteorConfig,
         [string]$BrowserVersion = "120.0.0.0",
         [switch]$FreshInstall
     )
@@ -8356,6 +8357,7 @@ function Initialize-Extensions {
         -PatchesDir $PatchesPath `
         -PatchConfig $Config.extensions.patch_config `
         -ExtensionConfig $Config.extensions `
+        -MeteorConfig $Config `
         -BrowserVersion $browserVersionForUpdate `
         -FreshInstall:$FreshInstall
 
