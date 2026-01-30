@@ -281,6 +281,31 @@
     "enable-local-custom-mcp": true, // Custom local MCP servers
 
     // ========================================================================
+    // VOICE ASSISTANT (ENABLE)
+    // ========================================================================
+    "voice-assistant": true,
+
+    // ========================================================================
+    // BUNDLED RESOURCES (ENABLE - serves SPA from local bundle for speed)
+    // ========================================================================
+    "bundled-comet-web-resources-3": true,
+    "bundled-comet-web-resources-mapping": {
+      "https://pplx-next-static-public.perplexity.ai/_*": "/*",
+      "https://www.perplexity.ai/": "/spa/index.html",
+      "https://www.perplexity.ai/b/home": "/spa/ntp.html",
+      "https://www.perplexity.ai/search/*": "/spa/index.html",
+      "https://www.perplexity.ai/sidecar*": "/sidecar/index.html",
+    },
+    "bundled-comet-web-resources-root-csp": {
+      "/sidecar/index.html":
+        "object-src 'none'; base-uri 'self'; form-action 'self' https://onedrive.live.com https://*.sharepoint.com https://*.paypal.com https://*.venmo.com; frame-ancestors 'self' https://onedrive.live.com https://*.sharepoint.com https://app.athina.ai; upgrade-insecure-requests",
+      "/spa/index.html":
+        "object-src 'none'; base-uri 'self'; form-action 'self' https://onedrive.live.com https://*.sharepoint.com https://*.paypal.com https://*.venmo.com; frame-ancestors 'self' https://onedrive.live.com https://*.sharepoint.com https://app.athina.ai; upgrade-insecure-requests",
+      "/spa/ntp.html":
+        "object-src 'none'; base-uri 'self'; form-action 'self' https://onedrive.live.com https://*.sharepoint.com https://*.paypal.com https://*.venmo.com; frame-ancestors 'self' https://onedrive.live.com https://*.sharepoint.com https://app.athina.ai; upgrade-insecure-requests",
+    },
+
+    // ========================================================================
     // TELEMETRY & ANALYTICS (DISABLE)
     // ========================================================================
     "native-analytics": false, // Native browser analytics
