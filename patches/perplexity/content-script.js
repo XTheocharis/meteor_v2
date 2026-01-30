@@ -271,6 +271,13 @@
   // Dictionary/config flags should NOT be set to false as SPA expects objects
   const LOCAL_FEATURE_FLAGS = {
     // ========================================================================
+    // CRITICAL: Force extension to use JS SDK instead of browser's native API
+    // When true, extension delegates to chrome.perplexity.features (browser C++)
+    // When false, extension uses bundled Eppo SDK and reads eppo_overrides
+    // ========================================================================
+    "test-migration-feature": false,
+
+    // ========================================================================
     // MCP/DXT (ENABLE - core functionality)
     // ========================================================================
     "comet-mcp-enabled": true,

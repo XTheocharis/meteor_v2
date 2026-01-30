@@ -6034,6 +6034,11 @@ function Update-TrackedPreferences {
         # Perplexity browser feature flags (require full object structure with metadata)
         # These are under perplexity.feature.{name} and need "user_controlled" to take effect
         $perplexityFeatureFlags = @{
+            # CRITICAL: Force extension to use JS SDK instead of browser's native API
+            # When true, extension delegates to chrome.perplexity.features (browser C++)
+            # When false, extension uses bundled Eppo SDK and reads our eppo_overrides
+            "test-migration-feature" = $false
+
             # Privacy/Telemetry (DISABLE)
             "nav-logging" = $false
             "zero-suggests-enabled" = $false
