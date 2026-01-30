@@ -5595,8 +5595,8 @@ function Set-BrowserPreferences {
         # Disable browser promotions
         "browser.promotions_enabled" = $false
 
-        # NOTE: perplexity.feature.* prefs (nav-logging, zero-suggests-enabled) are
-        # browser flags loaded from Eppo, not Local State. Set via content-script.js.
+        # NOTE: perplexity.feature.* browser flags are set in Update-TrackedPreferences
+        # with full object structure including "user_controlled" metadata.
 
         # Tracking protection
         "tracking_protection.ip_protection_enabled" = $false
@@ -5961,7 +5961,6 @@ function Update-TrackedPreferences {
             "policy.lens_desktop_ntp_search_enabled" = $false
             "policy.lens_region_search_enabled" = $false
             # Privacy/telemetry preferences (verified in example_data/Local State)
-            # NOTE: perplexity.feature.* prefs are browser flags from Eppo (see content-script.js)
             "breadcrumbs.enabled" = $false
             "background_mode.enabled" = $false
             "browser.promotions_enabled" = $false
@@ -5970,6 +5969,60 @@ function Update-TrackedPreferences {
             "update.component_updates_enabled" = $false
             "variations.restrictions_by_policy" = 2
             "worker.service_worker_auto_preload_enabled" = $true
+        }
+
+        # Perplexity browser feature flags (require full object structure with metadata)
+        # These are under perplexity.feature.{name} and need "user_controlled" to take effect
+        $perplexityFeatureFlags = @{
+            # Privacy/Telemetry (DISABLE)
+            "nav-logging" = $false
+            "zero-suggests-enabled" = $false
+            "native-analytics" = $false
+            "enable-enterprise-telemetry" = $false
+            "enable-sync" = $false
+            "inactive-tab-notifications" = $false
+
+            # Auto-update (DISABLE - we control updates)
+            "native-autoupdate" = $false
+            "omaha-autoupdater" = $false
+
+            # AI Assistant (ENABLE)
+            "auto-assist-notification-settings" = $true
+            "auto-assist-scraping-settings" = $true
+            "always-allow-browser-agent-settings" = $true
+            "voice-assistant" = $true
+
+            # MCP/DXT (ENABLE)
+            "enable-dxt" = $true
+            "enable-local-mcp" = $true
+            "enable-local-custom-mcp" = $true
+
+            # Preloading (ENABLE)
+            "prerender2-comet" = $true
+            "enable-preloaded-ntp" = $true
+            "use-preloaded-ntp-from-omnibox" = $true
+
+            # Bundled resources (ENABLE)
+            "bundled-comet-web-resources-3" = $true
+
+            # Privacy restrictions (ENABLE)
+            "disable-local-discovery" = $true
+            "omnibox-resedign-disable-promo-suggestions" = $true
+
+            # Partner/promo (DISABLE)
+            "nordvpn-partner-extension-enabled" = $false
+            "whats-new-show-in-menu" = $false
+            "nudge-sync-tab-groups" = $false
+        }
+
+        # Convert feature flags to full object structure with metadata
+        $featureFlagMetadata = @("user_controlled", "user_modifiable", "extension_modifiable")
+        foreach ($flagName in $perplexityFeatureFlags.Keys) {
+            $flagValue = $perplexityFeatureFlags[$flagName]
+            $localStatePrefsToModify["perplexity.feature.$flagName"] = @{
+                metadata = $featureFlagMetadata
+                value = $flagValue
+            }
         }
 
         # Set tracked preferences in Secure Preferences (these need MACs)
