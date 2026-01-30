@@ -6062,52 +6062,23 @@ function Update-TrackedPreferences {
 
         # Perplexity browser feature flags (require full object structure with metadata)
         # These are under perplexity.feature.{name} and need "user_controlled" to take effect
-        $perplexityFeatureFlags = @{
-            # CRITICAL: Force extension to use JS SDK instead of browser's native API
-            # When true, extension delegates to chrome.perplexity.features (browser C++)
-            # When false, extension uses bundled Eppo SDK and reads our eppo_overrides
-            "test-migration-feature" = $false
-
-            # Privacy/Telemetry (DISABLE)
-            "nav-logging" = $false
-            "zero-suggests-enabled" = $false
-            "native-analytics" = $false
-            "enable-enterprise-telemetry" = $false
-            "enable-sync" = $false
-            "inactive-tab-notifications" = $false
-
-            # Auto-update (DISABLE - we control updates)
-            "native-autoupdate" = $false
-            "omaha-autoupdater" = $false
-
-            # AI Assistant (ENABLE)
-            "auto-assist-notification-settings" = $true
-            "auto-assist-scraping-settings" = $true
-            "always-allow-browser-agent-settings" = $true
-            "voice-assistant" = $true
-
-            # MCP/DXT (ENABLE)
-            "enable-dxt" = $true
-            "enable-local-mcp" = $true
-            "enable-local-custom-mcp" = $true
-
-            # Preloading (ENABLE)
-            "prerender2-comet" = $true
-            "enable-preloaded-ntp" = $true
-            "use-preloaded-ntp-from-omnibox" = $true
-
-            # Bundled resources (ENABLE)
-            "bundled-comet-web-resources-3" = $true
-
-            # Privacy restrictions (ENABLE)
-            "disable-local-discovery" = $true
-            "omnibox-resedign-disable-promo-suggestions" = $true
-
-            # Partner/promo (DISABLE)
-            "nordvpn-partner-extension-enabled" = $false
-            "whats-new-show-in-menu" = $false
-            "nudge-sync-tab-groups" = $false
+        # Read from centralized config.json feature_flag_overrides (single source of truth)
+        $perplexityFeatureFlags = @{}
+        if ($MeteorConfig.PSObject.Properties['feature_flag_overrides']) {
+            foreach ($prop in $MeteorConfig.feature_flag_overrides.PSObject.Properties) {
+                if ($prop.Name -notlike '_comment*') {
+                    $perplexityFeatureFlags[$prop.Name] = $prop.Value
+                }
+            }
         }
+        if ($MeteorConfig.PSObject.Properties['feature_flag_complex_overrides']) {
+            foreach ($prop in $MeteorConfig.feature_flag_complex_overrides.PSObject.Properties) {
+                if ($prop.Name -notlike '_comment*') {
+                    $perplexityFeatureFlags[$prop.Name] = $prop.Value
+                }
+            }
+        }
+        Write-VerboseTimestamped "[Local State] Loaded $($perplexityFeatureFlags.Count) feature flags from config.json"
 
         # Convert feature flags to full object structure with metadata
         $featureFlagMetadata = @("user_controlled", "user_modifiable", "extension_modifiable")
