@@ -270,19 +270,31 @@
   // NOTE: Only include flags that are simple types (boolean, number, array)
   // Dictionary/config flags should NOT be set to false as SPA expects objects
   const LOCAL_FEATURE_FLAGS = {
-    // MCP UI FORCE-ENABLE (Windows disabled by default)
+    // ========================================================================
+    // MCP/DXT (ENABLE - core functionality)
+    // ========================================================================
     "comet-mcp-enabled": true,
     "custom-remote-mcps": true,
     "comet-dxt-enabled": true,
+    "enable-dxt": true, // Desktop extensions
+    "enable-local-mcp": true, // Local MCP servers
+    "enable-local-custom-mcp": true, // Custom local MCP servers
 
-    // DIRECT TELEMETRY (DISABLE)
+    // ========================================================================
+    // TELEMETRY & ANALYTICS (DISABLE)
+    // ========================================================================
+    "native-analytics": false, // Native browser analytics
+    "enable-enterprise-telemetry": false, // Enterprise telemetry
     "use-mixpanel-analytics": false,
     "report-omnibox-text": false,
     "http-error-monitor": false,
     "upload-client-context-async": false,
-    "cf-ping": false,
+    "cf-ping": false, // Cloudflare ping
 
-    // URL/NAVIGATION TRACKING (DISABLE)
+    // ========================================================================
+    // NAVIGATION/URL TRACKING (DISABLE)
+    // ========================================================================
+    "nav-logging": false, // Logs navigation events
     "send-visited-urls-event-interval-minutes": 999999,
     "browser-analytics-event-blacklist": [
       "page navigation",
@@ -302,12 +314,44 @@
     "show-perplexity-nav-suggestions": false,
     "nav-intent-classifier": false,
 
+    // ========================================================================
+    // SUGGESTIONS & ZERO-STATE (DISABLE)
+    // ========================================================================
+    "zero-suggests-enabled": false, // May leak search queries
+    "discover-early-fetch": false,
+    "sidecar-personalized-query-suggestions": false,
+    "omnibox-resedign-disable-promo-suggestions": true, // Disable promo suggestions (note: typo is in original)
+
+    // ========================================================================
+    // SYNC & CLOUD (DISABLE for privacy)
+    // ========================================================================
+    "enable-sync": false, // Browser sync
+    "nudge-sync-tab-groups": false, // Tab group sync prompts
+
+    // ========================================================================
+    // AUTO-UPDATE (DISABLE - we control updates)
+    // ========================================================================
+    "native-autoupdate": false,
+    "omaha-autoupdater": false,
+
+    // ========================================================================
+    // AI ASSISTANT FEATURES (DISABLE for privacy)
+    // ========================================================================
+    "help-me-with-text": false, // Writing assistant (scrapes page content)
+    "auto-assist-notification-settings": false, // Proactive notifications
+    "auto-assist-scraping-settings": false, // Page scraping for suggestions
+    "always-allow-browser-agent-settings": false, // Agent browser access
+
+    // ========================================================================
     // EXTERNAL SEARCH (ENABLE with privacy settings)
+    // ========================================================================
     "enable-external-search": true,
     "external-search-anonymity": { cookies: ["NID", "AEC", "__Secure-ENID"] },
     "enable-external-search-sapi-navigation": false,
 
-    // SHOPPING/ADVERTISING (DISABLE) - simple boolean flags only
+    // ========================================================================
+    // SHOPPING/ADVERTISING (DISABLE)
+    // ========================================================================
     "shopping-enabled": false,
     "shopping-comparison": false,
     "shopping-try-on-enabled": false,
@@ -315,29 +359,45 @@
     "can-book-hotels": false,
     "get-opentable-enabled": false,
 
-    // UPSELL/PROMO TRACKING (DISABLE)
+    // ========================================================================
+    // UPSELL/PROMO (DISABLE)
+    // ========================================================================
     "onboarding-comet-upsell": false,
     "onboarding-pro-upsell": false,
     "full-screen-comet-upsell": false,
     "max-upsell": false,
     "pro-free-trial-side-upsell": false,
     "power-user-recruitment-banner": false,
+    "whats-new-show-in-menu": false, // What's new badge
 
-    // YOUTUBE/ADBLOCK (DISABLE auto-whitelist)
+    // ========================================================================
+    // ADBLOCK (keep uBlock control)
+    // ========================================================================
     "adblock-youtube-autowhitelist-enabled": false,
 
-    // DISCOVERY/SUGGESTIONS (DISABLE tracking)
-    "discover-early-fetch": false,
-    "sidecar-personalized-query-suggestions": false,
-
-    // ENTERPRISE TELEMETRY (DISABLE)
+    // ========================================================================
+    // ENTERPRISE (DISABLE)
+    // ========================================================================
     "enterprise-insights": false,
     "enterprise-insights-special-access": false,
 
-    // BROWSER FLAGS (via chrome.perplexity.features, loaded from Eppo)
-    "nav-logging": false, // Logs navigation events - privacy concern
-    "zero-suggests-enabled": false, // May leak search queries
-    "native-analytics": false, // Native browser analytics
+    // ========================================================================
+    // PARTNER/THIRD-PARTY (DISABLE)
+    // ========================================================================
+    "nordvpn-partner-extension-enabled": false,
+
+    // ========================================================================
+    // PRIVACY (ENABLE restrictions)
+    // ========================================================================
+    "disable-local-discovery": true, // Disable network discovery
+    "inactive-tab-notifications": false, // May leak browsing info
+
+    // ========================================================================
+    // PRELOADING (DISABLE - can leak browsing intent)
+    // ========================================================================
+    "prerender2-comet": false,
+    "enable-preloaded-ntp": false,
+    "use-preloaded-ntp-from-omnibox": false,
   };
 
   // Generate EPPO_OVERRIDES from LOCAL_FEATURE_FLAGS (boolean/number flags only, as strings)
