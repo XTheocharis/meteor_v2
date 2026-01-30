@@ -50,6 +50,7 @@
       "WebRtcHideLocalIpsWithMdns"
     ],
     "disable_features": [
+      "PerplexityEppoSdk",
       "ExtensionManifestV2DeprecationWarning",
       "ExtensionManifestV2Disabled",
       "ExtensionManifestV2Unsupported",
