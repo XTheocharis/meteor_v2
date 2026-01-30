@@ -52,7 +52,7 @@
       "type": "block"
     },
     "condition": {
-      "urlFilter": "||fscdn.eppo.cloud",
+      "urlFilter": "||irontail.perplexity.ai",
       "resourceTypes": ["script"]
     }
   },
@@ -64,58 +64,12 @@
       "redirect": { "url": "data:application/json,{}" }
     },
     "condition": {
-      "urlFilter": "||fscdn.eppo.cloud",
+      "urlFilter": "||irontail.perplexity.ai",
       "resourceTypes": ["xmlhttprequest", "ping", "other"]
     }
   },
   {
     "id": 7,
-    "priority": 1,
-    "action": {
-      "type": "block"
-    },
-    "condition": {
-      "urlFilter": "||fs-edge-assignment.eppo.cloud",
-      "resourceTypes": ["script"]
-    }
-  },
-  {
-    "id": 8,
-    "priority": 1,
-    "action": {
-      "type": "redirect",
-      "redirect": { "url": "data:application/json,{}" }
-    },
-    "condition": {
-      "urlFilter": "||fs-edge-assignment.eppo.cloud",
-      "resourceTypes": ["xmlhttprequest", "ping", "other"]
-    }
-  },
-  {
-    "id": 9,
-    "priority": 1,
-    "action": {
-      "type": "block"
-    },
-    "condition": {
-      "urlFilter": "||irontail.perplexity.ai",
-      "resourceTypes": ["script"]
-    }
-  },
-  {
-    "id": 10,
-    "priority": 1,
-    "action": {
-      "type": "redirect",
-      "redirect": { "url": "data:application/json,{}" }
-    },
-    "condition": {
-      "urlFilter": "||irontail.perplexity.ai",
-      "resourceTypes": ["xmlhttprequest", "ping", "other"]
-    }
-  },
-  {
-    "id": 11,
     "priority": 1,
     "action": {
       "type": "redirect",
@@ -127,7 +81,7 @@
     }
   },
   {
-    "id": 12,
+    "id": 8,
     "priority": 1,
     "action": {
       "type": "block"
@@ -138,7 +92,7 @@
     }
   },
   {
-    "id": 13,
+    "id": 9,
     "priority": 1,
     "action": {
       "type": "redirect",
@@ -150,7 +104,7 @@
     }
   },
   {
-    "id": 14,
+    "id": 10,
     "priority": 1,
     "action": {
       "type": "redirect",
@@ -162,53 +116,53 @@
     }
   },
   {
+    "id": 11,
+    "priority": 1,
+    "action": {
+      "type": "block"
+    },
+    "condition": {
+      "urlFilter": "||api.mixpanel.com",
+      "resourceTypes": ["script"]
+    }
+  },
+  {
+    "id": 12,
+    "priority": 1,
+    "action": {
+      "type": "redirect",
+      "redirect": { "url": "data:application/json,{}" }
+    },
+    "condition": {
+      "urlFilter": "||api.mixpanel.com",
+      "resourceTypes": ["xmlhttprequest", "ping", "other"]
+    }
+  },
+  {
+    "id": 13,
+    "priority": 1,
+    "action": {
+      "type": "block"
+    },
+    "condition": {
+      "urlFilter": ".ingest.sentry.io",
+      "resourceTypes": ["script"]
+    }
+  },
+  {
+    "id": 14,
+    "priority": 1,
+    "action": {
+      "type": "redirect",
+      "redirect": { "url": "data:application/json,{}" }
+    },
+    "condition": {
+      "urlFilter": ".ingest.sentry.io",
+      "resourceTypes": ["xmlhttprequest", "ping", "other"]
+    }
+  },
+  {
     "id": 15,
-    "priority": 1,
-    "action": {
-      "type": "block"
-    },
-    "condition": {
-      "urlFilter": "||api.mixpanel.com",
-      "resourceTypes": ["script"]
-    }
-  },
-  {
-    "id": 16,
-    "priority": 1,
-    "action": {
-      "type": "redirect",
-      "redirect": { "url": "data:application/json,{}" }
-    },
-    "condition": {
-      "urlFilter": "||api.mixpanel.com",
-      "resourceTypes": ["xmlhttprequest", "ping", "other"]
-    }
-  },
-  {
-    "id": 17,
-    "priority": 1,
-    "action": {
-      "type": "block"
-    },
-    "condition": {
-      "urlFilter": ".ingest.sentry.io",
-      "resourceTypes": ["script"]
-    }
-  },
-  {
-    "id": 18,
-    "priority": 1,
-    "action": {
-      "type": "redirect",
-      "redirect": { "url": "data:application/json,{}" }
-    },
-    "condition": {
-      "urlFilter": ".ingest.sentry.io",
-      "resourceTypes": ["xmlhttprequest", "ping", "other"]
-    }
-  },
-  {
-    "id": 19,
     "priority": 1,
     "action": {
       "type": "redirect",
@@ -220,7 +174,7 @@
     }
   },
   {
-    "id": 20,
+    "id": 16,
     "priority": 1,
     "action": {
       "type": "redirect",
@@ -232,7 +186,7 @@
     }
   },
   {
-    "id": 21,
+    "id": 17,
     "priority": 1,
     "action": {
       "type": "redirect",
@@ -244,7 +198,7 @@
     }
   },
   {
-    "id": 22,
+    "id": 18,
     "priority": 1,
     "action": {
       "type": "redirect",
@@ -256,7 +210,7 @@
     }
   },
   {
-    "id": 23,
+    "id": 19,
     "priority": 1,
     "action": {
       "type": "redirect",
@@ -268,7 +222,7 @@
     }
   },
   {
-    "id": 24,
+    "id": 20,
     "priority": 1,
     "action": {
       "type": "block"
@@ -279,7 +233,7 @@
     }
   },
   {
-    "id": 25,
+    "id": 21,
     "priority": 1,
     "action": {
       "type": "redirect",
@@ -291,7 +245,7 @@
     }
   },
   {
-    "id": 26,
+    "id": 22,
     "priority": 1,
     "action": {
       "type": "redirect",
@@ -303,7 +257,7 @@
     }
   },
   {
-    "id": 27,
+    "id": 23,
     "priority": 1,
     "action": {
       "type": "block"
@@ -314,7 +268,7 @@
     }
   },
   {
-    "id": 28,
+    "id": 24,
     "priority": 1,
     "action": {
       "type": "redirect",
