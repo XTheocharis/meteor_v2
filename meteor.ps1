@@ -176,8 +176,6 @@ $script:FeatureToFlagMapping = @{
     "UiaProvider"                               = "ui-automation-provider"
     "UIDebugTools"                              = "ui-debug-tools"
     "ExperimentalOmniboxLabs"                   = "experimental-omnibox-labs"
-    "WebGLDeveloperExtensions"                  = "enable-webgl-developer-extensions"
-    "WebGLDraftExtensions"                      = "enable-webgl-draft-extensions"
     "WebRtcHideLocalIpsWithMdns"                = "enable-webrtc-hide-local-ips-with-mdns"
 
     # === DISABLE FEATURES (@2) ===

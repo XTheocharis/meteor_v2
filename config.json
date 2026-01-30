@@ -50,8 +50,6 @@
       "ParallelDownloading",
       "UiaProvider",
       "UIDebugTools",
-      "WebGLDeveloperExtensions",
-      "WebGLDraftExtensions",
       "WebRtcHideLocalIpsWithMdns"
     ],
     "disable_features": [
