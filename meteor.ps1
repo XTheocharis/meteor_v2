@@ -7337,6 +7337,14 @@ function Build-BrowserCommand {
 
     [void]$cmd.Add("--flag-switches-begin")
 
+    # Additional flags that work better inside the flag-switches block
+    # (e.g., --extensions-on-chrome-urls, --extensions-on-extension-urls)
+    if ($browserConfig.flag_switches) {
+        foreach ($flag in $browserConfig.flag_switches) {
+            [void]$cmd.Add($flag)
+        }
+    }
+
     # Validate feature flags before building command line
     $enableFeatures = $browserConfig.enable_features
     $disableFeatures = $browserConfig.disable_features
