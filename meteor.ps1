@@ -6025,6 +6025,13 @@ function Update-TrackedPreferences {
             }
         }
 
+        # Clear the perplexity.features blob (cached Eppo config) so individual flags are used
+        # The blob is a gzipped base64-encoded Eppo config that overrides individual settings
+        $localStatePrefsToModify["perplexity.features"] = @{
+            metadata = @("user_controlled", "user_modifiable", "extension_modifiable")
+            value = ""  # Clear the cached config
+        }
+
         # Set tracked preferences in Secure Preferences (these need MACs)
         foreach ($path in $trackedPrefsToModify.Keys) {
             Set-NestedValue -Hashtable $securePrefsHash -Path $path -Value $trackedPrefsToModify[$path]
