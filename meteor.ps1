@@ -283,44 +283,9 @@ $script:FeatureToFlagMapping = @{
     # AI API Features
     "AiModeOmniboxEntryPoint"                               = "ai-mode-omnibox-entry-point"
 
-    # Glic Features
-    "Glic"                                                  = "glic"
-    "GlicActor"                                             = "glic-actor"
-    "GlicActorAutofill"                                     = "glic-actor-autofill"
-    "GlicBindPinnedUnboundTab"                              = "glic-bind-pinned-unbound-tab"
-    "GlicButtonPressedState"                                = "glic-button-pressed-state"
-    "GlicCaptureRegion"                                     = "glic-capture-region"
-    "GlicDaisyChainNewTabs"                                 = "glic-daisy-chain-new-tabs"
-    "GlicDefaultToLastActiveConversation"                   = "glic-default-to-last-active-conversation"
-    "GlicDetached"                                          = "glic-detached"
-    "GlicEntrypointVariations"                              = "glic-entrypoint-variations"
-    "GlicFreWarming"                                        = "glic-fre-pre-warming"
-    "GlicPanelResetOnSessionTimeout"                        = "glic-panel-reset-on-session-timeout"
-    "GlicPanelResetOnStart"                                 = "glic-panel-reset-on-start"
-    "GlicPanelResetSizeAndLocationOnOpen"                   = "glic-panel-reset-size-and-location-on-open"
-    "GlicPanelResetTopChromeButton"                         = "glic-panel-reset-top-chrome-button"
-    "GlicPanelSetPositionOnDrag"                            = "glic-panel-set-position-on-drag"
-    "GlicSidePanel"                                         = "glic-side-panel"
-    "GlicWarming"                                           = "glic-pre-warming"
-    "GlicZOrderChanges"                                     = "glic-z-order-changes"
-
-    # Lens Features
-    "LensAimSuggestions"                                    = "lens-aim-suggestions"
-    "LensAimSuggestionsGradientBackground"                  = "lens-aim-gradient-suggest-background"
-    "LensOverlay"                                           = "enable-lens-overlay"
-    "LensOverlayEduActionChip"                              = "enable-lens-overlay-edu-action-chip"
-    "LensOverlayEntrypointLabelAlt"                         = "enable-lens-overlay-entrypoint-label-alt"
-    "LensOverlayForceEmptyCsbQuery"                         = "enable-lens-overlay-force-empty-csb-query"
-    "LensOverlayNonBlockingPrivacyNotice"                   = "lens-overlay-non-blocking-privacy-notice"
-    "LensOverlayOmniboxEntryPoint"                          = "lens-overlay-omnibox-entry-point"
-    "LensOverlayOptimizationFilter"                         = "lens-overlay-optimization-filter"
-    "LensOverlayPermissionBubbleAlt"                        = "lens-overlay-permission-bubble-alt"
-    "LensOverlayStraightToSrp"                              = "enable-lens-overlay-straight-to-srp"
-    "LensOverlayTextSelectionContextMenuEntrypoint"         = "enable-lens-overlay-text-selection-context-menu-entrypoint"
-    "LensSearchReinvocationAffordance"                      = "lens-reinvocation-affordance"
-    "LensSearchZeroStateCsb"                                = "lens-search-zero-state-csb"
-    "LensUpdatedFeedbackEntrypoint"                         = "lens-updated-feedback-entrypoint"
-    "LensVideoCitations"                                    = "lens-video-citations"
+    # NOTE: Glic* and Lens* features intentionally have NO mappings here.
+    # They lack chrome://flags equivalents and must be disabled via --disable-features
+    # on the command line. See Get-CommandLineOnlyFeatures.
 
     # Autofill Additional Features
     "AutofillEnableAllowlistForBmoCardCategoryBenefits"     = "autofill-enable-allowlist-for-bmo-card-category-benefits"
