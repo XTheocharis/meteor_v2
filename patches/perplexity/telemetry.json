@@ -278,5 +278,27 @@
       "urlFilter": "/cdn-cgi/challenge-platform/",
       "resourceTypes": ["xmlhttprequest", "ping", "other"]
     }
+  },
+  {
+    "id": 25,
+    "priority": 1,
+    "action": {
+      "type": "block"
+    },
+    "condition": {
+      "urlFilter": "||fscdn.eppo.cloud",
+      "resourceTypes": ["script", "xmlhttprequest", "ping", "other"]
+    }
+  },
+  {
+    "id": 26,
+    "priority": 1,
+    "action": {
+      "type": "block"
+    },
+    "condition": {
+      "urlFilter": "||fs-edge-assignment.eppo.cloud",
+      "resourceTypes": ["script", "xmlhttprequest", "ping", "other"]
+    }
   }
 ]

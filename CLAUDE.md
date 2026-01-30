@@ -97,7 +97,7 @@ When you run `.\meteor.ps1`, it performs these steps automatically:
 | `.meteor/User Data/` | Browser profile data (bookmarks, cache, extensions) |
 | `.meteor/patched_extensions/` | Extracted and patched browser extensions |
 | `.meteor/patched_resources/` | Extracted PAK resources (editable text/binary files + manifest.json) |
-| `patches/perplexity/telemetry.json` | 24 DNR redirect rules for silent telemetry blocking |
+| `patches/perplexity/telemetry.json` | 26 DNR rules for telemetry blocking + Eppo config fetch blocking |
 | `patches/perplexity/meteor-prefs.js` | Service worker preference enforcement |
 | `patches/perplexity/content-script.js` | SDK stubs + feature flag interception |
 
@@ -147,12 +147,12 @@ By default, Meteor runs in **portable mode** (`config.json: comet.portable = tru
 - Force-enables MCP UI flags (`comet-mcp-enabled`, `custom-remote-mcps`, `comet-dxt-enabled`)
 - Provides backup blocking for internal API endpoints with fake success responses
 
-**patches/perplexity/telemetry.json**: 24 DNR rules (primary telemetry blocking mechanism):
+**patches/perplexity/telemetry.json**: 26 DNR rules (telemetry + Eppo blocking):
 - Scripts use `block` action for immediate rejection (avoids 600ms+ ERR_UNSAFE_REDIRECT delays from Chrome rejecting HTTPS→data: URL redirects)
 - XHR/fetch/other use `redirect` to `data:application/json,{}` to suppress console errors
 - Content-script stubs prevent runtime errors from blocked SDK scripts
 - Covers: DataDog RUM, Singular, Mixpanel, Sentry, Intercom, Cloudflare (insights, RUM, challenge-platform)
-- Note: Eppo endpoints are NOT blocked by DNR - primary mechanism is blob injection in Local State; content-script interception is backup for web context
+- **Eppo endpoints ARE blocked** to prevent browser from fetching fresh config that would overwrite our injected blob
 - Perplexity internal telemetry (irontail, analytics endpoints)
 
 ## Configuration
