@@ -335,12 +335,12 @@
     "omaha-autoupdater": false,
 
     // ========================================================================
-    // AI ASSISTANT FEATURES (DISABLE for privacy)
+    // AI ASSISTANT FEATURES (ENABLE)
     // ========================================================================
-    "help-me-with-text": false, // Writing assistant (scrapes page content)
-    "auto-assist-notification-settings": false, // Proactive notifications
-    "auto-assist-scraping-settings": false, // Page scraping for suggestions
-    "always-allow-browser-agent-settings": false, // Agent browser access
+    "help-me-with-text": false, // Writing assistant (scrapes page content) - keep disabled
+    "auto-assist-notification-settings": true, // Proactive notifications
+    "auto-assist-scraping-settings": true, // Page scraping for suggestions
+    "always-allow-browser-agent-settings": true, // Agent browser access
 
     // ========================================================================
     // EXTERNAL SEARCH (ENABLE with privacy settings)
@@ -393,11 +393,11 @@
     "inactive-tab-notifications": false, // May leak browsing info
 
     // ========================================================================
-    // PRELOADING (DISABLE - can leak browsing intent)
+    // PRELOADING (ENABLE for performance)
     // ========================================================================
-    "prerender2-comet": false,
-    "enable-preloaded-ntp": false,
-    "use-preloaded-ntp-from-omnibox": false,
+    "prerender2-comet": true,
+    "enable-preloaded-ntp": true,
+    "use-preloaded-ntp-from-omnibox": true,
   };
 
   // Generate EPPO_OVERRIDES from LOCAL_FEATURE_FLAGS (boolean/number flags only, as strings)
