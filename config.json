@@ -33,8 +33,6 @@
       "AllowLegacyMV2Extensions",
       "DirectSocketsInServiceWorkers",
       "DirectSocketsInSharedWorkers",
-      "IsolatedWebApps",
-      "IsolatedWebAppDevMode",
       "MulticastInDirectSockets",
       "ReadAnythingWithReadability",
       "DevToolsIndividualRequestThrottling",
@@ -49,7 +47,6 @@
       "LocationProviderManager",
       "ParallelDownloading",
       "UiaProvider",
-      "UIDebugTools",
       "WebRtcHideLocalIpsWithMdns"
     ],
     "disable_features": [
