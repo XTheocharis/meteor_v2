@@ -260,7 +260,8 @@ $script:FeatureToFlagMapping = @{
     "EnforceManagementDisclaimer"                           = "enforce-management-disclaimer"
     "IPH_DemoMode"                                          = "in-product-help-demo-mode-choice"
     "ProfileCreationDeclineSigninCTAExperiment"             = "profile-creation-decline-signin-cta-experiment"
-    "ReplaceSyncPromosWithSignInPromos"                     = "replace-sync-promos-with-sign-in-promos-desktop"
+    # NOTE: ReplaceSyncPromosWithSignInPromos intentionally has NO mapping here.
+    # It lacks reliable chrome://flags support and must be disabled via --disable-features
     "ShowProfilePickerToAllUsersExperiment"                 = "show-profile-picker-to-all-users-experiment"
     "WebUIOmniboxAimPopup"                                  = "webui-omnibox-aim-popup"
     "PdfSaveToDrive"                                        = "pdf-save-to-drive"
@@ -309,7 +310,8 @@ $script:FeatureToFlagMapping = @{
 
     # Data Sharing
     "DataSharingNonProductionEnvironment"                   = "data-sharing-non-production-environment"
-    "SharedDataTypesKillSwitch"                             = "shared-data-types-kill-switch"
+    # NOTE: SharedDataTypesKillSwitch intentionally has NO mapping here.
+    # It lacks reliable chrome://flags support and must be disabled via --disable-features
 
     # Contextual Search
     "ContextualSearchOpenLensActionUsesThumbnail"           = "contextual-search-open-lens-action-uses-thumbnail"
@@ -5590,6 +5592,9 @@ function Set-BrowserPreferences {
         # Background mode (BackgroundModeManager::RegisterPrefs uses PrefRegistrySimple)
         "background_mode.enabled" = $false
 
+        # Disable browser promotions
+        "browser.promotions_enabled" = $false
+
         # Tracking protection
         "tracking_protection.ip_protection_enabled" = $false
 
@@ -5955,6 +5960,7 @@ function Update-TrackedPreferences {
             # Privacy/telemetry preferences (verified in example_data/Local State)
             "breadcrumbs.enabled" = $false
             "background_mode.enabled" = $false
+            "browser.promotions_enabled" = $false
             "domain_reliability.allowed_by_policy" = $false
             "tracking_protection.ip_protection_enabled" = $false
             "update.component_updates_enabled" = $false

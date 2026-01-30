@@ -97,6 +97,7 @@
       "ContextualTasksContext",
       "CWSInfoFastCheck",
       "DataSharing",
+      "DataSharingEnableUpdateChromeUI",
       "DataSharingJoinOnly",
       "DataSharingNonProductionEnvironment",
       "DiscountAutofill",
