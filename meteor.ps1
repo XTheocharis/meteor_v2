@@ -5595,9 +5595,8 @@ function Set-BrowserPreferences {
         # Disable browser promotions
         "browser.promotions_enabled" = $false
 
-        # Perplexity feature flags (privacy) - must set .value subkey due to nested structure
-        "perplexity.feature.nav-logging.value" = $false
-        "perplexity.feature.zero-suggests-enabled.value" = $false
+        # NOTE: perplexity.feature.* prefs (nav-logging, zero-suggests-enabled) are
+        # browser flags loaded from Eppo, not Local State. Set via content-script.js.
 
         # Tracking protection
         "tracking_protection.ip_protection_enabled" = $false
@@ -5962,11 +5961,10 @@ function Update-TrackedPreferences {
             "policy.lens_desktop_ntp_search_enabled" = $false
             "policy.lens_region_search_enabled" = $false
             # Privacy/telemetry preferences (verified in example_data/Local State)
+            # NOTE: perplexity.feature.* prefs are browser flags from Eppo (see content-script.js)
             "breadcrumbs.enabled" = $false
             "background_mode.enabled" = $false
             "browser.promotions_enabled" = $false
-            "perplexity.feature.nav-logging.value" = $false
-            "perplexity.feature.zero-suggests-enabled.value" = $false
             "domain_reliability.allowed_by_policy" = $false
             "tracking_protection.ip_protection_enabled" = $false
             "update.component_updates_enabled" = $false

@@ -333,6 +333,11 @@
     // ENTERPRISE TELEMETRY (DISABLE)
     "enterprise-insights": false,
     "enterprise-insights-special-access": false,
+
+    // BROWSER FLAGS (via chrome.perplexity.features, loaded from Eppo)
+    "nav-logging": false, // Logs navigation events - privacy concern
+    "zero-suggests-enabled": false, // May leak search queries
+    "native-analytics": false, // Native browser analytics
   };
 
   // Generate EPPO_OVERRIDES from LOCAL_FEATURE_FLAGS (boolean/number flags only, as strings)

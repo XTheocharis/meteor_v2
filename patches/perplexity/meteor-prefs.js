@@ -33,8 +33,8 @@
     // Disable telemetry and analytics
     "perplexity.metrics_allowed": false,
     "perplexity.analytics_observer_initialised": false,
-    "perplexity.feature.nav-logging": false,
-    "perplexity.feature.zero-suggests-enabled": false,
+    // NOTE: perplexity.feature.* prefs are NOT settingsPrivate prefs.
+    // They're managed via chrome.perplexity.features API (no setter available).
 
     // Disable data collection features
     "perplexity.history_search_enabled": false,
