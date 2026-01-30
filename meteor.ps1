@@ -178,7 +178,6 @@ $script:FeatureToFlagMapping = @{
     "ExperimentalOmniboxLabs"                   = "experimental-omnibox-labs"
     "WebGLDeveloperExtensions"                  = "enable-webgl-developer-extensions"
     "WebGLDraftExtensions"                      = "enable-webgl-draft-extensions"
-    "WebGPUDeveloperFeatures"                   = "enable-webgpu-developer-features"
     "WebRtcHideLocalIpsWithMdns"                = "enable-webrtc-hide-local-ips-with-mdns"
 
     # === DISABLE FEATURES (@2) ===

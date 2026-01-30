@@ -52,7 +52,6 @@
       "UIDebugTools",
       "WebGLDeveloperExtensions",
       "WebGLDraftExtensions",
-      "WebGPUDeveloperFeatures",
       "WebRtcHideLocalIpsWithMdns"
     ],
     "disable_features": [
