@@ -304,29 +304,11 @@
   // Blocking patterns - intercept these BEFORE they reach DNR to prevent
   // console errors. DNR blocks at network level which still logs errors.
   // By intercepting at fetch level, we return silent fake responses.
-  const BLOCKED_PATTERNS = [
-    // Internal API endpoints (prevent retry loops)
-    "/rest/event/analytics",
-    "/cdn-cgi/trace",
-    "/cdn-cgi/rum",
-    "/api/intercom",
-    "/rest/attribution/", // Session attribution telemetry
-    "/rest/homepage-widgets/upsell", // Upsell widget (base + /interacted)
-    "/rest/ntp/upsell/interacted",
-    "/rest/autosuggest/track-query-clicked",
-    "/rest/live-events/subscription",
-    // External telemetry domains (intercept before DNR to suppress errors)
-    "browser-intake-datadoghq.com",
-    "cloudflareinsights.com",
-    "api.mixpanel.com",
-    ".ingest.sentry.io",
-    "sdk-api-v1.singular.net",
-    "irontail.perplexity.ai",
-    // Restricted debug features (require Cloudflare Access auth, cause CORS errors)
-    "_restricted/restricted-feature",
-  ];
+  // Placeholder replaced by meteor.ps1 with patterns from config.json telemetry_blocking
+  const BLOCKED_PATTERNS = __METEOR_BLOCKED_PATTERNS__;
 
-  const EPPO_ENDPOINTS = ["fscdn.eppo.cloud", "fs-edge-assignment.eppo.cloud"];
+  // Eppo SDK endpoints - placeholder replaced by meteor.ps1
+  const EPPO_ENDPOINTS = __METEOR_EPPO_ENDPOINTS__;
 
   function getUrlString(input) {
     if (typeof input === "string") return input;
@@ -620,7 +602,8 @@
   // SECTION 6: NEW THREAD BUTTON LINK WRAPPER
   // ============================================================================
 
-  const HOMEPAGE_URL = "https://www.perplexity.ai/b/home";
+  // Homepage URL - placeholder replaced by meteor.ps1 from config.json urls.homepage
+  const HOMEPAGE_URL = __METEOR_HOMEPAGE_URL__;
 
   /**
    * Wrap "New Thread" button in an <a> element to enable native link behavior.

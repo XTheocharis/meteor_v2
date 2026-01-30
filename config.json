@@ -388,6 +388,146 @@
       "cookies": ["NID", "AEC", "__Secure-ENID"]
     }
   },
+  "telemetry_blocking": {
+    "_comment": "Single source of truth for telemetry blocking. Used to generate DNR rules, content-script blocklists, and uBlock filters.",
+    "domains": {
+      "browser-intake-datadoghq.com": {
+        "description": "DataDog RUM",
+        "block_scripts": true,
+        "redirect_xhr": true
+      },
+      "sdk-api-v1.singular.net": {
+        "description": "Singular Analytics",
+        "block_scripts": true,
+        "redirect_xhr": true,
+        "redirect_image": true
+      },
+      "api.mixpanel.com": {
+        "description": "Mixpanel",
+        "block_scripts": true,
+        "redirect_xhr": true
+      },
+      ".ingest.sentry.io": {
+        "description": "Sentry",
+        "block_scripts": true,
+        "redirect_xhr": true,
+        "is_suffix": true
+      },
+      "cloudflareinsights.com": {
+        "description": "Cloudflare Analytics",
+        "block_scripts": true,
+        "redirect_xhr": true
+      },
+      "irontail.perplexity.ai": {
+        "description": "Perplexity Telemetry",
+        "block_scripts": true,
+        "redirect_xhr": true
+      }
+    },
+    "eppo_domains": [
+      "fscdn.eppo.cloud",
+      "fs-edge-assignment.eppo.cloud"
+    ],
+    "endpoints": {
+      "/rest/event/analytics": {
+        "description": "Perplexity analytics endpoint",
+        "redirect_xhr": true
+      },
+      "/cdn-cgi/trace": {
+        "description": "Cloudflare trace",
+        "block_scripts": true,
+        "redirect_xhr": true
+      },
+      "/cdn-cgi/rum": {
+        "description": "Cloudflare RUM",
+        "redirect_xhr": true
+      },
+      "/cdn-cgi/challenge-platform/": {
+        "description": "Cloudflare challenge platform",
+        "block_scripts": true,
+        "redirect_xhr": true
+      },
+      "/api/intercom": {
+        "description": "Intercom integration",
+        "redirect_xhr": true
+      },
+      "/rest/attribution/": {
+        "description": "Session attribution telemetry",
+        "redirect_xhr": true
+      },
+      "/rest/homepage-widgets/upsell": {
+        "description": "Upsell widget",
+        "redirect_xhr": true
+      },
+      "/rest/ntp/upsell/interacted": {
+        "description": "NTP upsell tracking",
+        "redirect_xhr": true
+      },
+      "/rest/autosuggest/track-query-clicked": {
+        "description": "Autosuggest click tracking",
+        "redirect_xhr": true
+      },
+      "/rest/live-events/subscription": {
+        "description": "Live events subscription",
+        "redirect_xhr": true
+      }
+    },
+    "_comment_content_script_extra": "Additional patterns for content-script blocking that are not DNR rules (e.g., CORS errors)",
+    "content_script_extra": [
+      "_restricted/restricted-feature"
+    ],
+    "ublock_static_filters": [
+      "! ====== PIXEL TRACKING ======",
+      "||perplexity.ai/pixel/$script,domain=www.perplexity.ai|perplexity.ai|newtab.chrome-scheme",
+      "! ====== SENTRY US REGION ======",
+      "||*.ingest.us.sentry.io^$all",
+      "! ====== MERGE.DEV ======",
+      "||ah-cdn.merge.dev/$subdocument,domain=www.perplexity.ai|perplexity.ai|newtab.chrome-scheme",
+      "||ah-cdn.merge.dev/$script,domain=www.perplexity.ai|perplexity.ai|newtab.chrome-scheme",
+      "! ====== STRIPE (Perplexity-specific) ======",
+      "||js.stripe.com/v3/$subdocument,domain=www.perplexity.ai|perplexity.ai|newtab.chrome-scheme",
+      "||js.stripe.com/v3/$script,domain=www.perplexity.ai|perplexity.ai|newtab.chrome-scheme",
+      "||m.stripe.com$xmlhttprequest,domain=www.perplexity.ai|perplexity.ai|newtab.chrome-scheme",
+      "||m.stripe.network$sub_frame,domain=www.perplexity.ai|perplexity.ai|newtab.chrome-scheme",
+      "! ====== COSMETIC FILTERS ======",
+      "! Hide \"0 ads and trackers blocked\" button on new tab and Perplexity pages",
+      "newtab.chrome-scheme,www.perplexity.ai,perplexity.ai##button:has-text(/^0 ads and trackers blocked$/)"
+    ]
+  },
+  "enforced_preferences": {
+    "_comment": "Single source of truth for browser preference enforcement via chrome.settingsPrivate API.",
+    "perplexity.adblock.enabled": false,
+    "perplexity.adblock.fb_embed_default": false,
+    "perplexity.adblock.linkedin_embed_default": false,
+    "perplexity.adblock.twitter_embed_default": false,
+    "perplexity.adblock.whitelist": [],
+    "perplexity.adblock.hidden_whitelisted_dst": [],
+    "perplexity.adblock.hidden_whitelisted_src": [],
+    "perplexity.metrics_allowed": false,
+    "perplexity.analytics_observer_initialised": false,
+    "perplexity.history_search_enabled": false,
+    "perplexity.external_search_enabled": false,
+    "perplexity.help_me_with_text.enabled": false,
+    "perplexity.proactive_scraping.enabled": false,
+    "perplexity.always_allow_browser_agent": false,
+    "perplexity.notifications.proactive_assistance.enabled": false,
+    "perplexity.onboarding_completed": true,
+    "perplexity.was_site_onboarding_started": true,
+    "search.suggest_enabled": false,
+    "omnibox.prevent_url_elisions": true,
+    "safebrowsing.scout_reporting_enabled": false,
+    "url_keyed_anonymized_data_collection.enabled": false,
+    "feedback_allowed": false,
+    "browser.show_home_button": true
+  },
+  "meteor_extensions": {
+    "_comment": "Extension IDs managed by Meteor for auto-enabling incognito and logging.",
+    "cjpalhdlnbpafiamejdnhcphjbkeiagm": "uBlock Origin",
+    "gkeojjjcdcopjkbelgbcpckplegclfeg": "AdGuard Extra"
+  },
+  "urls": {
+    "homepage": "https://www.perplexity.ai/b/home"
+  },
   "ublock": {
     "enabled": true,
     "extension_id": "cjpalhdlnbpafiamejdnhcphjbkeiagm",
@@ -454,7 +594,7 @@
       "dynamicFilteringString": "behind-the-scene * * noop\nbehind-the-scene * inline-script noop\nbehind-the-scene * 1p-script noop\nbehind-the-scene * 3p-script noop\nbehind-the-scene * 3p-frame noop\nbehind-the-scene * image noop\nbehind-the-scene * 3p noop",
       "hostnameSwitchesString": "no-large-media: behind-the-scene false\nno-csp-reports: * true",
       "urlFilteringString": "extensions.chrome-scheme https://m.stripe.com xmlhttprequest block\nnewtab.chrome-scheme https://m.stripe.com xmlhttprequest block\nnewtab.chrome-scheme https://m.stripe.com/6 xmlhttprequest block\nnewtab.chrome-scheme https://m.stripe.network sub_frame block\nnewtab.chrome-scheme https://m.stripe.network/inner.html sub_frame block\nwww.perplexity.ai https://m.stripe.com xmlhttprequest block\nwww.perplexity.ai https://m.stripe.com/6 xmlhttprequest block\nwww.perplexity.ai https://m.stripe.network sub_frame block\nwww.perplexity.ai https://m.stripe.network/inner.html sub_frame block",
-      "userFilters": "! ====== METEOR TELEMETRY BLOCKING ======\n! DataDog RUM (Real User Monitoring)\n||browser-intake-datadoghq.com^$all\n! Singular Analytics API (SDK loads but can't send data)\n||sdk-api-v1.singular.net^$all\n! Eppo Feature Flags\n||fscdn.eppo.cloud^$all\n||fs-edge-assignment.eppo.cloud^$all\n! Perplexity Internal Telemetry\n||irontail.perplexity.ai^$all\n||perplexity.ai/rest/event/analytics$all\n||perplexity.ai/cdn-cgi/trace$all\n||perplexity.ai/rest/attribution$xmlhttprequest\n||perplexity.ai/rest/homepage-widgets/upsell/interacted$xmlhttprequest\n||perplexity.ai/rest/ntp/upsell/interacted$xmlhttprequest\n||perplexity.ai/rest/autosuggest/track-query-clicked$xmlhttprequest\n||perplexity.ai/rest/live-events/subscription$xmlhttprequest\n||perplexity.ai/pixel/$script,domain=www.perplexity.ai|perplexity.ai|newtab.chrome-scheme\n! Cloudflare Analytics\n||cloudflareinsights.com^$all\n||perplexity.ai/cdn-cgi/rum$xmlhttprequest\n! Intercom\n||perplexity.ai/api/intercom$xmlhttprequest\n! Mixpanel\n||api.mixpanel.com^$all\n! Sentry\n||*.ingest.sentry.io^$all\n||*.ingest.us.sentry.io^$all\n! Merge.dev\n||ah-cdn.merge.dev/$subdocument,domain=www.perplexity.ai|perplexity.ai|newtab.chrome-scheme\n||ah-cdn.merge.dev/$script,domain=www.perplexity.ai|perplexity.ai|newtab.chrome-scheme\n! ====== STRIPE (Perplexity-specific) ======\n||js.stripe.com/v3/$subdocument,domain=www.perplexity.ai|perplexity.ai|newtab.chrome-scheme\n||js.stripe.com/v3/$script,domain=www.perplexity.ai|perplexity.ai|newtab.chrome-scheme\n||m.stripe.com$xmlhttprequest,domain=www.perplexity.ai|perplexity.ai|newtab.chrome-scheme\n||m.stripe.network$sub_frame,domain=www.perplexity.ai|perplexity.ai|newtab.chrome-scheme\n! ====== COSMETIC FILTERS ======\n! Hide \"0 ads and trackers blocked\" button on new tab and Perplexity pages\nnewtab.chrome-scheme,www.perplexity.ai,perplexity.ai##button:has-text(/^0 ads and trackers blocked$/)"
+      "_comment_userFilters": "userFilters is dynamically generated from telemetry_blocking config by meteor.ps1"
     }
   },
   "adguard_extra": {

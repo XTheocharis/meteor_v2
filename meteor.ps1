@@ -3925,9 +3925,26 @@ function Get-UBlockOrigin {
 
         # Apply defaults if configured - using auto-import approach
         if ($UBlockConfig.defaults -and (Test-Path $OutputDir)) {
+            # Build the settings object, potentially with dynamic userFilters
+            $settings = $UBlockConfig.defaults
+
+            # If telemetry_blocking config exists, generate userFilters dynamically
+            $meteorConfig = Get-MeteorConfig
+            if ($meteorConfig.PSObject.Properties['telemetry_blocking']) {
+                $generatedFilters = Build-UBlockTelemetryFilters -TelemetryConfig $meteorConfig.telemetry_blocking
+                # Update userFilters in the settings
+                if ($settings.PSObject.Properties['userFilters']) {
+                    $settings.userFilters = $generatedFilters
+                }
+                else {
+                    $settings | Add-Member -NotePropertyName 'userFilters' -NotePropertyValue $generatedFilters
+                }
+                Write-Status "Generated uBlock filters from telemetry_blocking config" -Type Detail
+            }
+
             # Save settings file that auto-import.js will load
             $settingsPath = Join-Path $OutputDir "ublock-settings.json"
-            Save-JsonFile -Path $settingsPath -Object $UBlockConfig.defaults -Depth 20
+            Save-JsonFile -Path $settingsPath -Object $settings -Depth 20
 
             # Use helper function to create auto-import.js and patch start.js
             Initialize-UBlockAutoImport -UBlockDir $OutputDir -UBlockConfig $UBlockConfig
@@ -3988,6 +4005,249 @@ function Get-AdGuardExtra {
 #endregion
 
 #region Extension Patching
+
+function Build-TelemetryDnrRules {
+    <#
+    .SYNOPSIS
+        Generate DNR rules from telemetry_blocking config.
+    .DESCRIPTION
+        Reads the telemetry_blocking section from config.json and generates
+        Chromium Declarative Net Request rules with sequential IDs.
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [object]$TelemetryConfig
+    )
+
+    $rules = @()
+    $ruleId = 1
+
+    # Process domains
+    if ($TelemetryConfig.PSObject.Properties['domains']) {
+        foreach ($domain in $TelemetryConfig.domains.PSObject.Properties) {
+            $domainName = $domain.Name
+            $config = $domain.Value
+
+            # Determine URL filter prefix (|| for domain start, or plain for suffix match)
+            $isSuffix = $config.PSObject.Properties['is_suffix'] -and $config.is_suffix
+            $urlFilter = if ($isSuffix) { $domainName } else { "||$domainName" }
+
+            # Block scripts if configured
+            if ($config.PSObject.Properties['block_scripts'] -and $config.block_scripts) {
+                $rules += [ordered]@{
+                    id        = $ruleId++
+                    priority  = 1
+                    action    = @{ type = "block" }
+                    condition = @{
+                        urlFilter     = $urlFilter
+                        resourceTypes = @("script")
+                    }
+                }
+            }
+
+            # Redirect XHR/other if configured
+            if ($config.PSObject.Properties['redirect_xhr'] -and $config.redirect_xhr) {
+                $resourceTypes = @("xmlhttprequest", "ping", "other")
+
+                # Add main_frame/sub_frame for non-suffix domains (full domain blocks)
+                if (-not $isSuffix) {
+                    $resourceTypes += @("main_frame", "sub_frame")
+                }
+
+                # Add image if configured
+                if ($config.PSObject.Properties['redirect_image'] -and $config.redirect_image) {
+                    $resourceTypes += "image"
+                }
+
+                $rules += [ordered]@{
+                    id        = $ruleId++
+                    priority  = 1
+                    action    = @{
+                        type     = "redirect"
+                        redirect = @{ url = "data:application/json,{}" }
+                    }
+                    condition = @{
+                        urlFilter     = $urlFilter
+                        resourceTypes = $resourceTypes
+                    }
+                }
+            }
+        }
+    }
+
+    # Process endpoints
+    if ($TelemetryConfig.PSObject.Properties['endpoints']) {
+        foreach ($endpoint in $TelemetryConfig.endpoints.PSObject.Properties) {
+            $endpointPath = $endpoint.Name
+            $config = $endpoint.Value
+
+            # Block scripts if configured
+            if ($config.PSObject.Properties['block_scripts'] -and $config.block_scripts) {
+                $rules += [ordered]@{
+                    id        = $ruleId++
+                    priority  = 1
+                    action    = @{ type = "block" }
+                    condition = @{
+                        urlFilter     = $endpointPath
+                        resourceTypes = @("script")
+                    }
+                }
+            }
+
+            # Redirect XHR/other if configured
+            if ($config.PSObject.Properties['redirect_xhr'] -and $config.redirect_xhr) {
+                $rules += [ordered]@{
+                    id        = $ruleId++
+                    priority  = 1
+                    action    = @{
+                        type     = "redirect"
+                        redirect = @{ url = "data:application/json,{}" }
+                    }
+                    condition = @{
+                        urlFilter     = $endpointPath
+                        resourceTypes = @("xmlhttprequest", "ping", "other")
+                    }
+                }
+            }
+        }
+    }
+
+    # Process Eppo domains (always block all resource types)
+    if ($TelemetryConfig.PSObject.Properties['eppo_domains']) {
+        foreach ($eppoDomain in $TelemetryConfig.eppo_domains) {
+            $rules += [ordered]@{
+                id        = $ruleId++
+                priority  = 1
+                action    = @{ type = "block" }
+                condition = @{
+                    urlFilter     = "||$eppoDomain"
+                    resourceTypes = @("script", "xmlhttprequest", "ping", "other")
+                }
+            }
+        }
+    }
+
+    return $rules
+}
+
+function Build-ContentScriptBlocklist {
+    <#
+    .SYNOPSIS
+        Build blocklist arrays for content-script.js.
+    .DESCRIPTION
+        Extracts domain names and endpoint paths from telemetry_blocking config
+        for JavaScript-level request interception.
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [object]$TelemetryConfig
+    )
+
+    $blockedPatterns = @()
+
+    # Add endpoint paths
+    if ($TelemetryConfig.PSObject.Properties['endpoints']) {
+        foreach ($endpoint in $TelemetryConfig.endpoints.PSObject.Properties) {
+            $blockedPatterns += $endpoint.Name
+        }
+    }
+
+    # Add domain names
+    if ($TelemetryConfig.PSObject.Properties['domains']) {
+        foreach ($domain in $TelemetryConfig.domains.PSObject.Properties) {
+            $blockedPatterns += $domain.Name
+        }
+    }
+
+    # Add extra patterns for content-script (e.g., CORS-problematic endpoints)
+    if ($TelemetryConfig.PSObject.Properties['content_script_extra']) {
+        foreach ($extra in $TelemetryConfig.content_script_extra) {
+            $blockedPatterns += $extra
+        }
+    }
+
+    # Get Eppo domains
+    $eppoEndpoints = @()
+    if ($TelemetryConfig.PSObject.Properties['eppo_domains']) {
+        $eppoEndpoints = @($TelemetryConfig.eppo_domains)
+    }
+
+    return @{
+        BlockedPatterns = $blockedPatterns
+        EppoEndpoints   = $eppoEndpoints
+    }
+}
+
+function Build-UBlockTelemetryFilters {
+    <#
+    .SYNOPSIS
+        Generate uBlock filter rules from telemetry_blocking config.
+    .DESCRIPTION
+        Creates uBlock Origin filter syntax from the telemetry_blocking configuration.
+        Uses ||domain^$all for domain blocking and appropriate modifiers for endpoints.
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [object]$TelemetryConfig
+    )
+
+    $filters = @()
+    $filters += "! ====== METEOR TELEMETRY BLOCKING ======"
+
+    # Process domains
+    if ($TelemetryConfig.PSObject.Properties['domains']) {
+        foreach ($domain in $TelemetryConfig.domains.PSObject.Properties) {
+            $domainName = $domain.Name
+            $config = $domain.Value
+            $description = if ($config.PSObject.Properties['description']) { $config.description } else { $domainName }
+
+            $filters += "! $description"
+
+            # For suffix matches (like .ingest.sentry.io), use wildcard
+            if ($config.PSObject.Properties['is_suffix'] -and $config.is_suffix) {
+                $filters += "||*$domainName^`$all"
+            }
+            else {
+                $filters += "||$domainName^`$all"
+            }
+        }
+    }
+
+    # Process Eppo domains
+    if ($TelemetryConfig.PSObject.Properties['eppo_domains']) {
+        $filters += "! Eppo Feature Flags"
+        foreach ($eppoDomain in $TelemetryConfig.eppo_domains) {
+            $filters += "||$eppoDomain^`$all"
+        }
+    }
+
+    # Process endpoints (Perplexity-specific)
+    if ($TelemetryConfig.PSObject.Properties['endpoints']) {
+        $filters += "! Perplexity Internal Telemetry"
+        foreach ($endpoint in $TelemetryConfig.endpoints.PSObject.Properties) {
+            $endpointPath = $endpoint.Name
+            $config = $endpoint.Value
+
+            # Determine filter type based on config
+            if ($config.PSObject.Properties['block_scripts'] -and $config.block_scripts) {
+                $filters += "||perplexity.ai$endpointPath`$all"
+            }
+            else {
+                $filters += "||perplexity.ai$endpointPath`$xmlhttprequest"
+            }
+        }
+    }
+
+    # Add static filters from config
+    if ($TelemetryConfig.PSObject.Properties['ublock_static_filters']) {
+        $filters += ""
+        foreach ($staticFilter in $TelemetryConfig.ublock_static_filters) {
+            $filters += $staticFilter
+        }
+    }
+
+    return $filters -join "`n"
+}
 
 function Initialize-PatchedExtensions {
     <#
@@ -4377,8 +4637,63 @@ function Initialize-PatchedExtensions {
         if ($PatchConfig.PSObject.Properties[$extName]) {
             $config = $PatchConfig.$extName
 
-            # Copy additional files
+            # Copy additional files and generate dynamic content
             if ($config.PSObject.Properties['copy_files']) {
+                # Pre-build all placeholder values once
+                $placeholderValues = @{}
+
+                # Build combined feature flags from config (simple + complex)
+                $combinedFlags = @{}
+                if ($MeteorConfig.PSObject.Properties['feature_flag_overrides']) {
+                    foreach ($prop in $MeteorConfig.feature_flag_overrides.PSObject.Properties) {
+                        if ($prop.Name -notlike '_comment*') {
+                            $combinedFlags[$prop.Name] = $prop.Value
+                        }
+                    }
+                }
+                if ($MeteorConfig.PSObject.Properties['feature_flag_complex_overrides']) {
+                    foreach ($prop in $MeteorConfig.feature_flag_complex_overrides.PSObject.Properties) {
+                        if ($prop.Name -notlike '_comment*') {
+                            $combinedFlags[$prop.Name] = $prop.Value
+                        }
+                    }
+                }
+                $placeholderValues['__METEOR_FEATURE_FLAGS__'] = $combinedFlags | ConvertTo-Json -Depth 10 -Compress
+
+                # Build telemetry blocklist for content-script.js
+                if ($MeteorConfig.PSObject.Properties['telemetry_blocking']) {
+                    $blocklists = Build-ContentScriptBlocklist -TelemetryConfig $MeteorConfig.telemetry_blocking
+                    $placeholderValues['__METEOR_BLOCKED_PATTERNS__'] = $blocklists.BlockedPatterns | ConvertTo-Json -Compress
+                    $placeholderValues['__METEOR_EPPO_ENDPOINTS__'] = $blocklists.EppoEndpoints | ConvertTo-Json -Compress
+                }
+
+                # Build homepage URL
+                if ($MeteorConfig.PSObject.Properties['urls'] -and $MeteorConfig.urls.PSObject.Properties['homepage']) {
+                    $placeholderValues['__METEOR_HOMEPAGE_URL__'] = "`"$($MeteorConfig.urls.homepage)`""
+                }
+
+                # Build enforced preferences
+                if ($MeteorConfig.PSObject.Properties['enforced_preferences']) {
+                    $prefs = @{}
+                    foreach ($prop in $MeteorConfig.enforced_preferences.PSObject.Properties) {
+                        if ($prop.Name -notlike '_comment*') {
+                            $prefs[$prop.Name] = $prop.Value
+                        }
+                    }
+                    $placeholderValues['__METEOR_ENFORCED_PREFERENCES__'] = $prefs | ConvertTo-Json -Depth 10 -Compress
+                }
+
+                # Build meteor extensions mapping
+                if ($MeteorConfig.PSObject.Properties['meteor_extensions']) {
+                    $exts = @{}
+                    foreach ($prop in $MeteorConfig.meteor_extensions.PSObject.Properties) {
+                        if ($prop.Name -notlike '_comment*') {
+                            $exts[$prop.Name] = $prop.Value
+                        }
+                    }
+                    $placeholderValues['__METEOR_EXTENSIONS__'] = $exts | ConvertTo-Json -Compress
+                }
+
                 foreach ($destFile in $config.copy_files.PSObject.Properties) {
                     $destPath = Join-Path $extOutputDir $destFile.Name
                     $srcPath = Resolve-MeteorPath -BasePath $PatchesDir -RelativePath $destFile.Value
@@ -4386,34 +4701,33 @@ function Initialize-PatchedExtensions {
                     # Ensure directory exists
                     New-DirectoryIfNotExists -Path (Split-Path -Parent $destPath)
 
+                    # Check if this is telemetry.json - generate dynamically instead of copying
+                    if ($destFile.Name -eq 'rules/telemetry.json' -and $MeteorConfig.PSObject.Properties['telemetry_blocking']) {
+                        $dnrRules = Build-TelemetryDnrRules -TelemetryConfig $MeteorConfig.telemetry_blocking
+                        $dnrJson = $dnrRules | ConvertTo-Json -Depth 10
+                        [System.IO.File]::WriteAllText($destPath, $dnrJson, [System.Text.UTF8Encoding]::new($false))
+                        Write-Status "Generated: $($destFile.Name) ($($dnrRules.Count) rules)" -Type Detail
+                        continue
+                    }
+
                     if (Test-Path $srcPath) {
                         Copy-Item -Path $srcPath -Destination $destPath -Force
 
-                        # Inject feature flags if this is a JS file with the placeholder
+                        # Inject placeholders if this is a JS file
                         if ($destPath -match '\.js$') {
                             $content = Get-Content -Path $destPath -Raw -Encoding UTF8
-                            if ($content -match '__METEOR_FEATURE_FLAGS__') {
-                                # Build combined flags from config (simple + complex)
-                                $combinedFlags = @{}
-                                if ($MeteorConfig.PSObject.Properties['feature_flag_overrides']) {
-                                    foreach ($prop in $MeteorConfig.feature_flag_overrides.PSObject.Properties) {
-                                        if ($prop.Name -notlike '_comment*') {
-                                            $combinedFlags[$prop.Name] = $prop.Value
-                                        }
-                                    }
+                            $modified = $false
+
+                            foreach ($placeholder in $placeholderValues.Keys) {
+                                if ($content -match [regex]::Escape($placeholder)) {
+                                    $content = $content -replace [regex]::Escape($placeholder), $placeholderValues[$placeholder]
+                                    $modified = $true
                                 }
-                                if ($MeteorConfig.PSObject.Properties['feature_flag_complex_overrides']) {
-                                    foreach ($prop in $MeteorConfig.feature_flag_complex_overrides.PSObject.Properties) {
-                                        if ($prop.Name -notlike '_comment*') {
-                                            $combinedFlags[$prop.Name] = $prop.Value
-                                        }
-                                    }
-                                }
-                                # Convert to JSON (use ConvertTo-Json with depth for nested objects)
-                                $flagsJson = $combinedFlags | ConvertTo-Json -Depth 10 -Compress
-                                $content = $content -replace '__METEOR_FEATURE_FLAGS__', $flagsJson
+                            }
+
+                            if ($modified) {
                                 [System.IO.File]::WriteAllText($destPath, $content, [System.Text.UTF8Encoding]::new($false))
-                                Write-Status "Injected feature flags into: $($destFile.Name)" -Type Detail
+                                Write-Status "Injected placeholders into: $($destFile.Name)" -Type Detail
                             }
                         }
 
@@ -8353,9 +8667,21 @@ function Initialize-AdBlockExtensions {
                 if ($ext.Type -eq "ublock") {
                     $jsDir = Join-Path $ext.OutputDir "js"
                     if ((Test-Path $jsDir) -and $ext.Config.defaults) {
-                        # Save settings and create auto-import.js (reuse logic from Get-UBlockOrigin)
+                        # Build settings with dynamic userFilters from telemetry_blocking
+                        $settings = $ext.Config.defaults
+                        $meteorConfig = Get-MeteorConfig
+                        if ($meteorConfig.PSObject.Properties['telemetry_blocking']) {
+                            $generatedFilters = Build-UBlockTelemetryFilters -TelemetryConfig $meteorConfig.telemetry_blocking
+                            if ($settings.PSObject.Properties['userFilters']) {
+                                $settings.userFilters = $generatedFilters
+                            }
+                            else {
+                                $settings | Add-Member -NotePropertyName 'userFilters' -NotePropertyValue $generatedFilters
+                            }
+                        }
+                        # Save settings and create auto-import.js
                         $settingsPath = Join-Path $ext.OutputDir "ublock-settings.json"
-                        Save-JsonFile -Path $settingsPath -Object $ext.Config.defaults -Depth 20
+                        Save-JsonFile -Path $settingsPath -Object $settings -Depth 20
                         Initialize-UBlockAutoImport -UBlockDir $ext.OutputDir -UBlockConfig $ext.Config
                     }
                 }
@@ -8993,11 +9319,16 @@ setTimeout(checkAndImport, 3000);
         }
 
         # Convert uBlock defaults to hashtable for serialization
+        # Pre-generate userFilters from telemetry_blocking config since runspaces can't access main script functions
         $ublockDefaults = $null
         if ($config.ublock.defaults) {
             $ublockDefaults = @{}
             foreach ($prop in $config.ublock.defaults.PSObject.Properties) {
                 $ublockDefaults[$prop.Name] = $prop.Value
+            }
+            # Generate userFilters dynamically from telemetry_blocking config
+            if ($config.PSObject.Properties['telemetry_blocking']) {
+                $ublockDefaults['userFilters'] = Build-UBlockTelemetryFilters -TelemetryConfig $config.telemetry_blocking
             }
         }
 

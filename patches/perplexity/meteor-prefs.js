@@ -129,62 +129,9 @@
   // CONFIGURATION
   // ============================================================================
 
-  // Only includes preferences that exist in Comet's settingsPrivate API
-  // Verified via chrome.settingsPrivate.getAllPrefs() - 210 prefs available
-  const ENFORCED_PREFERENCES = {
-    // ========================================================================
-    // Perplexity-Specific Settings (37 available)
-    // ========================================================================
-
-    // Disable built-in adblock (use uBlock instead)
-    "perplexity.adblock.enabled": false,
-    "perplexity.adblock.fb_embed_default": false,
-    "perplexity.adblock.linkedin_embed_default": false,
-    "perplexity.adblock.twitter_embed_default": false,
-    "perplexity.adblock.whitelist": [],
-    "perplexity.adblock.hidden_whitelisted_dst": [],
-    "perplexity.adblock.hidden_whitelisted_src": [],
-
-    // Disable telemetry and analytics
-    "perplexity.metrics_allowed": false,
-    "perplexity.analytics_observer_initialised": false,
-    // NOTE: perplexity.feature.* prefs are NOT settingsPrivate prefs.
-    // They're managed via chrome.perplexity.features API (no setter available).
-
-    // Disable data collection features
-    "perplexity.history_search_enabled": false,
-    "perplexity.external_search_enabled": false,
-    "perplexity.help_me_with_text.enabled": false,
-    "perplexity.proactive_scraping.enabled": false,
-    "perplexity.always_allow_browser_agent": false,
-
-    // Disable proactive notifications
-    "perplexity.notifications.proactive_assistance.enabled": false,
-
-    // Skip setup/onboarding
-    "perplexity.onboarding_completed": true,
-    "perplexity.was_site_onboarding_started": true,
-
-    // ========================================================================
-    // Chromium Privacy Settings (available in Comet)
-    // ========================================================================
-
-    // Search & Omnibox
-    "search.suggest_enabled": false,
-    "omnibox.prevent_url_elisions": true,
-
-    // Safe Browsing - disable extended reporting
-    "safebrowsing.scout_reporting_enabled": false,
-
-    // Disable URL-keyed data collection
-    "url_keyed_anonymized_data_collection.enabled": false,
-
-    // Disable feedback
-    feedback_allowed: false,
-
-    // UI Preferences
-    "browser.show_home_button": true,
-  };
+  // Enforced preferences via chrome.settingsPrivate API
+  // Placeholder replaced by meteor.ps1 with values from config.json enforced_preferences
+  const ENFORCED_PREFERENCES = __METEOR_ENFORCED_PREFERENCES__;
 
   // ============================================================================
   // PREFERENCE ENFORCEMENT
@@ -259,11 +206,9 @@
   // AUTO-ENABLE INCOGNITO FOR EXTENSIONS
   // ============================================================================
 
-  // Extension IDs to auto-enable in incognito
-  const METEOR_EXTENSIONS = {
-    cjpalhdlnbpafiamejdnhcphjbkeiagm: "uBlock Origin",
-    gkeojjjcdcopjkbelgbcpckplegclfeg: "AdGuard Extra",
-  };
+  // Extension IDs managed by Meteor
+  // Placeholder replaced by meteor.ps1 with values from config.json meteor_extensions
+  const METEOR_EXTENSIONS = __METEOR_EXTENSIONS__;
 
   /**
    * Check extension status and log results.
