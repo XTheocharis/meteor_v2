@@ -5595,9 +5595,9 @@ function Set-BrowserPreferences {
         # Disable browser promotions
         "browser.promotions_enabled" = $false
 
-        # Perplexity feature flags (privacy)
-        "perplexity.feature.nav-logging" = $false
-        "perplexity.feature.zero-suggests-enabled" = $false
+        # Perplexity feature flags (privacy) - must set .value subkey due to nested structure
+        "perplexity.feature.nav-logging.value" = $false
+        "perplexity.feature.zero-suggests-enabled.value" = $false
 
         # Tracking protection
         "tracking_protection.ip_protection_enabled" = $false
@@ -5965,8 +5965,8 @@ function Update-TrackedPreferences {
             "breadcrumbs.enabled" = $false
             "background_mode.enabled" = $false
             "browser.promotions_enabled" = $false
-            "perplexity.feature.nav-logging" = $false
-            "perplexity.feature.zero-suggests-enabled" = $false
+            "perplexity.feature.nav-logging.value" = $false
+            "perplexity.feature.zero-suggests-enabled.value" = $false
             "domain_reliability.allowed_by_policy" = $false
             "tracking_protection.ip_protection_enabled" = $false
             "update.component_updates_enabled" = $false
