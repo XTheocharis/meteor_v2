@@ -298,7 +298,14 @@
             {
               "pattern": "(\\w+)\\.getQuickActions\\(\"get-quick-actions-for-sidecar-suggests\"\\)",
               "replacement": "Promise.resolve([])",
-              "description": "Disable quick actions - return empty array immediately"
+              "description": "Disable quick actions in spa - return empty array immediately"
+            }
+          ],
+          "sidecar/assets/index-*.js": [
+            {
+              "pattern": "(\\w+)\\.getQuickActions\\(\"get-quick-actions-for-sidecar-suggests\"\\)",
+              "replacement": "Promise.resolve([])",
+              "description": "Disable quick actions in sidecar - return empty array immediately"
             }
           ],
           "spa/assets/page-component-*.js": [

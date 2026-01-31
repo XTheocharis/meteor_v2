@@ -290,6 +290,11 @@
   // INITIALIZATION
   // ============================================================================
 
+  // Enable BrowserService debug mode via chrome.storage.local
+  if (chrome?.storage?.local?.set) {
+    chrome.storage.local.set({ "is-debug-mode-enabled": true });
+  }
+
   // Apply preferences immediately on service worker startup
   applyPreferences();
   setupPreferenceMonitor();
