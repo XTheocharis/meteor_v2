@@ -4075,7 +4075,10 @@ function Build-TelemetryDnrRules {
         [object]$TelemetryConfig,
 
         [Parameter()]
-        [string]$UBlockExtensionId
+        [string]$UBlockExtensionId,
+
+        [Parameter()]
+        [switch]$EppoPassthrough
     )
 
     $rules = @()
@@ -4195,8 +4198,8 @@ function Build-TelemetryDnrRules {
         }
     }
 
-    # Process Eppo domains (always block all resource types)
-    if ($TelemetryConfig.PSObject.Properties['eppo_domains']) {
+    # Process Eppo domains (skip in passthrough mode for debugging)
+    if (-not $EppoPassthrough -and $TelemetryConfig.PSObject.Properties['eppo_domains']) {
         foreach ($eppoDomain in $TelemetryConfig.eppo_domains) {
             $rules += [ordered]@{
                 id        = $ruleId++
@@ -4223,7 +4226,10 @@ function Build-ContentScriptBlocklist {
     #>
     param(
         [Parameter(Mandatory)]
-        [object]$TelemetryConfig
+        [object]$TelemetryConfig,
+
+        [Parameter()]
+        [switch]$EppoPassthrough
     )
 
     $blockedPatterns = @()
@@ -4249,9 +4255,9 @@ function Build-ContentScriptBlocklist {
         }
     }
 
-    # Get Eppo domains
+    # Get Eppo domains (empty in passthrough mode)
     $eppoEndpoints = @()
-    if ($TelemetryConfig.PSObject.Properties['eppo_domains']) {
+    if (-not $EppoPassthrough -and $TelemetryConfig.PSObject.Properties['eppo_domains']) {
         $eppoEndpoints = @($TelemetryConfig.eppo_domains)
     }
 
@@ -4753,7 +4759,9 @@ function Initialize-PatchedExtensions {
 
                 # Build telemetry blocklist for content-script.js
                 if ($MeteorConfig.PSObject.Properties['telemetry_blocking']) {
-                    $blocklists = Build-ContentScriptBlocklist -TelemetryConfig $MeteorConfig.telemetry_blocking
+                    $blocklistParams = @{ TelemetryConfig = $MeteorConfig.telemetry_blocking }
+                    if ($eppoPassthrough) { $blocklistParams['EppoPassthrough'] = $true }
+                    $blocklists = Build-ContentScriptBlocklist @blocklistParams
                     $placeholderValues['__METEOR_BLOCKED_PATTERNS__'] = $blocklists.BlockedPatterns | ConvertTo-Json -Compress
                     $placeholderValues['__METEOR_EPPO_ENDPOINTS__'] = $blocklists.EppoEndpoints | ConvertTo-Json -Compress
                 }
@@ -4799,7 +4807,9 @@ function Initialize-PatchedExtensions {
                             $MeteorConfig.ublock.extension_id
                         } else { $null }
 
-                        $dnrRules = Build-TelemetryDnrRules -TelemetryConfig $MeteorConfig.telemetry_blocking -UBlockExtensionId $ublockId
+                        $dnrParams = @{ TelemetryConfig = $MeteorConfig.telemetry_blocking; UBlockExtensionId = $ublockId }
+                        if ($eppoPassthrough) { $dnrParams['EppoPassthrough'] = $true }
+                        $dnrRules = Build-TelemetryDnrRules @dnrParams
                         $dnrJson = $dnrRules | ConvertTo-Json -Depth 10
                         [System.IO.File]::WriteAllText($destPath, $dnrJson, [System.Text.UTF8Encoding]::new($false))
                         Write-Status "Generated: $($destFile.Name) ($($dnrRules.Count) rules)" -Type Detail
