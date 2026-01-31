@@ -350,29 +350,14 @@
 
   /**
    * Listen for ready signal from uBlock Origin.
-   * uBlock sends { type: 'ublock-ready' } after filter lists are loaded.
-   * We debounce the signal because uBlock may briefly report ready, then
-   * go back to loading for filter updates, then report ready again.
+   * uBlock sends { type: 'ublock-ready' } after import check completes.
    */
-  let ublockReadyTimeout = null;
-  const UBLOCK_READY_DEBOUNCE_MS = 500;
-
   if (chrome?.runtime?.onMessageExternal) {
     chrome.runtime.onMessageExternal.addListener((message, sender) => {
       if (message?.type === "ublock-ready") {
-        console.log("[Meteor] uBlock Origin ready signal received, debouncing...");
-
-        // Clear any pending timeout
-        if (ublockReadyTimeout) {
-          clearTimeout(ublockReadyTimeout);
-        }
-
-        // Wait for signals to settle before marking ready
-        ublockReadyTimeout = setTimeout(() => {
-          console.log("[Meteor] uBlock Origin ready (debounced)");
-          initState.ublockReady = true;
-          maybeNavigateToHomepage();
-        }, UBLOCK_READY_DEBOUNCE_MS);
+        console.log("[Meteor] uBlock Origin ready signal received");
+        initState.ublockReady = true;
+        maybeNavigateToHomepage();
       }
     });
     console.log("[Meteor] onMessageExternal listener registered");

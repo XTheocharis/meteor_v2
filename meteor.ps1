@@ -3805,31 +3805,8 @@ function Initialize-UBlockAutoImport {
     # Create auto-import.js that applies settings on first run
     $autoImportPath = Join-Path $jsDir "auto-import.js"
 
-    # Build the perplexity extension ID notification code if ID is provided
-    $notifyCode = ""
-    if ($PerplexityExtensionId) {
-        $notifyCode = @"
-
-// Notify Meteor extension that uBlock is ready for coordinated startup
-const notifyMeteorReady = async () => {
-    try {
-        await µb.isReadyPromise;
-        console.log('[Meteor] uBlock ready, notifying Meteor extension');
-        try {
-            chrome.runtime.sendMessage('$PerplexityExtensionId', { type: 'ublock-ready' });
-        } catch (e) {
-            // Meteor extension may not be available
-            console.log('[Meteor] Could not notify Meteor extension:', e.message);
-        }
-    } catch (ex) {
-        console.error('[Meteor] Error in notifyMeteorReady:', ex);
-    }
-};
-
-// Run notification immediately (no delay)
-notifyMeteorReady();
-"@
-    }
+    # Build the Meteor extension ID for notification
+    $meteorExtId = if ($PerplexityExtensionId) { "'$PerplexityExtensionId'" } else { "null" }
 
     $autoImportCode = @"
 /*******************************************************************************
@@ -3842,7 +3819,20 @@ import µb from './background.js';
 import io from './assets.js';
 
 /******************************************************************************/
-$notifyCode
+
+const METEOR_EXTENSION_ID = $meteorExtId;
+
+// Notify Meteor extension that uBlock is fully ready
+const notifyMeteorReady = () => {
+    if (!METEOR_EXTENSION_ID) return;
+    console.log('[Meteor] uBlock ready, notifying Meteor extension');
+    try {
+        chrome.runtime.sendMessage(METEOR_EXTENSION_ID, { type: 'ublock-ready' });
+    } catch (e) {
+        console.log('[Meteor] Could not notify Meteor extension:', e.message);
+    }
+};
+
 /******************************************************************************/
 
 const customFilterLists = $customListsJson;
@@ -3854,7 +3844,8 @@ const checkAndImport = async () => {
         const stored = await vAPI.storage.get(['lastRestoreFile', 'importedLists']);
 
         if (stored.lastRestoreFile === 'meteor-auto-import') {
-            console.log('[Meteor] uBlock settings already imported, skipping');
+            console.log('[Meteor] uBlock settings already imported, ready');
+            notifyMeteorReady();
             return;
         }
 
@@ -3862,15 +3853,18 @@ const checkAndImport = async () => {
         const allPresent = customFilterLists.every(url => importedLists.includes(url));
 
         if (allPresent) {
-            console.log('[Meteor] Custom lists already imported, skipping');
+            console.log('[Meteor] Custom lists already present, ready');
+            notifyMeteorReady();
             return;
         }
 
+        // Need to import - will restart uBlock, so don't notify yet
         console.log('[Meteor] Importing uBlock settings...');
 
         const response = await fetch('/ublock-settings.json');
         if (!response.ok) {
             console.error('[Meteor] Failed to load ublock-settings.json');
+            notifyMeteorReady(); // Notify anyway so browser doesn't hang
             return;
         }
 
@@ -3900,10 +3894,12 @@ const checkAndImport = async () => {
 
         console.log('[Meteor] uBlock settings applied, restarting...');
 
+        // uBlock will restart; our code runs again and notifies after restart
         vAPI.app.restart();
 
     } catch (ex) {
         console.error('[Meteor] Error importing uBlock settings:', ex);
+        notifyMeteorReady(); // Notify anyway so browser doesn't hang
     }
 };
 
@@ -9279,28 +9275,8 @@ function Main {
                 $customLists = @($Defaults.selectedFilterLists | Where-Object { $_ -match '^https?://' })
                 $customListsJson = if ($customLists.Count -gt 0) { $customLists | ConvertTo-Json -Compress } else { "[]" }
 
-                # Build notification code if perplexity extension ID provided
-                $notifyCode = ""
-                if ($PerplexityExtId) {
-                    $notifyCode = @"
-
-// Notify Meteor extension that uBlock is ready for coordinated startup
-const notifyMeteorReady = async () => {
-    try {
-        await µb.isReadyPromise;
-        console.log('[Meteor] uBlock ready, notifying Meteor extension');
-        try {
-            chrome.runtime.sendMessage('$PerplexityExtId', { type: 'ublock-ready' });
-        } catch (e) {
-            console.log('[Meteor] Could not notify Meteor extension:', e.message);
-        }
-    } catch (ex) {
-        console.error('[Meteor] Error in notifyMeteorReady:', ex);
-    }
-};
-notifyMeteorReady();
-"@
-                }
+                # Build Meteor extension ID for notification
+                $meteorExtId = if ($PerplexityExtId) { "'$PerplexityExtId'" } else { "null" }
 
                 # Create auto-import.js
                 $autoImportPath = Join-Path $jsDir "auto-import.js"
@@ -9310,18 +9286,24 @@ notifyMeteorReady();
 *******************************************************************************/
 import µb from './background.js';
 import io from './assets.js';
-$notifyCode
+const METEOR_EXTENSION_ID = $meteorExtId;
+const notifyMeteorReady = () => {
+    if (!METEOR_EXTENSION_ID) return;
+    console.log('[Meteor] uBlock ready, notifying Meteor extension');
+    try { chrome.runtime.sendMessage(METEOR_EXTENSION_ID, { type: 'ublock-ready' }); }
+    catch (e) { console.log('[Meteor] Could not notify:', e.message); }
+};
 const customFilterLists = $customListsJson;
 const checkAndImport = async () => {
     try {
         await µb.isReadyPromise;
         const stored = await vAPI.storage.get(['lastRestoreFile', 'importedLists']);
-        if (stored.lastRestoreFile === 'meteor-auto-import') { return; }
+        if (stored.lastRestoreFile === 'meteor-auto-import') { notifyMeteorReady(); return; }
         const importedLists = stored.importedLists || [];
         const allPresent = customFilterLists.every(url => importedLists.includes(url));
-        if (allPresent) { return; }
+        if (allPresent) { notifyMeteorReady(); return; }
         const response = await fetch('/ublock-settings.json');
-        if (!response.ok) { return; }
+        if (!response.ok) { notifyMeteorReady(); return; }
         const userData = await response.json();
         io.rmrf();
         await vAPI.storage.set({
@@ -9336,7 +9318,7 @@ const checkAndImport = async () => {
         if (userData.userFilters) { await µb.saveUserFilters(userData.userFilters); }
         if (Array.isArray(userData.selectedFilterLists)) { await µb.saveSelectedFilterLists(userData.selectedFilterLists); }
         vAPI.app.restart();
-    } catch (ex) { }
+    } catch (ex) { notifyMeteorReady(); }
 };
 setTimeout(checkAndImport, 3000);
 "@
