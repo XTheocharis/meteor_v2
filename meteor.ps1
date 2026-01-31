@@ -4072,7 +4072,10 @@ function Build-TelemetryDnrRules {
     #>
     param(
         [Parameter(Mandatory)]
-        [object]$TelemetryConfig
+        [object]$TelemetryConfig,
+
+        [Parameter()]
+        [string]$UBlockExtensionId
     )
 
     $rules = @()
@@ -4081,17 +4084,25 @@ function Build-TelemetryDnrRules {
     # Rule 1: Block ALL subresources until uBlock is ready
     # This is overridden by a dynamic allow-all rule (priority 200) when uBlock signals ready
     # Main frame is allowed so the page structure can load
+    # uBlock's extension ID is excluded so it can download filter lists
+    $blockAllCondition = [ordered]@{
+        resourceTypes = @(
+            "sub_frame", "stylesheet", "script", "image", "font",
+            "object", "xmlhttprequest", "ping", "csp_report", "media",
+            "websocket", "webtransport", "webbundle", "other"
+        )
+    }
+
+    # Exclude uBlock extension from blocking so it can fetch filter lists
+    if ($UBlockExtensionId) {
+        $blockAllCondition['excludedInitiatorDomains'] = @($UBlockExtensionId)
+    }
+
     $rules += [ordered]@{
         id        = $ruleId++
         priority  = 100
         action    = @{ type = "block" }
-        condition = @{
-            resourceTypes = @(
-                "sub_frame", "stylesheet", "script", "image", "font",
-                "object", "xmlhttprequest", "ping", "csp_report", "media",
-                "websocket", "webtransport", "webbundle", "other"
-            )
-        }
+        condition = $blockAllCondition
     }
 
     # Process domains
@@ -4776,7 +4787,12 @@ function Initialize-PatchedExtensions {
 
                     # Check if this is telemetry.json - generate dynamically instead of copying
                     if ($destFile.Name -eq 'rules/telemetry.json' -and $MeteorConfig.PSObject.Properties['telemetry_blocking']) {
-                        $dnrRules = Build-TelemetryDnrRules -TelemetryConfig $MeteorConfig.telemetry_blocking
+                        # Get uBlock extension ID to exclude from blocking (so it can fetch filter lists)
+                        $ublockId = if ($MeteorConfig.PSObject.Properties['ublock'] -and $MeteorConfig.ublock.PSObject.Properties['extension_id']) {
+                            $MeteorConfig.ublock.extension_id
+                        } else { $null }
+
+                        $dnrRules = Build-TelemetryDnrRules -TelemetryConfig $MeteorConfig.telemetry_blocking -UBlockExtensionId $ublockId
                         $dnrJson = $dnrRules | ConvertTo-Json -Depth 10
                         [System.IO.File]::WriteAllText($destPath, $dnrJson, [System.Text.UTF8Encoding]::new($false))
                         Write-Status "Generated: $($destFile.Name) ($($dnrRules.Count) rules)" -Type Detail
