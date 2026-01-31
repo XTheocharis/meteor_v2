@@ -275,6 +275,18 @@
             }
           ]
         }
+      },
+      "comet_web_resources": {
+        "file_patches": {
+          "_comment": "Regex replacements for comet_web_resources extension files",
+          "spa/assets/page-component-*.js": [
+            {
+              "pattern": "\\{widgetEditMode:\\w+\\}\\)\\{const",
+              "replacement": "{widgetEditMode:e}){return null;const",
+              "description": "Disable privacy widget component - returns null to render nothing"
+            }
+          ]
+        }
       }
     }
   },

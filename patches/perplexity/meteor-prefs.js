@@ -21,6 +21,7 @@
     "[AnalyticsService] Sending batch of events",
     "[AnalyticsService] Event",
     "[AnalyticsService] Start interval for sending events",
+    "[PerplexityWebService] Response on request GET_PRIVACY_INFO",
     "ir: Network error",
   ];
 
