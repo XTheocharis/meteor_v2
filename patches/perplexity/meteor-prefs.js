@@ -22,6 +22,8 @@
     "[AnalyticsService] Event",
     "[AnalyticsService] Start interval for sending events",
     "[PerplexityWebService] Response on request GET_PRIVACY_INFO",
+    "[PerplexityWebService] Response on request GET_PERSONAL_SUGGESTIONS",
+    "[PerplexityWebService] Response on request GET_TOP_MOST_VISITED_URLS",
     "ir: Network error",
   ];
 

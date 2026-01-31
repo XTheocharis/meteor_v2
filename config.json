@@ -284,6 +284,18 @@
               "pattern": "\\{widgetEditMode:(\\w+)\\}\\)\\{const",
               "replacement": "{widgetEditMode:$1}){return null;const",
               "description": "Disable privacy widget component - returns null to render nothing"
+            },
+            {
+              "pattern": "(\\w+)\\.getPersonalSuggestions\\(\\{source:\"ntp\",type:(\\w+),locale:(\\w+)\\},\"get-personal-suggestions\"\\)",
+              "replacement": "Promise.resolve({is_success:false,suggestions:[]})",
+              "description": "Disable personal suggestions - return empty response"
+            }
+          ],
+          "spa/assets/ask-input-*.js": [
+            {
+              "pattern": "(\\w+)\\.getTopMostVisitedUrls\\(\\{maxUrls:(\\w+)\\},\"get-top-most-urls-for-ntp\"\\)",
+              "replacement": "Promise.resolve({is_success:false})",
+              "description": "Disable top most visited URLs - return empty response"
             }
           ]
         }
