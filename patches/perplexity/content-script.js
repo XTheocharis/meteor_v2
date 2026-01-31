@@ -288,6 +288,11 @@
     ).toUTCString();
     document.cookie = `eppo_overrides=${cookieValue}; path=/; expires=${expires}; SameSite=Lax`;
     localStorage.setItem("eppo_overrides", JSON.stringify(EPPO_OVERRIDES));
+
+    // Enable debug features directly
+    localStorage.setItem("pplx_debug_mode", "true");
+    localStorage.setItem("pplx.backend_flag_override_widget_visible", "true");
+    localStorage.setItem("pplx.backend_flag_override_widget_collapsed", "false");
   } catch (e) {
     console.warn("[Meteor] Could not set eppo_overrides:", e);
   }
@@ -412,16 +417,8 @@
     };
   `;
 
-  // Stub module for restricted-feature-debug script
-  // Exports no-op versions of debug mode constants and functions
-  const RESTRICTED_DEBUG_STUB_MODULE = `
-    export const D = "pplx_debug_mode";
-    export const B = "pplx.backend_flag_override_widget_visible";
-    export const a = "pplx.backend_flag_override_widget_collapsed";
-    export const g = () => document.querySelector("meta[name='version']")?.getAttribute("content");
-    export const s = (e) => Object.fromEntries((e || []).map(({flag, value}) => [flag?.key, value]));
-    export const u = () => ({ data: undefined, isLoading: false, isError: false, error: null });
-  `;
+  // Minimal stub for restricted-feature-debug script - actual debug features enabled via localStorage
+  const RESTRICTED_DEBUG_STUB_MODULE = `export const D="",B="",a="",g=()=>"",s=()=>({}),u=()=>({data:[],isLoading:false});`;
 
   window.fetch = function (input, init) {
     const url = getUrlString(input);
