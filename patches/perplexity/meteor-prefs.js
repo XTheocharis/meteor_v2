@@ -25,13 +25,29 @@
     "[PerplexityWebService] Response on request GET_PERSONAL_SUGGESTIONS",
     "[PerplexityWebService] Response on request GET_TOP_MOST_VISITED_URLS",
     "ir: Network error",
+    "DetailedError: Unhandled external message",
   ];
 
   function shouldSuppressLog(args) {
     if (args.length === 0) return false;
     const first = args[0];
-    if (typeof first !== "string") return false;
-    return SUPPRESSED_LOG_PREFIXES.some((prefix) => first.startsWith(prefix));
+
+    // Check string prefixes
+    if (typeof first === "string") {
+      if (SUPPRESSED_LOG_PREFIXES.some((prefix) => first.startsWith(prefix))) {
+        return true;
+      }
+    }
+
+    // Check for DetailedError objects (Zod validation errors for our messages)
+    if (first && typeof first === "object" && first.constructor?.name === "DetailedError") {
+      const errorStr = String(first);
+      if (errorStr.includes("ublock-ready")) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   const originalConsoleLog = console.log.bind(console);
