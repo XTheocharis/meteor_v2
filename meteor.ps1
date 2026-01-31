@@ -4760,6 +4760,34 @@ function Initialize-PatchedExtensions {
                 }
             }
 
+            # Apply file patches (regex replacements on existing extension files)
+            if ($config.PSObject.Properties['file_patches']) {
+                foreach ($filePattern in $config.file_patches.PSObject.Properties) {
+                    if ($filePattern.Name -eq '_comment') { continue }
+
+                    # Find files matching the glob pattern
+                    $matchingFiles = Get-ChildItem -Path $extOutputDir -Filter $filePattern.Name -Recurse -File -ErrorAction SilentlyContinue
+
+                    foreach ($file in $matchingFiles) {
+                        $content = Get-Content -Path $file.FullName -Raw -Encoding UTF8
+                        $modified = $false
+
+                        foreach ($patch in $filePattern.Value) {
+                            if ($content -match [regex]::Escape($patch.pattern)) {
+                                $content = $content -replace [regex]::Escape($patch.pattern), $patch.replacement
+                                $modified = $true
+                                Write-VerboseTimestamped "[File Patch] Applied: $($patch.description)"
+                            }
+                        }
+
+                        if ($modified) {
+                            [System.IO.File]::WriteAllText($file.FullName, $content, [System.Text.UTF8Encoding]::new($false))
+                            Write-Status "Patched: $($file.Name)" -Type Detail
+                        }
+                    }
+                }
+            }
+
             # Apply manifest additions
             if ($config.PSObject.Properties['manifest_additions']) {
                 $manifestPath = Join-Path $extOutputDir "manifest.json"

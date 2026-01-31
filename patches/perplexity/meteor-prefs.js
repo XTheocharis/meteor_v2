@@ -11,13 +11,6 @@
   "use strict";
 
   // ============================================================================
-  // ENABLE DEBUG MODE (prevents some analytics from sending)
-  // ============================================================================
-  // Set is-debug-mode-enabled in chrome.storage.local
-  // This enables BrowserService debug mode for additional logging control
-  chrome.storage.local.set({ "is-debug-mode-enabled": true });
-
-  // ============================================================================
   // CONSOLE LOG FILTERING (suppress noisy extension logs)
   // ============================================================================
   // Must run FIRST before any extension code loads.
