@@ -4768,8 +4768,9 @@ function Initialize-PatchedExtensions {
                     $blocklistParams = @{ TelemetryConfig = $MeteorConfig.telemetry_blocking }
                     if ($eppoPassthrough) { $blocklistParams['EppoPassthrough'] = $true }
                     $blocklists = Build-ContentScriptBlocklist @blocklistParams
-                    $placeholderValues['__METEOR_BLOCKED_PATTERNS__'] = $blocklists.BlockedPatterns | ConvertTo-Json -Compress
-                    $placeholderValues['__METEOR_EPPO_ENDPOINTS__'] = $blocklists.EppoEndpoints | ConvertTo-Json -Compress
+                    # Handle empty arrays explicitly (PowerShell 5.1 quirk: empty array | ConvertTo-Json returns nothing)
+                    $placeholderValues['__METEOR_BLOCKED_PATTERNS__'] = if ($blocklists.BlockedPatterns.Count -eq 0) { '[]' } else { $blocklists.BlockedPatterns | ConvertTo-Json -Compress }
+                    $placeholderValues['__METEOR_EPPO_ENDPOINTS__'] = if ($blocklists.EppoEndpoints.Count -eq 0) { '[]' } else { $blocklists.EppoEndpoints | ConvertTo-Json -Compress }
                 }
 
                 # Build homepage URL
