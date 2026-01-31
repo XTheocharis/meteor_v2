@@ -19,6 +19,9 @@
     "[SerpAnalyticsService] [SerpAnalyticsService] Analytics are not allowed by user",
     "[PerplexityMetricSender] [PerplexityMetricSender] Metrics are not allowed by user",
     "[AnalyticsService] Sending batch of events",
+    "[AnalyticsService] Event",
+    "[AnalyticsService] Start interval for sending events",
+    "ir: Network error",
   ];
 
   function shouldSuppressLog(args) {

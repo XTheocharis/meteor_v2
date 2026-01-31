@@ -301,7 +301,7 @@
     "enable-local-custom-mcp": true,
 
     "voice-assistant": false,
-    "voice-assistant-new": true,
+    "voice-assistant-new": false,
 
     "bundled-comet-web-resources-3": true,
 
