@@ -647,6 +647,26 @@ function Set-NestedValue {
     $current[$parts[-1]] = $Value
 }
 
+function Expand-DottedKeys {
+    <#
+    .SYNOPSIS
+        Expand a hashtable with dotted keys into a nested structure.
+    .DESCRIPTION
+        Takes a hashtable where keys may contain dots (e.g., "devtools.availability")
+        and returns a new hashtable with proper nesting.
+        Example: @{ "devtools.availability" = 1 } becomes @{ devtools = @{ availability = 1 } }
+    #>
+    param(
+        [hashtable]$Hashtable
+    )
+
+    $result = @{}
+    foreach ($key in $Hashtable.Keys) {
+        Set-NestedValue -Hashtable $result -Path $key -Value $Hashtable[$key]
+    }
+    return $result
+}
+
 function Get-NestedValue {
     <#
     .SYNOPSIS
@@ -6131,7 +6151,8 @@ function Set-BrowserPreferences {
 
         # Write Regular Preferences (profile prefs registered via RegisterProfilePrefs - not tracked by MAC)
         $regularPrefsPath = Join-Path $profilePath "Preferences"
-        $regularPrefsToWrite = $profilePrefs.Clone()
+        # Expand dotted keys to nested structure (e.g., "devtools.availability" -> devtools: { availability: ... })
+        $regularPrefsToWrite = Expand-DottedKeys -Hashtable $profilePrefs
         $regularPrefsToWrite['extensions'] = @{
             pinned_extensions = $extensionsToPinToToolbar
         }
