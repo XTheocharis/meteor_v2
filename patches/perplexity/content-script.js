@@ -293,6 +293,10 @@
     localStorage.setItem("pplx_debug_mode", "true");
     localStorage.setItem("pplx.backend_flag_override_widget_visible", "true");
     localStorage.setItem("pplx.backend_flag_override_widget_collapsed", "false");
+
+    // Override tracking consent cookies to disable tracking
+    document.cookie = "pplx.trackingAllowed=false; path=/; SameSite=Lax";
+    document.cookie = "trackingAllowed=false; path=/; SameSite=Lax";
   } catch (e) {
     console.warn("[Meteor] Could not set eppo_overrides:", e);
   }
