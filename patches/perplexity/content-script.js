@@ -417,9 +417,8 @@
     };
   `;
 
-  // Stub for restricted-feature-debug script - must export correct localStorage key names
-  // Debug features are enabled via localStorage settings above
-  const RESTRICTED_DEBUG_STUB_MODULE = `export const D="pplx_debug_mode",B="pplx.backend_flag_override_widget_visible",a="pplx.backend_flag_override_widget_collapsed",g=()=>document.querySelector("meta[name='version']")?.getAttribute("content"),s=e=>Object.fromEntries((e||[]).map(({flag:f,value:v})=>[f?.key,v])),u=()=>({data:[],isLoading:false,isError:false,error:null});`;
+  // Minimal stub for restricted-feature-debug script - actual debug features enabled via localStorage
+  const RESTRICTED_DEBUG_STUB_MODULE = `export const D="",B="",a="",g=()=>"",s=()=>({}),u=()=>({data:[],isLoading:false});`;
 
   window.fetch = function (input, init) {
     const url = getUrlString(input);
