@@ -354,12 +354,17 @@
    */
   if (chrome?.runtime?.onMessageExternal) {
     chrome.runtime.onMessageExternal.addListener((message, sender) => {
+      // Debug: log ALL external messages to diagnose coordination issues
+      console.log("[Meteor] onMessageExternal:", message, "from:", sender?.id);
       if (message?.type === "ublock-ready") {
         console.log("[Meteor] uBlock Origin ready signal received");
         initState.ublockReady = true;
         maybeNavigateToHomepage();
       }
     });
+    console.log("[Meteor] onMessageExternal listener registered");
+  } else {
+    console.warn("[Meteor] chrome.runtime.onMessageExternal not available");
   }
 
   /**
