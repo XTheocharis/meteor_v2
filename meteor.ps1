@@ -6013,6 +6013,18 @@ function Set-BrowserPreferences {
         "worker.service_worker_auto_preload_enabled" = $true
     }
 
+    # Merge config-based Local State preferences
+    $configPath = Join-Path $PSScriptRoot "config.json"
+    $config = Get-MeteorConfig -ConfigPath $configPath
+    if ($config.local_state_preferences) {
+        $config.local_state_preferences.PSObject.Properties | ForEach-Object {
+            if ($_.Name -ne '_comment') {
+                $localStatePrefs[$_.Name] = $_.Value
+                Write-VerboseTimestamped "[Local State] Added config pref: $($_.Name) = $($_.Value)"
+            }
+        }
+    }
+
     # Extension settings with incognito enabled (split MACs)
     # These are tracked under extensions.settings.{extId} with split MAC structure
     $extensionSettings = @{
@@ -6178,8 +6190,7 @@ function Set-BrowserPreferences {
         Write-VerboseTimestamped "[Regular Prefs] Wrote $($profilePrefs.Count) profile prefs + pinned extensions + safety_hub to: $regularPrefsPath"
 
         # Write Local State with enabled_labs_experiments AND local state prefs
-        $configPath = Join-Path $PSScriptRoot "config.json"
-        $config = Get-MeteorConfig -ConfigPath $configPath
+        # Note: $config was already loaded above when merging local_state_preferences
         $experiments = Build-EnabledLabsExperiments -Config $config
         $localStateResult = Write-LocalState -LocalStatePath $localStatePath -Experiments $experiments -AdditionalPrefs $localStatePrefs
         if ($localStateResult) {

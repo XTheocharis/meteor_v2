@@ -323,6 +323,10 @@
     "nav-intent-classifier": false,
 
     "zero-suggests-enabled": false,
+    "zero-suggest-num-history-results": 0,
+    "spotlight-max-queries-on-zero-suggest": 0,
+    "spotlight-max-urls-on-zero-suggest": 0,
+    "spotlight-max-apps-on-zero-suggest": 0,
     "discover-early-fetch": false,
     "sidecar-personalized-query-suggestions": false,
     "omnibox-resedign-disable-promo-suggestions": true,
@@ -365,6 +369,7 @@
 
     "disable-local-discovery": true,
     "inactive-tab-notifications": false,
+    "sidecar-animation-disabled": true,
 
     "prerender2-comet": true,
     "enable-preloaded-ntp": true,
@@ -386,6 +391,9 @@
     },
     "external-search-anonymity": {
       "cookies": ["NID", "AEC", "__Secure-ENID"]
+    },
+    "ntp-assistant-zero-suggests": {
+      "groups": []
     }
   },
   "telemetry_blocking": {
@@ -506,7 +514,7 @@
     "perplexity.metrics_allowed": false,
     "perplexity.analytics_observer_initialised": false,
     "perplexity.history_search_enabled": false,
-    "perplexity.external_search_enabled": false,
+    "perplexity.external_search_enabled": true,
     "perplexity.help_me_with_text.enabled": false,
     "perplexity.proactive_scraping.enabled": false,
     "perplexity.always_allow_browser_agent": false,
@@ -527,6 +535,10 @@
   },
   "urls": {
     "homepage": "https://www.perplexity.ai/b/home"
+  },
+  "local_state_preferences": {
+    "_comment": "Preferences written directly to Local State file by meteor.ps1. These are not feature flags or chrome.settingsPrivate prefs.",
+    "user_experience_metrics.reporting_enabled": false
   },
   "ublock": {
     "enabled": true,
