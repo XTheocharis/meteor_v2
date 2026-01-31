@@ -83,10 +83,10 @@
       chrome.perplexity.features.getRegisteredBrowserFlags.bind(chrome.perplexity.features);
 
     chrome.perplexity.features.getRegisteredBrowserFlags = function (callback) {
-      // Wrap the original call to modify the result
-      const wrappedCallback = (flags) => {
+      // Helper to modify flags array with our overrides
+      const modifyFlags = (flags) => {
         // flags is an array of {name, type, value} objects
-        const modifiedFlags = flags.map((flag) => {
+        return flags.map((flag) => {
           if (flag.name in FEATURE_FLAG_OVERRIDES) {
             const value = FEATURE_FLAG_OVERRIDES[flag.name];
             return {
@@ -97,14 +97,22 @@
           }
           return flag;
         });
-
-        if (typeof callback === "function") {
-          callback(modifiedFlags);
-        }
       };
 
-      // Call original with our wrapped callback
-      originalGetRegisteredBrowserFlags(wrappedCallback);
+      // If callback provided, use callback style
+      if (typeof callback === "function") {
+        originalGetRegisteredBrowserFlags((flags) => {
+          callback(modifyFlags(flags));
+        });
+        return;
+      }
+
+      // Otherwise return a Promise for async/await support
+      return new Promise((resolve) => {
+        originalGetRegisteredBrowserFlags((flags) => {
+          resolve(modifyFlags(flags));
+        });
+      });
     };
 
     return true;
