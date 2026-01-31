@@ -290,46 +290,42 @@
   // COORDINATED STARTUP (wait for uBlock before navigating)
   // ============================================================================
 
-  // Homepage URL - placeholder replaced by meteor.ps1
-  const HOMEPAGE_URL = __METEOR_HOMEPAGE_URL__;
-
-  // Dynamic DNR rule ID for blocking until uBlock ready (high ID to avoid conflicts)
-  const BLOCK_UNTIL_READY_RULE_ID = 999999;
+  // Dynamic DNR rule ID for allow-all (overrides static block-all when uBlock ready)
+  const ALLOW_ALL_RULE_ID = 999999;
 
   // Initialization state tracking
   const initState = {
     meteorReady: false,
     ublockReady: false,
-    navigationDone: false,
+    reloadDone: false,
   };
 
   /**
-   * Add dynamic DNR rule to block all subresources until uBlock is ready.
-   * Main frame navigation is allowed so about:blank -> homepage works.
-   * This is defense-in-depth alongside the about:blank approach.
+   * Add dynamic DNR rule to allow all traffic once uBlock is ready.
+   * This overrides the static block-all rule (priority 100) with an allow-all (priority 200).
+   * Telemetry rules (priority 300) still take precedence and block telemetry.
    */
-  async function enableStartupBlocking() {
+  async function enableTrafficFlow() {
     if (!chrome?.declarativeNetRequest?.updateDynamicRules) {
       console.warn("[Meteor] declarativeNetRequest.updateDynamicRules not available");
       return;
     }
 
     try {
-      // Check if uBlock already signaled ready this session
-      const { meteorUblockReady } = await chrome.storage.session.get("meteorUblockReady");
-      if (meteorUblockReady) {
-        console.log("[Meteor] uBlock already ready this session, skipping blocking");
+      // Check if already enabled this session
+      const { meteorTrafficEnabled } = await chrome.storage.session.get("meteorTrafficEnabled");
+      if (meteorTrafficEnabled) {
+        console.log("[Meteor] Traffic already enabled this session");
         initState.ublockReady = true;
         return;
       }
 
-      // Block all subresources until uBlock ready
-      const blockRule = {
-        id: BLOCK_UNTIL_READY_RULE_ID,
-        priority: 1000000,
-        action: { type: "block" },
+      // Allow all subresources - overrides static block-all rule (priority 100)
+      const allowRule = {
+        id: ALLOW_ALL_RULE_ID,
+        priority: 200,
+        action: { type: "allow" },
         condition: {
-          // Block all resource types except main_frame (navigation must work)
           resourceTypes: [
             "sub_frame", "stylesheet", "script", "image", "font",
             "object", "xmlhttprequest", "ping", "csp_report", "media",
@@ -339,84 +335,58 @@
       };
 
       await chrome.declarativeNetRequest.updateDynamicRules({
-        removeRuleIds: [BLOCK_UNTIL_READY_RULE_ID],
-        addRules: [blockRule]
+        removeRuleIds: [ALLOW_ALL_RULE_ID],
+        addRules: [allowRule]
       });
 
-      console.log("[Meteor] Startup blocking enabled - all subresources blocked until uBlock ready");
+      await chrome.storage.session.set({ meteorTrafficEnabled: true });
+      console.log("[Meteor] Traffic flow enabled - uBlock is protecting");
     } catch (e) {
-      console.error("[Meteor] Failed to enable startup blocking:", e);
+      console.error("[Meteor] Failed to enable traffic flow:", e);
     }
   }
 
   /**
-   * Remove the startup blocking rule once uBlock is ready.
-   */
-  async function disableStartupBlocking() {
-    if (!chrome?.declarativeNetRequest?.updateDynamicRules) return;
-
-    try {
-      await chrome.declarativeNetRequest.updateDynamicRules({
-        removeRuleIds: [BLOCK_UNTIL_READY_RULE_ID]
-      });
-
-      // Remember that uBlock is ready for service worker restarts
-      await chrome.storage.session.set({ meteorUblockReady: true });
-
-      console.log("[Meteor] Startup blocking disabled - uBlock is protecting");
-    } catch (e) {
-      console.error("[Meteor] Failed to disable startup blocking:", e);
-    }
-  }
-
-  // Enable blocking immediately on service worker start
-  enableStartupBlocking();
-
-  /**
-   * Navigate to homepage once both Meteor and uBlock are ready.
+   * Reload tabs once both Meteor and uBlock are ready.
    * Only runs once per browser session (tracked via chrome.storage.session).
    */
-  async function maybeNavigateToHomepage() {
-    if (!initState.meteorReady || !initState.ublockReady || initState.navigationDone) {
+  async function maybeReloadTabs() {
+    if (!initState.meteorReady || !initState.ublockReady || initState.reloadDone) {
       return;
     }
 
-    // Check session flag to avoid re-navigation on service worker restarts
+    // Check session flag to avoid re-reload on service worker restarts
     try {
-      const { meteorHomepageOpened } = await chrome.storage.session.get("meteorHomepageOpened");
-      if (meteorHomepageOpened) {
-        console.log("[Meteor] Homepage already opened this session");
+      const { meteorTabsReloaded } = await chrome.storage.session.get("meteorTabsReloaded");
+      if (meteorTabsReloaded) {
+        console.log("[Meteor] Tabs already reloaded this session");
         return;
       }
     } catch (e) {
       // chrome.storage.session might not be available in all contexts
     }
 
-    initState.navigationDone = true;
+    initState.reloadDone = true;
 
     try {
-      await chrome.storage.session.set({ meteorHomepageOpened: true });
+      await chrome.storage.session.set({ meteorTabsReloaded: true });
     } catch (e) {
       // Ignore if session storage not available
     }
 
-    // Find about:blank tabs (from launch) and navigate to homepage
-    // Comet uses both chrome:// and comet:// URL schemes
+    // Reload all tabs so they load with uBlock protection
     const tabs = await chrome.tabs.query({});
-    const blankTabs = tabs.filter(
-      (t) =>
-        t.url === "about:blank" ||
-        t.url === "chrome://newtab/" ||
-        t.url === "comet://newtab/"
+    const reloadableTabs = tabs.filter(
+      (t) => t.url && (t.url.startsWith("http://") || t.url.startsWith("https://"))
     );
 
-    if (blankTabs.length > 0) {
-      console.log(`[Meteor] Navigating ${blankTabs.length} tab(s) to homepage`);
-      for (const tab of blankTabs) {
-        chrome.tabs.update(tab.id, { url: HOMEPAGE_URL });
+    if (reloadableTabs.length > 0) {
+      console.log(`[Meteor] Reloading ${reloadableTabs.length} tab(s) with uBlock protection`);
+      for (const tab of reloadableTabs) {
+        chrome.tabs.reload(tab.id);
       }
     } else {
-      console.log("[Meteor] No blank tabs to navigate");
+      console.log("[Meteor] No tabs to reload");
     }
   }
 
@@ -429,8 +399,8 @@
       if (message?.type === "ublock-ready") {
         console.log("[Meteor] uBlock Origin ready signal received");
         initState.ublockReady = true;
-        disableStartupBlocking();
-        maybeNavigateToHomepage();
+        enableTrafficFlow();
+        maybeReloadTabs();
       }
     });
     console.log("[Meteor] onMessageExternal listener registered");
@@ -444,7 +414,7 @@
   function markMeteorReady() {
     initState.meteorReady = true;
     console.log("[Meteor] Service worker ready");
-    maybeNavigateToHomepage();
+    maybeReloadTabs();
   }
 
   // ============================================================================

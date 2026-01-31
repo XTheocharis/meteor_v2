@@ -4064,6 +4064,11 @@ function Build-TelemetryDnrRules {
     .DESCRIPTION
         Reads the telemetry_blocking section from config.json and generates
         Chromium Declarative Net Request rules with sequential IDs.
+
+        Priority levels:
+        - 100: Block-all-subresources (startup blocking until uBlock ready)
+        - 200: Allow-all (dynamic rule added when uBlock signals ready)
+        - 300: Telemetry blocking (always active, overrides allow-all)
     #>
     param(
         [Parameter(Mandatory)]
@@ -4072,6 +4077,22 @@ function Build-TelemetryDnrRules {
 
     $rules = @()
     $ruleId = 1
+
+    # Rule 1: Block ALL subresources until uBlock is ready
+    # This is overridden by a dynamic allow-all rule (priority 200) when uBlock signals ready
+    # Main frame is allowed so the page structure can load
+    $rules += [ordered]@{
+        id        = $ruleId++
+        priority  = 100
+        action    = @{ type = "block" }
+        condition = @{
+            resourceTypes = @(
+                "sub_frame", "stylesheet", "script", "image", "font",
+                "object", "xmlhttprequest", "ping", "csp_report", "media",
+                "websocket", "webtransport", "webbundle", "other"
+            )
+        }
+    }
 
     # Process domains
     if ($TelemetryConfig.PSObject.Properties['domains']) {
@@ -4087,7 +4108,7 @@ function Build-TelemetryDnrRules {
             if ($config.PSObject.Properties['block_scripts'] -and $config.block_scripts) {
                 $rules += [ordered]@{
                     id        = $ruleId++
-                    priority  = 1
+                    priority  = 300
                     action    = @{ type = "block" }
                     condition = @{
                         urlFilter     = $urlFilter
@@ -4112,7 +4133,7 @@ function Build-TelemetryDnrRules {
 
                 $rules += [ordered]@{
                     id        = $ruleId++
-                    priority  = 1
+                    priority  = 300
                     action    = @{
                         type     = "redirect"
                         redirect = @{ url = "data:application/json,{}" }
@@ -4136,7 +4157,7 @@ function Build-TelemetryDnrRules {
             if ($config.PSObject.Properties['block_scripts'] -and $config.block_scripts) {
                 $rules += [ordered]@{
                     id        = $ruleId++
-                    priority  = 1
+                    priority  = 300
                     action    = @{ type = "block" }
                     condition = @{
                         urlFilter     = $endpointPath
@@ -4149,7 +4170,7 @@ function Build-TelemetryDnrRules {
             if ($config.PSObject.Properties['redirect_xhr'] -and $config.redirect_xhr) {
                 $rules += [ordered]@{
                     id        = $ruleId++
-                    priority  = 1
+                    priority  = 300
                     action    = @{
                         type     = "redirect"
                         redirect = @{ url = "data:application/json,{}" }
@@ -4168,7 +4189,7 @@ function Build-TelemetryDnrRules {
         foreach ($eppoDomain in $TelemetryConfig.eppo_domains) {
             $rules += [ordered]@{
                 id        = $ruleId++
-                priority  = 1
+                priority  = 300
                 action    = @{ type = "block" }
                 condition = @{
                     urlFilter     = "||$eppoDomain"
@@ -7857,13 +7878,9 @@ function Build-BrowserCommand {
 
     [void]$cmd.Add("--flag-switches-end")
 
-    # ========================================
-    # Section 5: Initial URL (Coordinated Startup)
-    # ========================================
-    # Launch with about:blank to prevent NTP from loading before extensions are ready.
-    # The Meteor service worker will navigate to the homepage once both Meteor and
-    # uBlock Origin have finished initializing.
-    [void]$cmd.Add("about:blank")
+    # Note: No initial URL specified - browser opens default NTP.
+    # Static DNR rule (priority 100) blocks all subresources until uBlock signals ready.
+    # Then dynamic allow rule (priority 200) enables traffic and tabs are reloaded.
 
     return $cmd
 }
