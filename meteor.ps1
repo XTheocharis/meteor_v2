@@ -4744,6 +4744,13 @@ function Initialize-PatchedExtensions {
                 }
                 $placeholderValues['__METEOR_FEATURE_FLAGS__'] = $combinedFlags | ConvertTo-Json -Depth 10 -Compress
 
+                # Build debug settings
+                $eppoPassthrough = $false
+                if ($MeteorConfig.PSObject.Properties['debug'] -and $MeteorConfig.debug.PSObject.Properties['eppo_passthrough']) {
+                    $eppoPassthrough = $MeteorConfig.debug.eppo_passthrough -eq $true
+                }
+                $placeholderValues['__METEOR_EPPO_PASSTHROUGH__'] = if ($eppoPassthrough) { 'true' } else { 'false' }
+
                 # Build telemetry blocklist for content-script.js
                 if ($MeteorConfig.PSObject.Properties['telemetry_blocking']) {
                     $blocklists = Build-ContentScriptBlocklist -TelemetryConfig $MeteorConfig.telemetry_blocking

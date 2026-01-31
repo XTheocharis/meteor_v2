@@ -82,6 +82,13 @@
   // Placeholder replaced by meteor.ps1 with flags from config.json
   const FEATURE_FLAG_OVERRIDES = __METEOR_FEATURE_FLAGS__;
 
+  // Debug mode: when true, disables Eppo interception to observe real SDK traffic
+  const EPPO_PASSTHROUGH = __METEOR_EPPO_PASSTHROUGH__;
+
+  if (EPPO_PASSTHROUGH) {
+    console.log("%c[Meteor SW] EPPO PASSTHROUGH MODE - Eppo overrides disabled for debugging", "color: #f59e0b; font-weight: bold;");
+  }
+
   /**
    * Get the flag type string for a given value.
    */
@@ -94,7 +101,7 @@
   }
 
   /**
-   * Patch chrome.perplexity.features.getFlagValue to return our overrides.
+   * Patch chrome.perplexity.features.getFlagValue to return our overrides (or just log in passthrough mode).
    */
   function patchGetFlagValue() {
     if (!chrome?.perplexity?.features?.getFlagValue) {
@@ -107,6 +114,22 @@
     );
 
     chrome.perplexity.features.getFlagValue = function (flagName, callback) {
+      // In passthrough mode, just log and call original
+      if (EPPO_PASSTHROUGH) {
+        const wrapCallback = callback ? (result) => {
+          console.log(
+            `%c[EPPO SW] %cgetFlagValue(%c"${flagName}"%c) = %c${JSON.stringify(result?.value)}`,
+            "color: #a855f7; font-weight: bold;",
+            "color: #fff",
+            "color: #00ffff",
+            "color: #fff",
+            "color: #22c55e",
+          );
+          callback(result);
+        } : null;
+        return originalGetFlagValue(flagName, wrapCallback);
+      }
+
       // Check if we have an override for this flag
       if (flagName in FEATURE_FLAG_OVERRIDES) {
         const value = FEATURE_FLAG_OVERRIDES[flagName];
@@ -145,8 +168,17 @@
       chrome.perplexity.features.getRegisteredBrowserFlags.bind(chrome.perplexity.features);
 
     chrome.perplexity.features.getRegisteredBrowserFlags = function (callback) {
-      // Helper to modify flags array with our overrides
+      // Helper to modify flags array with our overrides (skipped in passthrough mode)
       const modifyFlags = (flags) => {
+        if (EPPO_PASSTHROUGH) {
+          console.log(
+            `%c[EPPO SW] %cgetRegisteredBrowserFlags() returned %c${flags.length} flags`,
+            "color: #a855f7; font-weight: bold;",
+            "color: #fff",
+            "color: #22c55e",
+          );
+          return flags;
+        }
         // flags is an array of {name, type, value} objects
         return flags.map((flag) => {
           if (flag.name in FEATURE_FLAG_OVERRIDES) {
@@ -272,7 +304,7 @@
     }
   }
 
-  // Patch Eppo client methods for override and logging
+  // Patch Eppo client methods for override and logging (or just log in passthrough mode)
   function patchEppoClientMethods(client) {
     if (!client || client.__meteorPatched) return;
 
@@ -293,7 +325,8 @@
           subjectAttributes,
           defaultValue,
         ) {
-          const hasOverride = flagKey in FEATURE_FLAG_OVERRIDES;
+          // In passthrough mode, just log and return original result
+          const hasOverride = !EPPO_PASSTHROUGH && flagKey in FEATURE_FLAG_OVERRIDES;
           const result = hasOverride
             ? FEATURE_FLAG_OVERRIDES[flagKey]
             : original(flagKey, subjectKey, subjectAttributes, defaultValue);

@@ -271,6 +271,9 @@
   // Placeholder replaced by meteor.ps1 with flags from config.json
   const LOCAL_FEATURE_FLAGS = __METEOR_FEATURE_FLAGS__;
 
+  // Debug mode: when true, disables Eppo interception to observe real SDK traffic
+  const EPPO_PASSTHROUGH = __METEOR_EPPO_PASSTHROUGH__;
+
   // Generate EPPO_OVERRIDES from LOCAL_FEATURE_FLAGS (boolean/number flags only, as strings)
   // The SPA checks localStorage['eppo_overrides'] BEFORE making network requests.
   const EPPO_OVERRIDES = Object.fromEntries(
@@ -282,12 +285,21 @@
   // Inject Eppo overrides via COOKIE (primary) and localStorage (backup)
   // The SPA checks cookies FIRST via js-cookie, then falls back to localStorage.
   try {
-    const cookieValue = encodeURIComponent(JSON.stringify(EPPO_OVERRIDES));
-    const expires = new Date(
-      Date.now() + 365 * 24 * 60 * 60 * 1000,
-    ).toUTCString();
-    document.cookie = `eppo_overrides=${cookieValue}; path=/; expires=${expires}; SameSite=Lax`;
-    localStorage.setItem("eppo_overrides", JSON.stringify(EPPO_OVERRIDES));
+    // Skip Eppo overrides when passthrough is enabled
+    if (!EPPO_PASSTHROUGH) {
+      const cookieValue = encodeURIComponent(JSON.stringify(EPPO_OVERRIDES));
+      const expires = new Date(
+        Date.now() + 365 * 24 * 60 * 60 * 1000,
+      ).toUTCString();
+      document.cookie = `eppo_overrides=${cookieValue}; path=/; expires=${expires}; SameSite=Lax`;
+      localStorage.setItem("eppo_overrides", JSON.stringify(EPPO_OVERRIDES));
+
+      // Clear Eppo IndexedDB to force fresh fetch (which we intercept)
+      // This prevents stale cached flags from being used before our interception
+      indexedDB.deleteDatabase("eppo-sdk");
+    } else {
+      console.log("%c[Meteor] EPPO PASSTHROUGH MODE - Eppo overrides disabled for debugging", "color: #f59e0b; font-weight: bold;");
+    }
 
     // Enable debug features directly
     localStorage.setItem("pplx_debug_mode", "true");
@@ -297,10 +309,6 @@
     // Override tracking consent cookies to disable tracking
     document.cookie = "pplx.trackingAllowed=false; path=/; SameSite=Lax";
     document.cookie = "trackingAllowed=false; path=/; SameSite=Lax";
-
-    // Clear Eppo IndexedDB to force fresh fetch (which we intercept)
-    // This prevents stale cached flags from being used before our interception
-    indexedDB.deleteDatabase("eppo-sdk");
   } catch (e) {
     console.warn("[Meteor] Could not set eppo_overrides:", e);
   }
@@ -457,8 +465,8 @@
       );
     }
 
-    // Intercept Eppo SDK requests with mock config
-    if (isEppoEndpoint(url)) {
+    // Intercept Eppo SDK requests with mock config (skip in passthrough mode)
+    if (!EPPO_PASSTHROUGH && isEppoEndpoint(url)) {
       return Promise.resolve(
         new Response(JSON.stringify(createMockEppoConfig()), {
           status: 200,
@@ -608,7 +616,7 @@
     }
   }
 
-  // Patch client assignment methods to use our overrides
+  // Patch client assignment methods to use our overrides (or just log in passthrough mode)
   function patchClientMethods(client) {
     if (!client || client.__meteorPatched) return;
 
@@ -629,7 +637,8 @@
           subjectAttributes,
           defaultValue,
         ) {
-          const hasOverride = LOCAL_FEATURE_FLAGS.hasOwnProperty(flagKey);
+          // In passthrough mode, just log and return original result
+          const hasOverride = !EPPO_PASSTHROUGH && LOCAL_FEATURE_FLAGS.hasOwnProperty(flagKey);
           const result = hasOverride
             ? LOCAL_FEATURE_FLAGS[flagKey]
             : original(flagKey, subjectKey, subjectAttributes, defaultValue);

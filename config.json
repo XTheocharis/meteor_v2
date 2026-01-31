@@ -1,5 +1,9 @@
 {
   "_comment": "Meteor v2 Configuration - Privacy-focused Comet browser enhancement system",
+  "debug": {
+    "eppo_passthrough": false,
+    "_comment": "When eppo_passthrough=true, disables all Eppo interception/modification and enables SDK probing to observe real Eppo traffic"
+  },
   "comet": {
     "download_url": "https://www.perplexity.ai/rest/browser/download?platform=win_x64&channel=stable",
     "install_path": "",
