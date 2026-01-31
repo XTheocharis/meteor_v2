@@ -3982,7 +3982,10 @@ function Get-UBlockOrigin {
             # If telemetry_blocking config exists, generate userFilters dynamically
             $meteorConfig = Get-MeteorConfig
             if ($meteorConfig.PSObject.Properties['telemetry_blocking']) {
-                $generatedFilters = Build-UBlockTelemetryFilters -TelemetryConfig $meteorConfig.telemetry_blocking
+                $eppoPassthrough = $meteorConfig.PSObject.Properties['debug'] -and $meteorConfig.debug.PSObject.Properties['eppo_passthrough'] -and $meteorConfig.debug.eppo_passthrough -eq $true
+                $filterParams = @{ TelemetryConfig = $meteorConfig.telemetry_blocking }
+                if ($eppoPassthrough) { $filterParams['EppoPassthrough'] = $true }
+                $generatedFilters = Build-UBlockTelemetryFilters @filterParams
                 # Update userFilters in the settings
                 if ($settings.PSObject.Properties['userFilters']) {
                     $settings.userFilters = $generatedFilters
@@ -4277,7 +4280,10 @@ function Build-UBlockTelemetryFilters {
     #>
     param(
         [Parameter(Mandatory)]
-        [object]$TelemetryConfig
+        [object]$TelemetryConfig,
+
+        [Parameter()]
+        [switch]$EppoPassthrough
     )
 
     $filters = @()
@@ -4302,8 +4308,8 @@ function Build-UBlockTelemetryFilters {
         }
     }
 
-    # Process Eppo domains
-    if ($TelemetryConfig.PSObject.Properties['eppo_domains']) {
+    # Process Eppo domains (skip in passthrough mode)
+    if (-not $EppoPassthrough -and $TelemetryConfig.PSObject.Properties['eppo_domains']) {
         $filters += "! Eppo Feature Flags"
         foreach ($eppoDomain in $TelemetryConfig.eppo_domains) {
             $filters += "||$eppoDomain^`$all"
@@ -8794,7 +8800,10 @@ function Initialize-AdBlockExtensions {
                         $settings = $ext.Config.defaults
                         $meteorConfig = Get-MeteorConfig
                         if ($meteorConfig.PSObject.Properties['telemetry_blocking']) {
-                            $generatedFilters = Build-UBlockTelemetryFilters -TelemetryConfig $meteorConfig.telemetry_blocking
+                            $eppoPassthrough = $meteorConfig.PSObject.Properties['debug'] -and $meteorConfig.debug.PSObject.Properties['eppo_passthrough'] -and $meteorConfig.debug.eppo_passthrough -eq $true
+                            $filterParams = @{ TelemetryConfig = $meteorConfig.telemetry_blocking }
+                            if ($eppoPassthrough) { $filterParams['EppoPassthrough'] = $true }
+                            $generatedFilters = Build-UBlockTelemetryFilters @filterParams
                             if ($settings.PSObject.Properties['userFilters']) {
                                 $settings.userFilters = $generatedFilters
                             }
@@ -9463,7 +9472,10 @@ setTimeout(checkAndImport, 3000);
             }
             # Generate userFilters dynamically from telemetry_blocking config
             if ($config.PSObject.Properties['telemetry_blocking']) {
-                $ublockDefaults['userFilters'] = Build-UBlockTelemetryFilters -TelemetryConfig $config.telemetry_blocking
+                $eppoPassthrough = $config.PSObject.Properties['debug'] -and $config.debug.PSObject.Properties['eppo_passthrough'] -and $config.debug.eppo_passthrough -eq $true
+                $filterParams = @{ TelemetryConfig = $config.telemetry_blocking }
+                if ($eppoPassthrough) { $filterParams['EppoPassthrough'] = $true }
+                $ublockDefaults['userFilters'] = Build-UBlockTelemetryFilters @filterParams
             }
         }
 
