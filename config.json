@@ -272,6 +272,21 @@
               "pattern": "isDebugMode:\\w+!==\"production\"",
               "replacement": "isDebugMode:true",
               "description": "Force AnalyticsService debug mode to skip fetch calls"
+            },
+            {
+              "pattern": "async fetchFlagConfigurations\\(\\)\\{if\\(!this\\.configurationRequestParameters\\)",
+              "replacement": "async fetchFlagConfigurations(){return;if(!this.configurationRequestParameters)",
+              "description": "Disable Eppo SDK fetch - return immediately to prevent network errors"
+            },
+            {
+              "pattern": "async init\\(\\)\\{if\\(!await this\\.#s\\(\\)\\)\\{this\\.logger\\.info\\(\"Zero suggest pref is unavailable",
+              "replacement": "async init(){return;if(!await this.#s()){this.logger.info(\"Zero suggest pref is unavailable",
+              "description": "Disable SpotlightZeroSuggestUpdater - return immediately"
+            },
+            {
+              "pattern": "async shouldSendStartupMetrics\\((\\w+)\\)\\{try\\{const (\\w+)=await this\\.browserStorage\\.getItem\\(",
+              "replacement": "async shouldSendStartupMetrics($1){return false;try{const $2=await this.browserStorage.getItem(",
+              "description": "Disable StartupMetricsManager - always return false"
             }
           ]
         }
@@ -279,6 +294,13 @@
       "comet_web_resources": {
         "file_patches": {
           "_comment": "Regex replacements for comet_web_resources extension files",
+          "spa/assets/ask-input-*.js": [
+            {
+              "pattern": "(\\w+)\\.getQuickActions\\(\"get-quick-actions-for-sidecar-suggests\"\\)",
+              "replacement": "Promise.resolve([])",
+              "description": "Disable quick actions - return empty array immediately"
+            }
+          ],
           "spa/assets/page-component-*.js": [
             {
               "pattern": "\\{widgetEditMode:(\\w+)\\}\\)\\{const",
