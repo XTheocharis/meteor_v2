@@ -9068,7 +9068,8 @@ function Main {
                 [string]$UBlockExtensionId,
                 [string]$AdGuardExtensionId,
                 [object]$UBlockDefaults,
-                [bool]$ForceDownload
+                [bool]$ForceDownload,
+                [string]$PerplexityExtensionId
             )
 
             # Helper: Read protobuf varint
@@ -9251,7 +9252,7 @@ function Main {
 
             # Helper: Configure uBlock auto-import
             function Configure-InlineUBlock {
-                param([string]$UBlockDir, [object]$Defaults)
+                param([string]$UBlockDir, [object]$Defaults, [string]$PerplexityExtId)
                 $jsDir = Join-Path $UBlockDir "js"
                 if (-not (Test-Path $jsDir) -or -not $Defaults) { return }
 
@@ -9259,14 +9260,38 @@ function Main {
                 $customLists = @($Defaults.selectedFilterLists | Where-Object { $_ -match '^https?://' })
                 $customListsJson = if ($customLists.Count -gt 0) { $customLists | ConvertTo-Json -Compress } else { "[]" }
 
+                # Build notification code if perplexity extension ID provided
+                $notifyCode = ""
+                if ($PerplexityExtId) {
+                    $notifyCode = @"
+
+// Notify Meteor extension that uBlock is ready for coordinated startup
+const notifyMeteorReady = async () => {
+    try {
+        await µb.isReadyPromise;
+        console.log('[Meteor] uBlock ready, notifying Meteor extension');
+        try {
+            chrome.runtime.sendMessage('$PerplexityExtId', { type: 'ublock-ready' });
+        } catch (e) {
+            console.log('[Meteor] Could not notify Meteor extension:', e.message);
+        }
+    } catch (ex) {
+        console.error('[Meteor] Error in notifyMeteorReady:', ex);
+    }
+};
+notifyMeteorReady();
+"@
+                }
+
                 # Create auto-import.js
                 $autoImportPath = Join-Path $jsDir "auto-import.js"
                 $autoImportCode = @"
 /*******************************************************************************
-    Meteor - Auto-import custom defaults on first run
+    Meteor - Auto-import custom defaults on first run + coordinated startup
 *******************************************************************************/
 import µb from './background.js';
 import io from './assets.js';
+$notifyCode
 const customFilterLists = $customListsJson;
 const checkAndImport = async () => {
     try {
@@ -9343,7 +9368,7 @@ setTimeout(checkAndImport, 3000);
                     }
 
                     # Configure uBlock
-                    Configure-InlineUBlock -UBlockDir $UBlockPath -Defaults $UBlockDefaults
+                    Configure-InlineUBlock -UBlockDir $UBlockPath -Defaults $UBlockDefaults -PerplexityExtId $PerplexityExtensionId
                     $result.UBlockPath = $UBlockPath
                 }
 
@@ -9402,7 +9427,8 @@ setTimeout(checkAndImport, 3000);
             $config.ublock.extension_id,
             $config.adguard_extra.extension_id,
             $ublockDefaults,
-            $Force
+            $Force,
+            $config.perplexity_extension_id
         )
     }
 
