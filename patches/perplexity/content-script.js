@@ -297,6 +297,10 @@
     // Override tracking consent cookies to disable tracking
     document.cookie = "pplx.trackingAllowed=false; path=/; SameSite=Lax";
     document.cookie = "trackingAllowed=false; path=/; SameSite=Lax";
+
+    // Clear Eppo IndexedDB to force fresh fetch (which we intercept)
+    // This prevents stale cached flags from being used before our interception
+    indexedDB.deleteDatabase("eppo-sdk");
   } catch (e) {
     console.warn("[Meteor] Could not set eppo_overrides:", e);
   }
