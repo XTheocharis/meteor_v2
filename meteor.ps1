@@ -5950,6 +5950,9 @@ function Set-BrowserPreferences {
         # DevTools
         "devtools.availability" = 1      # 1 = always available
         "devtools.gen_ai_settings" = 1   # 1 = disallow Gen AI features
+        "devtools.synced_preferences_sync_disabled" = @{
+            "disable-self-xss-warning" = $true   # Allow pasting in console without typing "allow pasting"
+        }
 
         # AI & Lens Features (disable Google AI integrations)
         "browser.gemini_settings"           = 1      # 1 = disabled
@@ -6343,6 +6346,9 @@ function Update-TrackedPreferences {
             "enable_a_ping" = $false
             "devtools.availability" = 1
             "devtools.gen_ai_settings" = 1
+            "devtools.synced_preferences_sync_disabled" = @{
+                "disable-self-xss-warning" = $true
+            }
             "browser.gemini_settings" = 1
             "glic.actuation_on_web" = 1
             "lens.policy.lens_overlay_settings" = 1
