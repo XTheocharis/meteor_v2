@@ -4773,8 +4773,9 @@ function Initialize-PatchedExtensions {
                         $modified = $false
 
                         foreach ($patch in $filePattern.Value) {
-                            if ($content -match [regex]::Escape($patch.pattern)) {
-                                $content = $content -replace [regex]::Escape($patch.pattern), $patch.replacement
+                            # Use regex pattern directly (not escaped) for flexible matching
+                            if ($content -match $patch.pattern) {
+                                $content = $content -replace $patch.pattern, $patch.replacement
                                 $modified = $true
                                 Write-VerboseTimestamped "[File Patch] Applied: $($patch.description)"
                             }

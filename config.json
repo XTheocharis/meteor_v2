@@ -266,10 +266,10 @@
           "content/content-script.js": "perplexity/content-script.js"
         },
         "file_patches": {
-          "_comment": "Regex replacements applied to existing extension files",
+          "_comment": "Regex replacements applied to existing extension files. Patterns are actual regex.",
           "assets/js/background.ts.*.js": [
             {
-              "pattern": "isDebugMode:_i!==\"production\"",
+              "pattern": "isDebugMode:\\w+!==\"production\"",
               "replacement": "isDebugMode:true",
               "description": "Force AnalyticsService debug mode to skip fetch calls"
             }
