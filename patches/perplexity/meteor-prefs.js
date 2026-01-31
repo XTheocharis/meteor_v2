@@ -11,6 +11,46 @@
   "use strict";
 
   // ============================================================================
+  // CONSOLE LOG FILTERING (suppress noisy extension logs)
+  // ============================================================================
+  // Must run FIRST before any extension code loads.
+
+  const SUPPRESSED_LOG_PREFIXES = [
+    "[SerpAnalyticsService] [SerpAnalyticsService] Analytics are not allowed by user",
+    "[PerplexityMetricSender] [PerplexityMetricSender] Metrics are not allowed by user",
+    "[AnalyticsService] Sending batch of events",
+  ];
+
+  function shouldSuppressLog(args) {
+    if (args.length === 0) return false;
+    const first = args[0];
+    if (typeof first !== "string") return false;
+    return SUPPRESSED_LOG_PREFIXES.some((prefix) => first.startsWith(prefix));
+  }
+
+  const originalConsoleLog = console.log.bind(console);
+  const originalConsoleInfo = console.info.bind(console);
+  const originalConsoleWarn = console.warn.bind(console);
+
+  console.log = function (...args) {
+    if (!shouldSuppressLog(args)) {
+      originalConsoleLog(...args);
+    }
+  };
+
+  console.info = function (...args) {
+    if (!shouldSuppressLog(args)) {
+      originalConsoleInfo(...args);
+    }
+  };
+
+  console.warn = function (...args) {
+    if (!shouldSuppressLog(args)) {
+      originalConsoleWarn(...args);
+    }
+  };
+
+  // ============================================================================
   // FEATURE FLAG OVERRIDES (chrome.perplexity.features interception)
   // ============================================================================
   // Single source of truth: Injected from config.json by meteor.ps1 during patching.

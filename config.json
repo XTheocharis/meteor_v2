@@ -290,7 +290,8 @@
     "enable-local-mcp": true,
     "enable-local-custom-mcp": true,
 
-    "voice-assistant": true,
+    "voice-assistant": false,
+    "voice-assistant-new": true,
 
     "bundled-comet-web-resources-3": true,
 
@@ -499,7 +500,7 @@
       "||m.stripe.network$sub_frame,domain=www.perplexity.ai|perplexity.ai|newtab.chrome-scheme",
       "! ====== COSMETIC FILTERS ======",
       "! Hide \"0 ads and trackers blocked\" button on new tab and Perplexity pages",
-      "newtab.chrome-scheme,www.perplexity.ai,perplexity.ai##button:has-text(/^0 ads and trackers blocked$/)"
+      "newtab.chrome-scheme,www.perplexity.ai,perplexity.ai##button:has-text(/^(0 ads and trackers blocked|Learn how Comet protects your privacy)$/)"
     ]
   },
   "enforced_preferences": {
