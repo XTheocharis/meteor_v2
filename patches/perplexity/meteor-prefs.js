@@ -287,6 +287,91 @@
   }
 
   // ============================================================================
+  // COORDINATED STARTUP (wait for uBlock before navigating)
+  // ============================================================================
+
+  // Homepage URL - placeholder replaced by meteor.ps1
+  const HOMEPAGE_URL = __METEOR_HOMEPAGE_URL__;
+
+  // Initialization state tracking
+  const initState = {
+    meteorReady: false,
+    ublockReady: false,
+    navigationDone: false,
+  };
+
+  /**
+   * Navigate to homepage once both Meteor and uBlock are ready.
+   * Only runs once per browser session (tracked via chrome.storage.session).
+   */
+  async function maybeNavigateToHomepage() {
+    if (!initState.meteorReady || !initState.ublockReady || initState.navigationDone) {
+      return;
+    }
+
+    // Check session flag to avoid re-navigation on service worker restarts
+    try {
+      const { meteorHomepageOpened } = await chrome.storage.session.get("meteorHomepageOpened");
+      if (meteorHomepageOpened) {
+        console.log("[Meteor] Homepage already opened this session");
+        return;
+      }
+    } catch (e) {
+      // chrome.storage.session might not be available in all contexts
+    }
+
+    initState.navigationDone = true;
+
+    try {
+      await chrome.storage.session.set({ meteorHomepageOpened: true });
+    } catch (e) {
+      // Ignore if session storage not available
+    }
+
+    // Find about:blank tabs (from launch) and navigate to homepage
+    // Comet uses both chrome:// and comet:// URL schemes
+    const tabs = await chrome.tabs.query({});
+    const blankTabs = tabs.filter(
+      (t) =>
+        t.url === "about:blank" ||
+        t.url === "chrome://newtab/" ||
+        t.url === "comet://newtab/"
+    );
+
+    if (blankTabs.length > 0) {
+      console.log(`[Meteor] Navigating ${blankTabs.length} tab(s) to homepage`);
+      for (const tab of blankTabs) {
+        chrome.tabs.update(tab.id, { url: HOMEPAGE_URL });
+      }
+    } else {
+      console.log("[Meteor] No blank tabs to navigate");
+    }
+  }
+
+  /**
+   * Listen for ready signal from uBlock Origin.
+   * uBlock sends { type: 'ublock-ready' } after filter lists are loaded.
+   */
+  if (chrome?.runtime?.onMessageExternal) {
+    chrome.runtime.onMessageExternal.addListener((message, sender) => {
+      if (message?.type === "ublock-ready") {
+        console.log("[Meteor] uBlock Origin ready signal received");
+        initState.ublockReady = true;
+        maybeNavigateToHomepage();
+      }
+    });
+  }
+
+  /**
+   * Mark Meteor as ready after a short delay to ensure all patches are applied.
+   */
+  function markMeteorReady() {
+    initState.meteorReady = true;
+    console.log("[Meteor] Service worker ready");
+    maybeNavigateToHomepage();
+  }
+
+  // ============================================================================
   // INITIALIZATION
   // ============================================================================
 
@@ -311,4 +396,8 @@
     Object.keys(FEATURE_FLAG_OVERRIDES).length,
     "flags"
   );
+
+  // Mark Meteor ready after initialization completes
+  // Small delay ensures all patches have been applied
+  setTimeout(markMeteorReady, 100);
 })();

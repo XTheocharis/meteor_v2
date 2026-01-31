@@ -3774,6 +3774,7 @@ function Initialize-UBlockAutoImport {
         Configure uBlock Origin auto-import system.
     .DESCRIPTION
         Creates auto-import.js and patches start.js to apply Meteor defaults on first run.
+        Also sets up cross-extension messaging to notify Meteor when uBlock is ready.
         Extracted as helper for use by both Get-UBlockOrigin and parallel download path.
     #>
     param(
@@ -3781,7 +3782,10 @@ function Initialize-UBlockAutoImport {
         [string]$UBlockDir,
 
         [Parameter(Mandatory)]
-        [object]$UBlockConfig
+        [object]$UBlockConfig,
+
+        [Parameter()]
+        [string]$PerplexityExtensionId
     )
 
     $jsDir = Join-Path $UBlockDir "js"
@@ -3800,16 +3804,45 @@ function Initialize-UBlockAutoImport {
 
     # Create auto-import.js that applies settings on first run
     $autoImportPath = Join-Path $jsDir "auto-import.js"
+
+    # Build the perplexity extension ID notification code if ID is provided
+    $notifyCode = ""
+    if ($PerplexityExtensionId) {
+        $notifyCode = @"
+
+// Notify Meteor extension that uBlock is ready for coordinated startup
+const notifyMeteorReady = async () => {
+    try {
+        await µb.isReadyPromise;
+        console.log('[Meteor] uBlock ready, notifying Meteor extension');
+        try {
+            chrome.runtime.sendMessage('$PerplexityExtensionId', { type: 'ublock-ready' });
+        } catch (e) {
+            // Meteor extension may not be available
+            console.log('[Meteor] Could not notify Meteor extension:', e.message);
+        }
+    } catch (ex) {
+        console.error('[Meteor] Error in notifyMeteorReady:', ex);
+    }
+};
+
+// Run notification immediately (no delay)
+notifyMeteorReady();
+"@
+    }
+
     $autoImportCode = @"
 /*******************************************************************************
 
-    Meteor - Auto-import custom defaults on first run
+    Meteor - Auto-import custom defaults on first run + coordinated startup
 
 *******************************************************************************/
 
 import µb from './background.js';
 import io from './assets.js';
 
+/******************************************************************************/
+$notifyCode
 /******************************************************************************/
 
 const customFilterLists = $customListsJson;
@@ -3906,13 +3939,15 @@ function Get-UBlockOrigin {
         Download uBlock Origin MV2 from Chrome Web Store if not present or outdated.
     .DESCRIPTION
         Downloads the extension from Chrome Web Store, extracts it, and configures
-        the auto-import system for applying Meteor defaults.
+        the auto-import system for applying Meteor defaults. Also sets up cross-extension
+        messaging to notify Meteor when uBlock is ready.
     #>
     param(
         [string]$OutputDir,
         [object]$UBlockConfig,
         [switch]$ForceDownload,
-        [switch]$SkipDownload
+        [switch]$SkipDownload,
+        [string]$PerplexityExtensionId
     )
 
     try {
@@ -3967,7 +4002,7 @@ function Get-UBlockOrigin {
             Save-JsonFile -Path $settingsPath -Object $settings -Depth 20
 
             # Use helper function to create auto-import.js and patch start.js
-            Initialize-UBlockAutoImport -UBlockDir $OutputDir -UBlockConfig $UBlockConfig
+            Initialize-UBlockAutoImport -UBlockDir $OutputDir -UBlockConfig $UBlockConfig -PerplexityExtensionId $PerplexityExtensionId
         }
 
         return $OutputDir
@@ -7807,6 +7842,14 @@ function Build-BrowserCommand {
 
     [void]$cmd.Add("--flag-switches-end")
 
+    # ========================================
+    # Section 5: Initial URL (Coordinated Startup)
+    # ========================================
+    # Launch with about:blank to prevent NTP from loading before extensions are ready.
+    # The Meteor service worker will navigate to the homepage once both Meteor and
+    # uBlock Origin have finished initializing.
+    [void]$cmd.Add("about:blank")
+
     return $cmd
 }
 
@@ -8498,7 +8541,7 @@ function Initialize-AdBlockExtensions {
             }
             $null = Export-CrxToDirectory -CrxPath $PreDownloadedUBlock -OutputDir $UBlockPath -InjectKey
             # Configure uBlock (add auto-import.js, patch start.js, etc.)
-            $null = Get-UBlockOrigin -OutputDir $UBlockPath -UBlockConfig $Config.ublock -SkipDownload
+            $null = Get-UBlockOrigin -OutputDir $UBlockPath -UBlockConfig $Config.ublock -SkipDownload -PerplexityExtensionId $Config.perplexity_extension_id
             Write-Status "uBlock Origin installed" -Type Success
             $ublockHandled = $true
         }
@@ -8568,7 +8611,7 @@ function Initialize-AdBlockExtensions {
     # If only one extension or none, use sequential path
     if ($extensionsToCheck.Count -le 1) {
         if ($ublockEnabled -and -not $ublockHandled) {
-            $null = Get-UBlockOrigin -OutputDir $UBlockPath -UBlockConfig $Config.ublock -ForceDownload:$Force
+            $null = Get-UBlockOrigin -OutputDir $UBlockPath -UBlockConfig $Config.ublock -ForceDownload:$Force -PerplexityExtensionId $Config.perplexity_extension_id
         }
         if ($adguardEnabled -and -not $adguardHandled) {
             $null = Get-AdGuardExtra -OutputDir $AdGuardExtraPath -AdGuardConfig $Config.adguard_extra -ForceDownload:$Force
@@ -8697,7 +8740,8 @@ function Initialize-AdBlockExtensions {
                         # Save settings and create auto-import.js
                         $settingsPath = Join-Path $ext.OutputDir "ublock-settings.json"
                         Save-JsonFile -Path $settingsPath -Object $settings -Depth 20
-                        Initialize-UBlockAutoImport -UBlockDir $ext.OutputDir -UBlockConfig $ext.Config
+                        $pplxExtId = $meteorConfig.perplexity_extension_id
+                        Initialize-UBlockAutoImport -UBlockDir $ext.OutputDir -UBlockConfig $ext.Config -PerplexityExtensionId $pplxExtId
                     }
                 }
 
@@ -8718,7 +8762,7 @@ function Initialize-AdBlockExtensions {
         # Single extension needs download - use original functions
         $ext = $extensionsNeedingDownload[0]
         if ($ext.Type -eq "ublock") {
-            $null = Get-UBlockOrigin -OutputDir $ext.OutputDir -UBlockConfig $ext.Config -ForceDownload:$Force
+            $null = Get-UBlockOrigin -OutputDir $ext.OutputDir -UBlockConfig $ext.Config -ForceDownload:$Force -PerplexityExtensionId $Config.perplexity_extension_id
         }
         else {
             $null = Get-AdGuardExtra -OutputDir $ext.OutputDir -AdGuardConfig $ext.Config -ForceDownload:$Force

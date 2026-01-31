@@ -629,6 +629,7 @@
   "urls": {
     "homepage": "https://www.perplexity.ai/b/home"
   },
+  "perplexity_extension_id": "mcjlamohcooanphmebaiigheeeoplihb",
   "local_state_preferences": {
     "_comment": "Preferences written to Local State file. Registered via RegisterLocalStatePrefs() or policy prefs.",
     "policy.lens_desktop_ntp_search_enabled": false,
