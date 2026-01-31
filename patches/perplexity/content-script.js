@@ -412,6 +412,17 @@
     };
   `;
 
+  // Stub module for restricted-feature-debug script
+  // Exports no-op versions of debug mode constants and functions
+  const RESTRICTED_DEBUG_STUB_MODULE = `
+    export const D = "pplx_debug_mode";
+    export const B = "pplx.backend_flag_override_widget_visible";
+    export const a = "pplx.backend_flag_override_widget_collapsed";
+    export const g = () => document.querySelector("meta[name='version']")?.getAttribute("content");
+    export const s = (e) => Object.fromEntries((e || []).map(({flag, value}) => [flag?.key, value]));
+    export const u = () => ({ data: undefined, isLoading: false, isError: false, error: null });
+  `;
+
   window.fetch = function (input, init) {
     const url = getUrlString(input);
 
@@ -423,6 +434,19 @@
           headers: {
             "Content-Type": "application/javascript",
             "X-Meteor-Intercepted": "singular",
+          },
+        }),
+      );
+    }
+
+    // Intercept restricted-feature-debug script with stub module
+    if (url.includes("/_restricted/") && url.includes("restricted-feature-debug") && url.endsWith(".js")) {
+      return Promise.resolve(
+        new Response(RESTRICTED_DEBUG_STUB_MODULE, {
+          status: 200,
+          headers: {
+            "Content-Type": "application/javascript",
+            "X-Meteor-Intercepted": "restricted-debug",
           },
         }),
       );

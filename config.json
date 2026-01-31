@@ -495,6 +495,16 @@
         "description": "Perplexity Telemetry",
         "block_scripts": true,
         "redirect_xhr": true
+      },
+      "perplexity-ai.cloudflareaccess.com": {
+        "description": "Cloudflare Access auth for restricted features",
+        "block_scripts": true,
+        "redirect_xhr": true
+      },
+      "va.vercel-scripts.com": {
+        "description": "Vercel Analytics/Speed Insights",
+        "block_scripts": true,
+        "redirect_xhr": true
       }
     },
     "eppo_domains": [
@@ -542,6 +552,11 @@
       },
       "/rest/live-events/subscription": {
         "description": "Live events subscription",
+        "redirect_xhr": true
+      },
+      "/_spa/assets/_restricted/": {
+        "description": "Restricted debug features",
+        "block_scripts": true,
         "redirect_xhr": true
       }
     },
