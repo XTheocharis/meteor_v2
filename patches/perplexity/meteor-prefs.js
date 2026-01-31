@@ -293,12 +293,84 @@
   // Homepage URL - placeholder replaced by meteor.ps1
   const HOMEPAGE_URL = __METEOR_HOMEPAGE_URL__;
 
+  // Dynamic DNR rule ID for blocking until uBlock ready (high ID to avoid conflicts)
+  const BLOCK_UNTIL_READY_RULE_ID = 999999;
+
   // Initialization state tracking
   const initState = {
     meteorReady: false,
     ublockReady: false,
     navigationDone: false,
   };
+
+  /**
+   * Add dynamic DNR rule to block all subresources until uBlock is ready.
+   * Main frame navigation is allowed so about:blank -> homepage works.
+   * This is defense-in-depth alongside the about:blank approach.
+   */
+  async function enableStartupBlocking() {
+    if (!chrome?.declarativeNetRequest?.updateDynamicRules) {
+      console.warn("[Meteor] declarativeNetRequest.updateDynamicRules not available");
+      return;
+    }
+
+    try {
+      // Check if uBlock already signaled ready this session
+      const { meteorUblockReady } = await chrome.storage.session.get("meteorUblockReady");
+      if (meteorUblockReady) {
+        console.log("[Meteor] uBlock already ready this session, skipping blocking");
+        initState.ublockReady = true;
+        return;
+      }
+
+      // Block all subresources until uBlock ready
+      const blockRule = {
+        id: BLOCK_UNTIL_READY_RULE_ID,
+        priority: 1000000,
+        action: { type: "block" },
+        condition: {
+          // Block all resource types except main_frame (navigation must work)
+          resourceTypes: [
+            "sub_frame", "stylesheet", "script", "image", "font",
+            "object", "xmlhttprequest", "ping", "csp_report", "media",
+            "websocket", "webtransport", "webbundle", "other"
+          ]
+        }
+      };
+
+      await chrome.declarativeNetRequest.updateDynamicRules({
+        removeRuleIds: [BLOCK_UNTIL_READY_RULE_ID],
+        addRules: [blockRule]
+      });
+
+      console.log("[Meteor] Startup blocking enabled - all subresources blocked until uBlock ready");
+    } catch (e) {
+      console.error("[Meteor] Failed to enable startup blocking:", e);
+    }
+  }
+
+  /**
+   * Remove the startup blocking rule once uBlock is ready.
+   */
+  async function disableStartupBlocking() {
+    if (!chrome?.declarativeNetRequest?.updateDynamicRules) return;
+
+    try {
+      await chrome.declarativeNetRequest.updateDynamicRules({
+        removeRuleIds: [BLOCK_UNTIL_READY_RULE_ID]
+      });
+
+      // Remember that uBlock is ready for service worker restarts
+      await chrome.storage.session.set({ meteorUblockReady: true });
+
+      console.log("[Meteor] Startup blocking disabled - uBlock is protecting");
+    } catch (e) {
+      console.error("[Meteor] Failed to disable startup blocking:", e);
+    }
+  }
+
+  // Enable blocking immediately on service worker start
+  enableStartupBlocking();
 
   /**
    * Navigate to homepage once both Meteor and uBlock are ready.
@@ -357,6 +429,7 @@
       if (message?.type === "ublock-ready") {
         console.log("[Meteor] uBlock Origin ready signal received");
         initState.ublockReady = true;
+        disableStartupBlocking();
         maybeNavigateToHomepage();
       }
     });
