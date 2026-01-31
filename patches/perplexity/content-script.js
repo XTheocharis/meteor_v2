@@ -529,9 +529,86 @@
   }
 
   // ============================================================================
-  // SECTION 4: EPPO CLIENT DIRECT PATCHING (Backup)
+  // SECTION 4: EPPO SDK PROBING & PATCHING
   // ============================================================================
+  // Intercepts Eppo SDK to:
+  // 1. Override flag assignments with LOCAL_FEATURE_FLAGS
+  // 2. Log hash lookups and flag evaluations for debugging
+  // 3. Track all SDK activity via window.__EPPO_DEBUG__
 
+  // Global debug storage
+  window.__EPPO_DEBUG__ = {
+    hashes: {},
+    assignments: [],
+    log: function (plaintext, hash) {
+      if (!plaintext || typeof plaintext !== "string" || this.hashes[hash])
+        return;
+      this.hashes[hash] = plaintext;
+      console.log(
+        `%c[EPPO HASH] %c"${plaintext}" %c=> %c${hash}`,
+        "color: #a855f7; font-weight: bold;",
+        "color: #fff",
+        "color: #aaa",
+        "color: #00ffff",
+      );
+    },
+  };
+
+  // Detect MD5 hashing logic by checking for MD5 initialization constant
+  function isMD5Logic(fn) {
+    try {
+      return fn.toString().includes("1732584193");
+    } catch (e) {
+      return false;
+    }
+  }
+
+  // Apply probes to an object's methods
+  function applyEppoProbes(obj, name = "obj") {
+    if (!obj || obj.__meteorProbed) return;
+    obj.__meteorProbed = true;
+
+    for (const key in obj) {
+      try {
+        const val = obj[key];
+        if (typeof val !== "function") continue;
+
+        // Hook MD5 hashing logic
+        if (isMD5Logic(val)) {
+          console.log(`%c[Meteor] Hooked hasher: ${name}.${key}`, "color: #a855f7");
+          const originalHasher = val;
+          obj[key] = function (input) {
+            const result = originalHasher.apply(this, arguments);
+            window.__EPPO_DEBUG__.log(input, result);
+            return result;
+          };
+        }
+        // Hook evaluateFlag to see plaintext attributes
+        else if (key === "evaluateFlag") {
+          console.log(`%c[Meteor] Hooked evaluator: ${name}.${key}`, "color: #a855f7");
+          const originalEval = val;
+          obj[key] = function (flag, env, subject, attrs) {
+            console.groupCollapsed(
+              `%c[EPPO] %cFlag: ${flag?.key || "unknown"}`,
+              "color: #a855f7; font-weight: bold;",
+              "color: #fff",
+            );
+            console.log("Attributes:", attrs);
+            console.log("Subject:", subject);
+            console.groupEnd();
+
+            const result = originalEval.apply(this, arguments);
+            window.__EPPO_DEBUG__.assignments.push({ flag, attrs, result });
+            return result;
+          };
+        }
+      } catch (e) {
+        /* ignore */
+      }
+    }
+  }
+
+  // Patch client assignment methods to use our overrides
   function patchClientMethods(client) {
     if (!client || client.__meteorPatched) return;
 
@@ -552,33 +629,75 @@
           subjectAttributes,
           defaultValue,
         ) {
-          if (LOCAL_FEATURE_FLAGS.hasOwnProperty(flagKey)) {
-            return LOCAL_FEATURE_FLAGS[flagKey];
-          }
-          return original(flagKey, subjectKey, subjectAttributes, defaultValue);
+          const hasOverride = LOCAL_FEATURE_FLAGS.hasOwnProperty(flagKey);
+          const result = hasOverride
+            ? LOCAL_FEATURE_FLAGS[flagKey]
+            : original(flagKey, subjectKey, subjectAttributes, defaultValue);
+
+          console.log(
+            `%c[EPPO] %c${method}(%c"${flagKey}"%c) = %c${JSON.stringify(result)}%c${hasOverride ? " (Meteor override)" : ""}`,
+            "color: #a855f7; font-weight: bold;",
+            "color: #fff",
+            "color: #00ffff",
+            "color: #fff",
+            "color: #22c55e",
+            "color: #888",
+          );
+
+          return result;
         };
       }
     }
+
+    // Apply probes to client and its evaluator
+    applyEppoProbes(client, "client");
+    if (client.evaluator) applyEppoProbes(client.evaluator, "evaluator");
+
     client.__meteorPatched = true;
   }
 
+  // Hook into EppoSdk singleton
+  function patchEppoSdk(sdk, name = "EppoSdk") {
+    if (!sdk || sdk.__meteorHooked) return;
+    sdk.__meteorHooked = true;
+
+    // Apply probes to the SDK module itself
+    applyEppoProbes(sdk, name);
+
+    // Hook init()
+    if (typeof sdk.init === "function") {
+      const originalInit = sdk.init;
+      sdk.init = async function () {
+        console.log(`%c[Meteor] Eppo SDK init() intercepted`, "color: #a855f7");
+        const client = await originalInit.apply(this, arguments);
+        patchClientMethods(client);
+        return client;
+      };
+    }
+
+    // Hook getInstance()
+    if (typeof sdk.getInstance === "function") {
+      const originalGetInstance = sdk.getInstance;
+      sdk.getInstance = function () {
+        const client = originalGetInstance.apply(this, arguments);
+        if (client) patchClientMethods(client);
+        return client;
+      };
+    }
+  }
+
+  // Try to patch known Eppo globals
   function patchEppoClient() {
-    const windowKeys = ["eppoClient", "EppoClient", "__eppo__", "_eppo"];
-    for (const key of windowKeys) {
+    // Direct client globals
+    const clientKeys = ["eppoClient", "EppoClient", "__eppo__", "_eppo"];
+    for (const key of clientKeys) {
       if (window[key]) patchClientMethods(window[key]);
     }
 
-    try {
-      if (window.EppoSdk?.getInstance) {
-        const originalGetInstance = window.EppoSdk.getInstance;
-        window.EppoSdk.getInstance = function () {
-          const client = originalGetInstance.apply(this, arguments);
-          patchClientMethods(client);
-          return client;
-        };
-      }
-    } catch (e) {
-      /* ignore */
+    // SDK module globals
+    const sdkKeys = ["EppoSdk", "eppoSdk", "__eppoSdk__"];
+    for (const key of sdkKeys) {
+      if (window[key]) patchEppoSdk(window[key], key);
     }
   }
 
