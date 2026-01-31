@@ -235,6 +235,9 @@
     "patch_config": {
       "perplexity": {
         "manifest_additions": {
+          "externally_connectable": {
+            "ids": ["cjpalhdlnbpafiamejdnhcphjbkeiagm"]
+          },
           "declarative_net_request": {
             "rule_resources": [
               {

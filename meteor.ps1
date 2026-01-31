@@ -4859,6 +4859,25 @@ function Initialize-PatchedExtensions {
                         $manifest.content_scripts = $existingScripts + $newScripts
                     }
 
+                    # Merge externally_connectable.ids (for cross-extension messaging)
+                    if ($config.manifest_additions.PSObject.Properties['externally_connectable']) {
+                        if (-not $manifest.PSObject.Properties['externally_connectable']) {
+                            $manifest | Add-Member -NotePropertyName "externally_connectable" -NotePropertyValue ([PSCustomObject]@{})
+                        }
+
+                        $ec = $config.manifest_additions.externally_connectable
+                        if ($ec.PSObject.Properties['ids']) {
+                            if (-not $manifest.externally_connectable.PSObject.Properties['ids']) {
+                                $manifest.externally_connectable | Add-Member -NotePropertyName "ids" -NotePropertyValue @()
+                            }
+
+                            $existingIds = @($manifest.externally_connectable.ids)
+                            $newIds = @($ec.ids)
+                            # Merge and deduplicate
+                            $manifest.externally_connectable.ids = @($existingIds + $newIds | Select-Object -Unique)
+                        }
+                    }
+
                     Save-JsonFile -Path $manifestPath -Object $manifest -Depth 20
                     Write-Status "Applied manifest patches" -Type Detail
                 }
