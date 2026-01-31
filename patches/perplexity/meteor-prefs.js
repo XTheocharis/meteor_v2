@@ -375,9 +375,15 @@
     }
 
     // Reload all tabs so they load with uBlock protection
+    // Include chrome:// and comet:// for NTP which loads perplexity.ai content
     const tabs = await chrome.tabs.query({});
     const reloadableTabs = tabs.filter(
-      (t) => t.url && (t.url.startsWith("http://") || t.url.startsWith("https://"))
+      (t) => t.url && (
+        t.url.startsWith("http://") ||
+        t.url.startsWith("https://") ||
+        t.url.startsWith("chrome://newtab") ||
+        t.url.startsWith("comet://newtab")
+      )
     );
 
     if (reloadableTabs.length > 0) {
