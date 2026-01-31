@@ -281,8 +281,8 @@
           "_comment": "Regex replacements for comet_web_resources extension files",
           "spa/assets/page-component-*.js": [
             {
-              "pattern": "\\{widgetEditMode:\\w+\\}\\)\\{const",
-              "replacement": "{widgetEditMode:e}){return null;const",
+              "pattern": "\\{widgetEditMode:(\\w+)\\}\\)\\{const",
+              "replacement": "{widgetEditMode:$1}){return null;const",
               "description": "Disable privacy widget component - returns null to render nothing"
             }
           ]
