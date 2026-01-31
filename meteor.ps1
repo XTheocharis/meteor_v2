@@ -6002,6 +6002,25 @@ function Set-BrowserPreferences {
         # NTP Modules - disable all modules via policy-controlled pref
         # This replaces --disable-features=NtpDriveModuleHistorySyncRequirement
         "NewTabPage.ModulesVisible" = $false
+
+        # Perplexity-specific preferences (mirrors enforced_preferences in config.json)
+        "perplexity.adblock.enabled" = $false
+        "perplexity.adblock.fb_embed_default" = $false
+        "perplexity.adblock.linkedin_embed_default" = $false
+        "perplexity.adblock.twitter_embed_default" = $false
+        "perplexity.adblock.whitelist" = @()
+        "perplexity.adblock.hidden_whitelisted_dst" = @()
+        "perplexity.adblock.hidden_whitelisted_src" = @()
+        "perplexity.metrics_allowed" = $false
+        "perplexity.analytics_observer_initialised" = $false
+        "perplexity.history_search_enabled" = $false
+        "perplexity.external_search_enabled" = $true
+        "perplexity.help_me_with_text.enabled" = $false
+        "perplexity.proactive_scraping.enabled" = $false
+        "perplexity.always_allow_browser_agent" = $false
+        "perplexity.notifications.proactive_assistance.enabled" = $false
+        "perplexity.onboarding_completed" = $true
+        "perplexity.was_site_onboarding_started" = $true
     }
 
     # ============================================================================
