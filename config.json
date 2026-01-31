@@ -286,16 +286,14 @@
               "description": "Disable privacy widget component - returns null to render nothing"
             },
             {
-              "pattern": "(\\w+)\\.getPersonalSuggestions\\(\\{source:\"ntp\",type:(\\w+),locale:(\\w+)\\},\"get-personal-suggestions\"\\)",
-              "replacement": "Promise.resolve({is_success:false,suggestions:[]})",
-              "description": "Disable personal suggestions - return empty response"
-            }
-          ],
-          "spa/assets/ask-input-*.js": [
+              "pattern": "\\{cometBrowser:(\\w+),type:(\\w+),locale:(\\w+)\\}\\)=>\\{const\\{data:(\\w+)=\\[\\]\\}",
+              "replacement": "{cometBrowser:$1,type:$2,locale:$3})=>{return [];const{data:$4=[]}",
+              "description": "Disable personal suggestions hook - returns empty array immediately"
+            },
             {
-              "pattern": "(\\w+)\\.getTopMostVisitedUrls\\(\\{maxUrls:(\\w+)\\},\"get-top-most-urls-for-ntp\"\\)",
-              "replacement": "Promise.resolve({is_success:false})",
-              "description": "Disable top most visited URLs - return empty response"
+              "pattern": "memo\\(\\(\\{context:(\\w+),widgetId:(\\w+),defaultName:(\\w+),defaultQuery:(\\w+),showSettings:(\\w+),setShowSettings:(\\w+)\\}\\)=>\\{",
+              "replacement": "memo(({context:$1,widgetId:$2,defaultName:$3,defaultQuery:$4,showSettings:$5,setShowSettings:$6})=>{return null;",
+              "description": "Disable ShortcutWidget component - returns null to render nothing"
             }
           ]
         }
