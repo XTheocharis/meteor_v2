@@ -5942,130 +5942,75 @@ function Set-BrowserPreferences {
     # Comet uses empty seed for file MACs (non-Chrome branded build)
     $seedHex = ""
 
-    # Extension IDs for incognito and pinning
-    $uBlockId = "cjpalhdlnbpafiamejdnhcphjbkeiagm"
-    $adGuardExtraId = "gkeojjjcdcopjkbelgbcpckplegclfeg"
+    # ============================================================================
+    # LOAD PREFERENCES FROM CONFIG.JSON (Single Source of Truth)
+    # ============================================================================
+    $configPath = Join-Path $PSScriptRoot "config.json"
+    $config = Get-MeteorConfig -ConfigPath $configPath
+
+    # Extension IDs from config (for incognito and pinning)
+    $uBlockId = $config.ublock.extension_id
+    $adGuardExtraId = $config.adguard_extra.extension_id
+    # Get all meteor extension IDs for iteration
+    $meteorExtensionIds = @()
+    if ($config.meteor_extensions) {
+        $config.meteor_extensions.PSObject.Properties | ForEach-Object {
+            if ($_.Name -ne '_comment') {
+                $meteorExtensionIds += $_.Name
+            }
+        }
+    }
 
     # ============================================================================
     # TRACKED PREFERENCES (Secure Preferences with MAC)
-    # These are protected by Chromium's MAC system and require valid HMACs
-    # Verified against services/preferences/tracked/ in Chromium source
+    # Read from config.json tracked_preferences section
     # ============================================================================
-    $trackedPrefs = @{
-        "extensions.ui.developer_mode"    = $true
-        "browser.show_home_button"        = $true
-        "bookmark_bar.show_apps_shortcut" = $false
-        "safebrowsing.enabled"            = $false  # TRACKED - requires MAC
+    $trackedPrefs = @{}
+    if ($config.tracked_preferences) {
+        $config.tracked_preferences.PSObject.Properties | ForEach-Object {
+            if ($_.Name -ne '_comment') {
+                $trackedPrefs[$_.Name] = $_.Value
+            }
+        }
     }
+    Write-VerboseTimestamped "[First-Run] Loaded $($trackedPrefs.Count) tracked preferences from config"
 
     # ============================================================================
     # PROFILE PREFERENCES (Regular Preferences file, no MAC)
-    # Registered via RegisterProfilePrefs() - go in profile's Preferences file
-    # Verified against chrome/browser/prefs/ and component registrations
+    # Merge config.json profile_preferences + enforced_preferences
     # ============================================================================
-    $profilePrefs = @{
-        # Hyperlink auditing (click tracking)
-        "enable_a_ping" = $false
-
-        # DevTools
-        "devtools.availability" = 1      # 1 = always available
-        "devtools.gen_ai_settings" = 1   # 1 = disallow Gen AI features
-        "devtools.synced_preferences_sync_disabled" = @{
-            "disable-self-xss-warning" = $true   # Allow pasting in console without typing "allow pasting"
+    $profilePrefs = @{}
+    # Add profile_preferences
+    if ($config.profile_preferences) {
+        $config.profile_preferences.PSObject.Properties | ForEach-Object {
+            if ($_.Name -ne '_comment') {
+                $profilePrefs[$_.Name] = $_.Value
+            }
         }
-
-        # AI & Lens Features (disable Google AI integrations)
-        "browser.gemini_settings"           = 1      # 1 = disabled
-        "glic.actuation_on_web"             = 1      # 1 = disabled (Gemini web actions)
-        "lens.policy.lens_overlay_settings" = 1      # 1 = disabled
-        "omnibox.ai_mode_settings"          = 1      # 1 = disabled
-
-        # Network
-        "net.quic_allowed" = $false
-
-        # Safe Browsing (untracked prefs - safebrowsing.enabled is tracked above)
-        "safebrowsing.enhanced" = $false
-        "safebrowsing.password_protection_warning_trigger" = 0  # 0 = disabled
-        "safebrowsing.scout_reporting_enabled" = $false
-
-        # Privacy - URL & Search
-        "omnibox.prevent_url_elisions" = $true   # Full URLs in address bar
-        "search.suggest_enabled" = $false
-        "url_keyed_anonymized_data_collection.enabled" = $false  # Fixed path (was unified_consent.*)
-
-        # User Feedback
-        "feedback_allowed" = $false
-
-        # MV2 Extension Support (PrefScope::kProfile in extensions/browser/pref_types.cc)
-        "mv2_deprecation_warning_ack_globally" = $true
-
-        # NTP Modules - disable all modules via policy-controlled pref
-        # This replaces --disable-features=NtpDriveModuleHistorySyncRequirement
-        "NewTabPage.ModulesVisible" = $false
-
-        # Perplexity-specific preferences (mirrors enforced_preferences in config.json)
-        "perplexity.adblock.enabled" = $false
-        "perplexity.adblock.fb_embed_default" = $false
-        "perplexity.adblock.linkedin_embed_default" = $false
-        "perplexity.adblock.twitter_embed_default" = $false
-        "perplexity.adblock.whitelist" = @()
-        "perplexity.adblock.hidden_whitelisted_dst" = @()
-        "perplexity.adblock.hidden_whitelisted_src" = @()
-        "perplexity.metrics_allowed" = $false
-        "perplexity.analytics_observer_initialised" = $false
-        "perplexity.history_search_enabled" = $false
-        "perplexity.external_search_enabled" = $true
-        "perplexity.help_me_with_text.enabled" = $false
-        "perplexity.proactive_scraping.enabled" = $false
-        "perplexity.always_allow_browser_agent" = $false
-        "perplexity.notifications.proactive_assistance.enabled" = $false
-        "perplexity.onboarding_completed" = $true
-        "perplexity.was_site_onboarding_started" = $true
     }
+    # Add enforced_preferences (these go to both file and runtime enforcement)
+    if ($config.enforced_preferences) {
+        $config.enforced_preferences.PSObject.Properties | ForEach-Object {
+            if ($_.Name -ne '_comment') {
+                $profilePrefs[$_.Name] = $_.Value
+            }
+        }
+    }
+    Write-VerboseTimestamped "[First-Run] Loaded $($profilePrefs.Count) profile preferences from config"
 
     # ============================================================================
     # LOCAL STATE PREFERENCES (Local State file, no MAC)
-    # Registered via RegisterLocalStatePrefs() or policy prefs - machine-wide
-    # Verified against chrome/browser/prefs/ and component registrations
+    # Read from config.json local_state_preferences section
     # ============================================================================
-    $localStatePrefs = @{
-        # Policy-controlled prefs
-        "policy.lens_desktop_ntp_search_enabled" = $false
-        "policy.lens_region_search_enabled"      = $false
-        "browser.default_browser_setting_enabled" = $false
-        "domain_reliability.allowed_by_policy"   = $false
-
-        # Background mode (BackgroundModeManager::RegisterPrefs uses PrefRegistrySimple)
-        "background_mode.enabled" = $false
-
-        # Disable browser promotions
-        "browser.promotions_enabled" = $false
-
-        # NOTE: perplexity.feature.* browser flags are set in Update-TrackedPreferences
-        # with full object structure including "user_controlled" metadata.
-
-        # Tracking protection
-        "tracking_protection.ip_protection_enabled" = $false
-
-        # Updates & Variations
-        "update.component_updates_enabled" = $false
-        "variations.restrictions_by_policy" = 2  # 2 = VariationsDisabled
-
-        # ServiceWorker
-        "worker.service_worker_auto_preload_enabled" = $true
-    }
-
-    # Merge config-based Local State preferences
-    $configPath = Join-Path $PSScriptRoot "config.json"
-    $config = Get-MeteorConfig -ConfigPath $configPath
+    $localStatePrefs = @{}
     if ($config.local_state_preferences) {
         $config.local_state_preferences.PSObject.Properties | ForEach-Object {
             if ($_.Name -ne '_comment') {
                 $localStatePrefs[$_.Name] = $_.Value
-                Write-VerboseTimestamped "[Local State] Added config pref: $($_.Name) = $($_.Value)"
             }
         }
     }
+    Write-VerboseTimestamped "[First-Run] Loaded $($localStatePrefs.Count) local state preferences from config"
 
     # Extension settings with incognito enabled (split MACs)
     # These are tracked under extensions.settings.{extId} with split MAC structure
@@ -6369,68 +6314,48 @@ function Update-TrackedPreferences {
         Write-VerboseTimestamped "[Secure Prefs] After conversion - hashtable keys: $hashKeys"
 
         # ============================================================================
+        # LOAD PREFERENCES FROM CONFIG.JSON (Single Source of Truth)
+        # ============================================================================
+
         # TRACKED PREFERENCES (need MAC recalculation)
-        # Verified against services/preferences/tracked/ in Chromium source
-        # ============================================================================
-        $trackedPrefsToModify = @{
-            "extensions.ui.developer_mode"    = $true
-            "browser.show_home_button"        = $true
-            "bookmark_bar.show_apps_shortcut" = $false
-            "safebrowsing.enabled"            = $false  # TRACKED - requires MAC
-        }
-
-        # ============================================================================
-        # PROFILE PREFERENCES (go to Regular Preferences file, no MAC)
-        # ============================================================================
-        $profilePrefsToModify = @{
-            "enable_a_ping" = $false
-            "devtools.availability" = 1
-            "devtools.gen_ai_settings" = 1
-            "devtools.synced_preferences_sync_disabled" = @{
-                "disable-self-xss-warning" = $true
+        $trackedPrefsToModify = @{}
+        if ($MeteorConfig.tracked_preferences) {
+            $MeteorConfig.tracked_preferences.PSObject.Properties | ForEach-Object {
+                if ($_.Name -ne '_comment') {
+                    $trackedPrefsToModify[$_.Name] = $_.Value
+                }
             }
-            "browser.gemini_settings" = 1
-            "glic.actuation_on_web" = 1
-            "lens.policy.lens_overlay_settings" = 1
-            "omnibox.ai_mode_settings" = 1
-            "net.quic_allowed" = $false
-            "safebrowsing.enhanced" = $false
-            "safebrowsing.password_protection_warning_trigger" = 0
-            "safebrowsing.scout_reporting_enabled" = $false
-            "omnibox.prevent_url_elisions" = $true
-            "search.suggest_enabled" = $false
-            "url_keyed_anonymized_data_collection.enabled" = $false
-            "feedback_allowed" = $false
-            "mv2_deprecation_warning_ack_globally" = $true
-            "browser.default_browser_setting_enabled" = $false
-            # Perplexity-specific privacy preferences
-            "perplexity.adblock.enabled" = $false
-            "perplexity.help_me_with_text.enabled" = $false
-            "perplexity.history_search_enabled" = $false
-            "perplexity.notifications.proactive_assistance.enabled" = $false
-            "perplexity.proactive_scraping.enabled" = $false
-            "perplexity.analytics_observer_initialised" = $false
-            # NTP Modules - disable all modules via policy-controlled pref
-            # This replaces --disable-features=NtpDriveModuleHistorySyncRequirement
-            "NewTabPage.ModulesVisible" = $false
         }
+        Write-VerboseTimestamped "[Update] Loaded $($trackedPrefsToModify.Count) tracked preferences from config"
 
-        # ============================================================================
-        # LOCAL STATE PREFERENCES (go to Local State file, no MAC)
-        # ============================================================================
-        $localStatePrefsToModify = @{
-            "policy.lens_desktop_ntp_search_enabled" = $false
-            "policy.lens_region_search_enabled" = $false
-            # Privacy/telemetry preferences (verified in example_data/Local State)
-            "breadcrumbs.enabled" = $false
-            "background_mode.enabled" = $false
-            "browser.promotions_enabled" = $false
-            "domain_reliability.allowed_by_policy" = $false
-            "tracking_protection.ip_protection_enabled" = $false
-            "update.component_updates_enabled" = $false
-            "variations.restrictions_by_policy" = 2
-            "worker.service_worker_auto_preload_enabled" = $true
+        # PROFILE PREFERENCES (merge profile_preferences + enforced_preferences)
+        $profilePrefsToModify = @{}
+        if ($MeteorConfig.profile_preferences) {
+            $MeteorConfig.profile_preferences.PSObject.Properties | ForEach-Object {
+                if ($_.Name -ne '_comment') {
+                    $profilePrefsToModify[$_.Name] = $_.Value
+                }
+            }
         }
+        if ($MeteorConfig.enforced_preferences) {
+            $MeteorConfig.enforced_preferences.PSObject.Properties | ForEach-Object {
+                if ($_.Name -ne '_comment') {
+                    $profilePrefsToModify[$_.Name] = $_.Value
+                }
+            }
+        }
+        Write-VerboseTimestamped "[Update] Loaded $($profilePrefsToModify.Count) profile preferences from config"
+
+        # LOCAL STATE PREFERENCES
+        $localStatePrefsToModify = @{}
+        if ($MeteorConfig.local_state_preferences) {
+            $MeteorConfig.local_state_preferences.PSObject.Properties | ForEach-Object {
+                if ($_.Name -ne '_comment') {
+                    $localStatePrefsToModify[$_.Name] = $_.Value
+                }
+            }
+        }
+        Write-VerboseTimestamped "[Update] Loaded $($localStatePrefsToModify.Count) local state preferences from config"
 
         # Perplexity browser feature flags (require full object structure with metadata)
         # These are under perplexity.feature.{name} and need "user_controlled" to take effect
@@ -6479,13 +6404,17 @@ function Update-TrackedPreferences {
             Write-VerboseTimestamped "[Secure Prefs] Set tracked pref: $path = $($trackedPrefsToModify[$path])"
         }
 
-        # Enable incognito access and acknowledge MV2 warning for uBlock Origin and AdGuard Extra
+        # Enable incognito access and acknowledge MV2 warning for Meteor extensions
         # These settings are in extensions.settings.{id} and ARE tracked with SPLIT MAC
         # The MAC will be recalculated automatically since we recalculate all extension MACs
-        $extensionsToModify = @(
-            "cjpalhdlnbpafiamejdnhcphjbkeiagm",  # uBlock Origin
-            "gkeojjjcdcopjkbelgbcpckplegclfeg"   # AdGuard Extra
-        )
+        $extensionsToModify = @()
+        if ($MeteorConfig.meteor_extensions) {
+            $MeteorConfig.meteor_extensions.PSObject.Properties | ForEach-Object {
+                if ($_.Name -ne '_comment') {
+                    $extensionsToModify += $_.Name
+                }
+            }
+        }
         if ($securePrefsHash.ContainsKey('extensions') -and $securePrefsHash['extensions'].ContainsKey('settings')) {
             $extSettings = $securePrefsHash['extensions']['settings']
             foreach ($extId in $extensionsToModify) {
@@ -6508,10 +6437,8 @@ function Update-TrackedPreferences {
                 Write-VerboseTimestamped "[Regular Prefs] Set profile pref: $path = $($profilePrefsToModify[$path])"
             }
 
-            # Pin uBlock Origin to toolbar
-            $extensionsToPinToToolbar = @(
-                "cjpalhdlnbpafiamejdnhcphjbkeiagm"   # uBlock Origin
-            )
+            # Pin uBlock Origin to toolbar (read from config)
+            $extensionsToPinToToolbar = @($MeteorConfig.ublock.extension_id)
             if (-not $regularPrefsHash.ContainsKey('extensions')) {
                 $regularPrefsHash['extensions'] = @{}
             }

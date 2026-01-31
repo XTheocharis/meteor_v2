@@ -503,8 +503,39 @@
       "newtab.chrome-scheme,www.perplexity.ai,perplexity.ai##button:has-text(/^(0 ads and trackers blocked|Learn how Comet protects your privacy)$/)"
     ]
   },
+  "tracked_preferences": {
+    "_comment": "Preferences stored in Secure Preferences file with HMAC protection. These require MAC calculation.",
+    "extensions.ui.developer_mode": true,
+    "browser.show_home_button": true,
+    "bookmark_bar.show_apps_shortcut": false,
+    "safebrowsing.enabled": false
+  },
+  "profile_preferences": {
+    "_comment": "Preferences stored in regular Preferences file (no MAC). Registered via RegisterProfilePrefs().",
+    "enable_a_ping": false,
+    "devtools.availability": 1,
+    "devtools.gen_ai_settings": 1,
+    "devtools.synced_preferences_sync_disabled": {
+      "disable-self-xss-warning": true
+    },
+    "browser.gemini_settings": 1,
+    "glic.actuation_on_web": 1,
+    "lens.policy.lens_overlay_settings": 1,
+    "omnibox.ai_mode_settings": 1,
+    "net.quic_allowed": false,
+    "safebrowsing.enhanced": false,
+    "safebrowsing.password_protection_warning_trigger": 0,
+    "safebrowsing.scout_reporting_enabled": false,
+    "omnibox.prevent_url_elisions": true,
+    "search.suggest_enabled": false,
+    "url_keyed_anonymized_data_collection.enabled": false,
+    "feedback_allowed": false,
+    "mv2_deprecation_warning_ack_globally": true,
+    "NewTabPage.ModulesVisible": false,
+    "browser.default_browser_setting_enabled": false
+  },
   "enforced_preferences": {
-    "_comment": "Single source of truth for browser preference enforcement via chrome.settingsPrivate API.",
+    "_comment": "Runtime enforcement via chrome.settingsPrivate API in meteor-prefs.js. Also pre-seeded to profile.",
     "perplexity.adblock.enabled": false,
     "perplexity.adblock.fb_embed_default": false,
     "perplexity.adblock.linkedin_embed_default": false,
@@ -538,8 +569,19 @@
     "homepage": "https://www.perplexity.ai/b/home"
   },
   "local_state_preferences": {
-    "_comment": "Preferences written directly to Local State file by meteor.ps1. These are not feature flags or chrome.settingsPrivate prefs.",
-    "user_experience_metrics.reporting_enabled": false
+    "_comment": "Preferences written to Local State file. Registered via RegisterLocalStatePrefs() or policy prefs.",
+    "policy.lens_desktop_ntp_search_enabled": false,
+    "policy.lens_region_search_enabled": false,
+    "browser.default_browser_setting_enabled": false,
+    "domain_reliability.allowed_by_policy": false,
+    "background_mode.enabled": false,
+    "browser.promotions_enabled": false,
+    "tracking_protection.ip_protection_enabled": false,
+    "update.component_updates_enabled": false,
+    "variations.restrictions_by_policy": 2,
+    "worker.service_worker_auto_preload_enabled": true,
+    "user_experience_metrics.reporting_enabled": false,
+    "breadcrumbs.enabled": false
   },
   "ublock": {
     "enabled": true,
